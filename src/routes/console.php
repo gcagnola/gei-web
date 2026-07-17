@@ -3,6 +3,7 @@
 use App\Services\ImportadorPythonService;
 use App\Services\MigracionKngGeiPostgresqlService;
 use App\Services\ValidacionKngGeiPostgresqlService;
+use App\Services\WebCobolPilotImporter;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -11,6 +12,46 @@ use Illuminate\Support\Facades\Schema;
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
+
+Artisan::command('gei:web-importar-cobol-piloto
+    {--base-dir=storage/app/private/liquidaciones/cobol}
+    {--limite-propietarios=5}
+    {--limite-inquilinos=5}
+    {--limite-movimientos-propietario=20}
+    {--limite-movimientos-inquilino=20}
+    {--cuenta-propietario=}
+    {--cuenta-inquilino=}
+    {--dry-run}', function (WebCobolPilotImporter $importer) {
+        $database = DB::connection()->getDatabaseName();
+        $this->warn("Base destino: {$database}");
+
+        if ($database === 'db_gei') {
+            $this->error('Abortado: DB_DATABASE apunta a db_gei.');
+
+            return 2;
+        }
+
+        if ($database !== 'db_gei_web_migraciones_test') {
+            $this->error('Abortado: el importador piloto solo puede ejecutarse contra db_gei_web_migraciones_test.');
+
+            return 2;
+        }
+
+        $resultado = $importer->importar([
+            'base_dir' => (string) $this->option('base-dir'),
+            'limite_propietarios' => max(0, (int) $this->option('limite-propietarios')),
+            'limite_inquilinos' => max(0, (int) $this->option('limite-inquilinos')),
+            'limite_movimientos_propietario' => max(0, (int) $this->option('limite-movimientos-propietario')),
+            'limite_movimientos_inquilino' => max(0, (int) $this->option('limite-movimientos-inquilino')),
+            'cuenta_propietario' => $this->option('cuenta-propietario') ?: null,
+            'cuenta_inquilino' => $this->option('cuenta-inquilino') ?: null,
+            'dry_run' => (bool) $this->option('dry-run'),
+        ]);
+
+        $this->line(json_encode($resultado, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+
+        return 0;
+})->purpose('Importador piloto COBOL limitado para tablas web_* en base temporal.');
 
 Artisan::command('gei:marcar-clientes-validados {--repositorio-id=} {--dry-run}', function (
     ImportadorPythonService $importadorPython
