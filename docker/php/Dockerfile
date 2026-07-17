@@ -1,0 +1,46 @@
+FROM php:8.4-apache
+
+ARG UID=1000
+ARG GID=1000
+
+ENV APACHE_DOCUMENT_ROOT=/var/www/html/public
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        git \
+        curl \
+        python3 \
+        python3-psycopg \
+        unzip \
+        zip \
+        libicu-dev \
+        libpq-dev \
+        libzip-dev \
+        libonig-dev \
+    && docker-php-ext-install -j"$(nproc)" \
+        bcmath \
+        intl \
+        mbstring \
+        opcache \
+        pdo_pgsql \
+        pgsql \
+        zip \
+    && a2enmod rewrite headers expires \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
+
+RUN sed -ri \
+    -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' \
+    /etc/apache2/sites-available/*.conf \
+    /etc/apache2/apache2.conf \
+    /etc/apache2/conf-available/*.conf
+
+RUN groupmod -o -g "${GID}" www-data \
+    && usermod -o -u "${UID}" -g www-data www-data
+
+WORKDIR /var/www/html
+
+COPY docker/apache/000-default.conf /etc/apache2/sites-available/000-default.conf
+
+CMD ["apache2-foreground"]

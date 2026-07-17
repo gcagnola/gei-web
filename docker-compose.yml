@@ -1,0 +1,39 @@
+services:
+  gei-app:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+      args:
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+    container_name: gei-app
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./src:/var/www/html
+      - ../gei-liquidaciones-python:/opt/gei-liquidaciones-python:ro
+      - ./docker/php/php.ini:/usr/local/etc/php/conf.d/gei.ini:ro
+    networks:
+      - gei-network
+
+  gei-node:
+    build:
+      context: .
+      dockerfile: docker/node/Dockerfile
+      args:
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+    container_name: gei-node
+    restart: unless-stopped
+    working_dir: /var/www/html
+    volumes:
+      - ./src:/var/www/html
+    ports:
+      - "5173:5173"
+    networks:
+      - gei-network
+
+networks:
+  gei-network:
+    driver: bridge

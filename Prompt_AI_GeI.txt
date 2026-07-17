@@ -1,0 +1,347 @@
+Estamos trabajando en el proyecto **Laravel GeI — Guastavino e Imbert Administración**.
+
+Antes de dar comandos o proponer cambios, respetá este contexto técnico y no supongas contenedores, rutas o herramientas diferentes.
+
+## Estructura del proyecto
+
+La raíz del proyecto es:
+
+```text
+~/proyectos/gei-web
+```
+
+El código Laravel está en:
+
+```text
+~/proyectos/gei-web/src
+```
+
+Docker Compose está en:
+
+```text
+~/proyectos/gei-web/docker-compose.yml
+```
+
+La carpeta `src` se monta dentro de los contenedores como:
+
+```text
+/var/www/html
+```
+
+## Contenedores Docker
+
+### gei-app
+
+Contiene:
+
+* PHP 8.4
+* Apache
+* Laravel
+* Composer
+* extensiones PostgreSQL
+* código montado en `/var/www/html`
+
+Publica:
+
+```text
+localhost:8080 → contenedor:80
+```
+
+No tiene Node.js ni npm.
+
+### gei-node
+
+Contiene:
+
+* Node.js 22
+* npm
+* Vite
+
+Trabaja en:
+
+```text
+/var/www/html
+```
+
+Publica:
+
+```text
+localhost:5173 → contenedor:5173
+```
+
+No ejecutar npm dentro de `gei-app`.
+
+## Comandos
+
+Para Artisan usar siempre el alias:
+
+```bash
+gei-artisan ...
+```
+
+El alias equivale a:
+
+```bash
+docker exec -it \
+    --user "$(id -u):$(id -g)" \
+    -e HOME=/tmp \
+    -w /var/www/html \
+    gei-app php artisan
+```
+
+Ejemplos:
+
+```bash
+gei-artisan route:list
+gei-artisan migrate
+gei-artisan optimize:clear
+```
+
+Para npm y Vite usar `gei-node`:
+
+```bash
+docker exec -it gei-node npm install
+docker exec -it gei-node npm run build
+docker exec -it gei-node npm run dev -- --host 0.0.0.0
+```
+
+Para Composer usar `gei-app`, respetando UID y GID del usuario:
+
+```bash
+docker exec -it \
+    --user "$(id -u):$(id -g)" \
+    -e HOME=/tmp \
+    -w /var/www/html \
+    gei-app composer install
+```
+
+No crear contenedores temporales para Node, PHP o Composer sin revisar primero el `docker-compose.yml`.
+
+## Stack confirmado
+
+* Laravel 13.8
+* PHP 8.4
+* Apache
+* PostgreSQL
+* Node.js 22
+* Vite 8
+* Bootstrap 5.3
+* Sass
+* Tailwind 4 instalado, pero no utilizado actualmente
+* Blade
+* JavaScript nativo
+* sin Alpine.js por ahora
+
+## Autenticación
+
+Rutas actuales:
+
+```text
+GET  /login
+POST /login
+POST /logout
+GET  /
+```
+
+Controlador:
+
+```text
+App\Http\Controllers\Auth\LoginController
+```
+
+Vista de acceso:
+
+```text
+resources/views/auth/login.blade.php
+```
+
+## Identidad visual
+
+La estética debe seguir el sitio institucional de Guastavino e Imbert.
+
+Nombre del sistema:
+
+```text
+Guastavino e Imbert — Administración
+```
+
+Frase institucional:
+
+```text
+La tranquilidad de un siglo de experiencia
+```
+
+Criterios:
+
+* aplicar la estética a todo el sistema administrativo;
+* fondo blanco o gris muy claro;
+* menú lateral claro, plegable;
+* encabezado superior;
+* color principal violeta institucional;
+* tipografía Montserrat;
+* densidad media;
+* tablas ligeramente compactas;
+* diseño responsive;
+* sin fotografías;
+* login dividido entre panel institucional violeta y formulario blanco;
+* componentes Blade reutilizables.
+
+Colores base actuales:
+
+```css
+--gei-primary: #962aa8;
+--gei-primary-hover: #7f288d;
+--gei-primary-active: #70217e;
+--gei-secondary: #aa54b8;
+--gei-text: #394041;
+--gei-background: #f5f5f7;
+--gei-surface: #ffffff;
+```
+
+Recursos gráficos:
+
+```text
+public/images/gei/favicon.png
+public/images/gei/logo-horizontal-blanco.webp
+public/images/gei/logo-compacto.webp
+```
+
+## Convenciones de base de datos
+
+Todas las tablas nuevas creadas para el sistema web deben comenzar con:
+
+```text
+web_
+```
+
+Todos los campos nuevos creados para el sistema web también deben comenzar con:
+
+```text
+web_
+```
+
+No renombrar tablas ni columnas heredadas.
+
+No modificar estructuralmente tablas heredadas salvo agregar campos nuevos con prefijo `web_`.
+
+Toda modificación de base de datos debe quedar documentada mediante migraciones o scripts SQL reproducibles.
+
+## Forma de trabajo
+
+Antes de indicar comandos:
+
+1. Revisar en qué contenedor corresponde ejecutarlos.
+2. No asumir que una herramienta está instalada en `gei-app`.
+3. Usar `gei-artisan` para Artisan.
+4. Usar `gei-node` para npm y Vite.
+5. Explicar un paso por vez, porque el usuario está comenzando con Laravel y Docker.
+6. No introducir Tailwind, Alpine.js, Livewire u otra tecnología sin justificarla y acordarla previamente.
+7. No reemplazar Bootstrap mientras el proyecto lo siga utilizando.
+8. No dar varios caminos alternativos cuando uno solo sea suficiente.
+9. Pedir o revisar los archivos reales antes de modificar arquitectura, Docker o configuración.
+10. Mantener las decisiones ya tomadas y señalar cualquier contradicción antes de avanzar.
+
+## Estado actual
+
+Se está terminando la pantalla de login institucional.
+
+Los archivos modificados son:
+
+```text
+resources/views/auth/login.blade.php
+resources/css/app.css
+resources/js/app.js
+```
+
+El siguiente paso inmediato es compilar los recursos con:
+
+```bash
+docker exec -it gei-node npm run build
+```
+
+Luego probar:
+
+```text
+http://localhost:8080/login
+```
+
+Después de aprobar el login, el próximo desarrollo será:
+
+* layout administrativo;
+* sidebar plegable;
+* topbar;
+* dashboard de prueba;
+* componentes Blade reutilizables.
+
+
+ESTADO ACTUAL DEL PROYECTO — HOME Y MENÚ
+
+Ya está implementado el Home posterior al login.
+
+Archivos agregados o modificados:
+
+- src/routes/web.php
+- src/resources/views/inicio.blade.php
+- src/resources/views/layouts/app.blade.php
+- src/resources/views/components/menu-principal.blade.php
+- src/resources/views/modulo-en-construccion.blade.php
+
+Se crearon las carpetas nuevas:
+
+- src/resources/views/layouts/
+- src/resources/views/components/
+
+El Home incluye:
+
+- Menú lateral jerárquico.
+- Encabezado con usuario autenticado.
+- Botón para cerrar sesión.
+- Diseño responsive con Bootstrap 5.3.
+- Marcado visual de la opción activa.
+- Pantallas provisorias para módulos todavía no desarrollados.
+
+Menú actual:
+
+0-Archivo
+    0:1-Clientes
+        0:1:0-Clientes
+        0:1:1-Cuenta Corriente
+    0:2-Inmuebles
+    0:3-Conceptos
+    0:4-Proveedores
+    0:5-Contratos
+
+1-Propietarios
+    1:1-Administrador de Liquidaciones
+    1:2-Generar Liquidación de Propietarios
+    1:3-Consultas de saldos de Propietarios
+
+2-Inquilinos
+    2:1-Administrador de Liquidaciones
+    2:2-Generar Liquidación de Inquilinos
+    2:3-Consultas de saldos de Inquilinos
+
+3-Compras
+    3:1-Facturas de Proveedores
+    3:2-Cuenta Corriente
+
+4-Contabilidad
+    4:1-Plan de Cuentas
+    4:2-Caja Diaria
+    4:3-Libro de IVA Ventas
+
+5-Opciones
+    5:1-Usuarios
+    5:2-Seteos
+
+Convenciones para continuar:
+
+- Mantener Bootstrap 5.3, Blade y JavaScript nativo.
+- No usar Livewire ni Alpine.js.
+- No reemplazar el layout ni el menú sin revisar primero los archivos existentes.
+- Las nuevas pantallas deben extender layouts.app.
+- El menú principal está en components/menu-principal.blade.php.
+- No entregar el proyecto completo cuando se hagan modificaciones.
+- Entregar solamente los archivos nuevos o modificados, conservando su ruta desde src/.
+- Antes de generar archivos, indicar exactamente cuáles serán creados o reemplazados.
+- No modificar archivos ajenos a la tarea.

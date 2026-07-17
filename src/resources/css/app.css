@@ -1,0 +1,880 @@
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap');
+@import 'bootstrap/dist/css/bootstrap.min.css';
+
+:root {
+    --gei-primary: #962aa8;
+    --gei-primary-hover: #7f288d;
+    --gei-primary-active: #70217e;
+    --gei-primary-light: #f7edf9;
+    --gei-primary-soft: #eddbf1;
+
+    --gei-secondary: #aa54b8;
+    --gei-secondary-dark: #87388c;
+
+    --gei-text: #394041;
+    --gei-text-strong: #1a1a1a;
+    --gei-muted: #747a7c;
+
+    --gei-background: #f5f5f7;
+    --gei-surface: #ffffff;
+    --gei-border: #dedede;
+    --gei-border-focus: #aa54b8;
+
+    --gei-danger: #b42318;
+    --gei-danger-background: #fff1f0;
+    --gei-danger-border: #f4c7c3;
+
+    --gei-radius-sm: 4px;
+    --gei-radius-md: 8px;
+    --gei-radius-lg: 12px;
+
+    --gei-shadow-sm:
+        0 1px 2px rgb(16 24 40 / 5%);
+
+    --gei-shadow-lg:
+        0 24px 70px rgb(31 22 35 / 14%);
+}
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+html {
+    min-height: 100%;
+}
+
+body {
+    min-height: 100vh;
+    margin: 0;
+    color: var(--gei-text);
+    background-color: var(--gei-background);
+    font-family: 'Montserrat', sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select,
+textarea {
+    font: inherit;
+}
+
+/* =========================================================
+   Clientes
+   ========================================================= */
+
+.gei-clientes {
+    display: grid;
+    grid-template-columns: minmax(290px, 360px) minmax(0, 1fr);
+    gap: 22px;
+    align-items: start;
+}
+
+.gei-clientes__listado {
+    position: sticky;
+    top: 132px;
+    overflow: hidden;
+}
+
+.gei-clientes__listado-header,
+.gei-client-detail-heading,
+.gei-section-title,
+.gei-contract__heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.gei-clientes__listado-header {
+    padding: 20px;
+    border-bottom: 1px solid var(--gei-border);
+}
+
+.gei-clientes__listado-header h1,
+.gei-client-detail-heading h1,
+.gei-section-title h2 {
+    margin: 0;
+}
+
+.gei-clientes__listado-header h1 {
+    font-size: 1.35rem;
+}
+
+.gei-clientes__listado-header p,
+.gei-section-title p {
+    margin: 4px 0 0;
+    color: var(--gei-muted);
+    font-size: .82rem;
+}
+
+.gei-clientes__filtros {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--gei-border);
+}
+
+.gei-clientes__filter-options {
+    display: flex;
+    gap: 5px;
+    margin-top: 12px;
+}
+
+.gei-clientes__filter-options a {
+    padding: 6px 9px;
+    border-radius: 7px;
+    color: var(--gei-muted);
+    font-size: .78rem;
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.gei-clientes__filter-options a:hover,
+.gei-clientes__filter-options a.is-active {
+    color: var(--gei-primary-active);
+    background: var(--gei-primary-light);
+}
+
+.gei-clientes__items {
+    max-height: calc(100vh - 360px);
+    overflow-y: auto;
+}
+
+.gei-cliente-item {
+    display: block;
+    padding: 14px 20px;
+    border-bottom: 1px solid #eeeeef;
+    color: var(--gei-text);
+    text-decoration: none;
+    transition: background-color .16s ease;
+}
+
+.gei-cliente-item:hover,
+.gei-cliente-item.is-active {
+    color: var(--gei-text);
+    background: var(--gei-primary-light);
+}
+
+.gei-cliente-item.is-active {
+    box-shadow: inset 4px 0 0 var(--gei-primary);
+}
+
+.gei-cliente-item__heading,
+.gei-cliente-item__meta {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.gei-cliente-item__heading strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.gei-cliente-item__heading span,
+.gei-cliente-item__meta,
+.gei-cliente-item small {
+    color: var(--gei-muted);
+    font-size: .76rem;
+}
+
+.gei-cliente-item__meta {
+    justify-content: flex-start;
+    margin-top: 5px;
+}
+
+.gei-clientes__pagination {
+    padding: 14px 18px 5px;
+    border-top: 1px solid var(--gei-border);
+}
+
+.gei-client-detail-heading {
+    margin-bottom: 20px;
+}
+
+.gei-client-detail-heading__eyebrow {
+    display: block;
+    margin-bottom: 5px;
+    color: var(--gei-primary);
+    font-size: .75rem;
+    font-weight: 700;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+}
+
+.gei-client-detail-heading h1 {
+    font-size: clamp(1.45rem, 2.5vw, 2rem);
+}
+
+.gei-detail-card {
+    padding: 22px;
+}
+
+.gei-detail-card > h2,
+.gei-section-title h2 {
+    font-size: 1.05rem;
+    font-weight: 700;
+}
+
+.gei-detail-list {
+    margin: 16px 0 0;
+}
+
+.gei-detail-list > div {
+    display: grid;
+    grid-template-columns: minmax(110px, 34%) 1fr;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: 1px solid #eeeeef;
+}
+
+.gei-detail-list > div:last-child {
+    border-bottom: 0;
+}
+
+.gei-detail-list dt {
+    color: var(--gei-muted);
+    font-size: .78rem;
+    font-weight: 600;
+}
+
+.gei-detail-list dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+    font-size: .88rem;
+}
+
+.gei-detail-list--columns {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 25px;
+}
+
+.gei-contract {
+    padding: 18px 0;
+    border-bottom: 1px solid var(--gei-border);
+}
+
+.gei-contract:last-of-type {
+    border-bottom: 0;
+}
+
+.gei-contract__heading > div {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.gei-contract__heading > span,
+.gei-contract__facts,
+.gei-contract__properties span {
+    color: var(--gei-muted);
+    font-size: .78rem;
+}
+
+.gei-contract__facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 22px;
+    margin-top: 10px;
+}
+
+.gei-contract__properties {
+    display: grid;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.gei-contract__properties > div {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 9px 11px;
+    border-radius: 8px;
+    background: #f8f7f9;
+    font-size: .82rem;
+}
+
+.gei-contract__property-owner {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.gei-status {
+    padding: 3px 7px;
+    border-radius: 999px;
+    font-size: .66rem;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+
+.gei-status--vigente {
+    color: #166534;
+    background: #dcfce7;
+}
+
+.gei-status--vencido {
+    color: #991b1b;
+    background: #fee2e2;
+}
+
+.gei-status--futuro {
+    color: #1e40af;
+    background: #dbeafe;
+}
+
+.gei-empty-state {
+    padding: 24px;
+    color: var(--gei-muted);
+    text-align: center;
+}
+
+.gei-empty-state--large {
+    padding: 70px 24px;
+}
+
+.gei-section-title {
+    margin-bottom: 18px;
+}
+
+@media (max-width: 1100px) {
+    .gei-clientes {
+        grid-template-columns: 310px minmax(0, 1fr);
+    }
+}
+
+@media (max-width: 900px) {
+    .gei-clientes {
+        grid-template-columns: 1fr;
+    }
+
+    .gei-clientes__listado {
+        position: static;
+    }
+
+    .gei-clientes__items {
+        max-height: 390px;
+    }
+}
+
+@media (max-width: 575.98px) {
+    .gei-client-detail-heading,
+    .gei-clientes__listado-header,
+    .gei-contract__heading {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .gei-detail-list--columns {
+        grid-template-columns: 1fr;
+    }
+
+    .gei-contract__properties > div {
+        flex-direction: column;
+    }
+}
+
+/* =========================================================
+   Login
+   ========================================================= */
+
+.gei-login-body {
+    overflow-x: hidden;
+}
+
+.gei-login {
+    display: grid;
+    min-height: 100vh;
+    grid-template-columns: minmax(380px, 46%) 1fr;
+}
+
+/* Panel institucional */
+
+.gei-login__brand {
+    position: relative;
+    display: flex;
+    min-height: 100vh;
+    overflow: hidden;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: clamp(40px, 6vw, 88px);
+    color: #ffffff;
+    background:
+        radial-gradient(
+            circle at 15% 15%,
+            rgb(255 255 255 / 12%) 0,
+            rgb(255 255 255 / 0%) 32%
+        ),
+        linear-gradient(
+            145deg,
+            var(--gei-primary) 0%,
+            var(--gei-primary-hover) 58%,
+            #68206f 100%
+        );
+}
+
+.gei-login__brand::after {
+    position: absolute;
+    right: -160px;
+    bottom: -190px;
+    width: 460px;
+    height: 460px;
+    border: 1px solid rgb(255 255 255 / 10%);
+    border-radius: 50%;
+    content: '';
+}
+
+.gei-login__brand-content,
+.gei-login__brand-footer {
+    position: relative;
+    z-index: 2;
+}
+
+.gei-login__brand-content {
+    width: min(100%, 540px);
+    margin: auto 0;
+}
+
+.gei-login__logo {
+    display: block;
+    width: min(100%, 420px);
+    height: auto;
+    object-fit: contain;
+    object-position: left center;
+}
+
+.gei-login__separator {
+    width: 72px;
+    height: 3px;
+    margin: 42px 0 30px;
+    border-radius: 999px;
+    background-color: rgb(255 255 255 / 72%);
+}
+
+.gei-login__claim {
+    max-width: 520px;
+    margin: 0;
+    font-size: clamp(28px, 3vw, 48px);
+    font-weight: 600;
+    line-height: 1.15;
+    letter-spacing: -0.035em;
+}
+
+.gei-login__brand-footer {
+    margin: 48px 0 0;
+    color: rgb(255 255 255 / 72%);
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+}
+
+.gei-login__decoration {
+    position: absolute;
+    z-index: 1;
+    border: 1px solid rgb(255 255 255 / 10%);
+    border-radius: 50%;
+    pointer-events: none;
+}
+
+.gei-login__decoration--one {
+    top: -160px;
+    right: -120px;
+    width: 390px;
+    height: 390px;
+}
+
+.gei-login__decoration--two {
+    top: 58%;
+    left: -130px;
+    width: 270px;
+    height: 270px;
+}
+
+/* Panel del formulario */
+
+.gei-login__form-panel {
+    display: flex;
+    min-height: 100vh;
+    align-items: center;
+    justify-content: center;
+    padding: clamp(32px, 7vw, 96px);
+    background-color: var(--gei-surface);
+}
+
+.gei-login__form-container {
+    width: min(100%, 440px);
+}
+
+.gei-login__header {
+    margin-bottom: 34px;
+}
+
+.gei-login__compact-logo {
+    display: none;
+    width: 58px;
+    height: 58px;
+    margin-bottom: 28px;
+    object-fit: contain;
+}
+
+.gei-login__eyebrow {
+    margin: 0 0 10px;
+    color: var(--gei-primary);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+}
+
+.gei-login__title {
+    margin: 0;
+    color: var(--gei-text-strong);
+    font-size: clamp(30px, 4vw, 40px);
+    font-weight: 700;
+    line-height: 1.15;
+    letter-spacing: -0.035em;
+}
+
+.gei-login__description {
+    margin: 12px 0 0;
+    color: var(--gei-muted);
+    font-size: 14px;
+}
+
+.gei-login__form {
+    display: grid;
+    gap: 22px;
+}
+
+.gei-field {
+    min-width: 0;
+}
+
+.gei-field__label-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.gei-field__label {
+    display: inline-block;
+    margin-bottom: 8px;
+    color: var(--gei-text-strong);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.gei-field__control.form-control {
+    min-height: 48px;
+    padding: 11px 14px;
+    border: 1px solid var(--gei-border);
+    border-radius: var(--gei-radius-md);
+    color: var(--gei-text-strong);
+    background-color: var(--gei-surface);
+    box-shadow: var(--gei-shadow-sm);
+    font-size: 14px;
+    transition:
+        border-color 160ms ease,
+        box-shadow 160ms ease,
+        background-color 160ms ease;
+}
+
+.gei-field__control.form-control:hover {
+    border-color: #c8c8c8;
+}
+
+.gei-field__control.form-control:focus {
+    border-color: var(--gei-border-focus);
+    box-shadow:
+        0 0 0 4px rgb(150 42 168 / 12%);
+}
+
+.gei-field__control.form-control.is-invalid {
+    border-color: var(--gei-danger);
+    background-image: none;
+}
+
+.gei-field__control.form-control.is-invalid:focus {
+    box-shadow:
+        0 0 0 4px rgb(180 35 24 / 10%);
+}
+
+.invalid-feedback {
+    margin-top: 6px;
+    color: var(--gei-danger);
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.gei-password {
+    position: relative;
+}
+
+.gei-password__input {
+    padding-right: 86px !important;
+}
+
+.gei-password__toggle {
+    position: absolute;
+    top: 0;
+    right: 4px;
+    display: inline-flex;
+    height: 48px;
+    align-items: center;
+    padding: 0 10px;
+    border: 0;
+    color: var(--gei-primary);
+    background: transparent;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.gei-password__toggle:hover {
+    color: var(--gei-primary-hover);
+}
+
+.gei-password__toggle:focus-visible {
+    border-radius: var(--gei-radius-sm);
+    outline: 3px solid rgb(150 42 168 / 20%);
+    outline-offset: -4px;
+}
+
+.gei-password__hide {
+    display: none;
+}
+
+.gei-password__toggle.is-visible .gei-password__show {
+    display: none;
+}
+
+.gei-password__toggle.is-visible .gei-password__hide {
+    display: inline;
+}
+
+.gei-login__options {
+    display: flex;
+    min-height: 24px;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.gei-check.form-check-input {
+    width: 17px;
+    height: 17px;
+    margin-top: 2px;
+    border: 1px solid var(--gei-border);
+    border-radius: var(--gei-radius-sm);
+    box-shadow: none;
+    cursor: pointer;
+}
+
+.gei-check.form-check-input:checked {
+    border-color: var(--gei-primary);
+    background-color: var(--gei-primary);
+}
+
+.gei-check.form-check-input:focus {
+    border-color: var(--gei-primary);
+    box-shadow:
+        0 0 0 4px rgb(150 42 168 / 12%);
+}
+
+.gei-check-label {
+    color: var(--gei-text);
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.gei-button.btn {
+    display: inline-flex;
+    min-height: 48px;
+    align-items: center;
+    justify-content: center;
+    padding: 11px 22px;
+    border-radius: var(--gei-radius-md);
+    font-size: 14px;
+    font-weight: 600;
+    transition:
+        border-color 160ms ease,
+        background-color 160ms ease,
+        box-shadow 160ms ease,
+        transform 100ms ease;
+}
+
+.gei-button--primary.btn {
+    border-color: var(--gei-primary);
+    color: #ffffff;
+    background-color: var(--gei-primary);
+    box-shadow:
+        0 8px 18px rgb(150 42 168 / 18%);
+}
+
+.gei-button--primary.btn:hover,
+.gei-button--primary.btn:focus {
+    border-color: var(--gei-primary-hover);
+    color: #ffffff;
+    background-color: var(--gei-primary-hover);
+}
+
+.gei-button--primary.btn:focus-visible {
+    box-shadow:
+        0 0 0 4px rgb(150 42 168 / 18%);
+}
+
+.gei-button--primary.btn:active {
+    border-color: var(--gei-primary-active);
+    background-color: var(--gei-primary-active);
+    transform: translateY(1px);
+}
+
+/* Alertas */
+
+.gei-alert {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 24px;
+    padding: 14px;
+    border-radius: var(--gei-radius-md);
+    font-size: 13px;
+}
+
+.gei-alert--error {
+    border: 1px solid var(--gei-danger-border);
+    color: var(--gei-danger);
+    background-color: var(--gei-danger-background);
+}
+
+.gei-alert__icon {
+    display: inline-flex;
+    width: 22px;
+    min-width: 22px;
+    height: 22px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    color: #ffffff;
+    background-color: var(--gei-danger);
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.gei-login__footer {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+    margin-top: 40px;
+    color: #969a9b;
+    font-size: 11px;
+    font-weight: 500;
+}
+
+/* =========================================================
+   Responsive
+   ========================================================= */
+
+@media (max-width: 900px) {
+    .gei-login {
+        grid-template-columns: 1fr;
+    }
+
+    .gei-login__brand {
+        min-height: auto;
+        padding: 30px;
+    }
+
+    .gei-login__brand-content {
+        width: 100%;
+        margin: 0;
+    }
+
+    .gei-login__logo {
+        width: min(100%, 300px);
+    }
+
+    .gei-login__separator {
+        width: 48px;
+        margin: 24px 0 18px;
+    }
+
+    .gei-login__claim {
+        max-width: 600px;
+        font-size: clamp(23px, 5vw, 34px);
+    }
+
+    .gei-login__brand-footer {
+        display: none;
+    }
+
+    .gei-login__form-panel {
+        min-height: auto;
+        padding: 54px 30px;
+    }
+}
+
+@media (max-width: 560px) {
+    .gei-login__brand {
+        padding: 24px 22px 28px;
+    }
+
+    .gei-login__logo {
+        width: min(100%, 255px);
+    }
+
+    .gei-login__claim {
+        font-size: 23px;
+    }
+
+    .gei-login__form-panel {
+        padding: 42px 22px;
+    }
+
+    .gei-login__header {
+        margin-bottom: 28px;
+    }
+
+    .gei-login__title {
+        font-size: 30px;
+    }
+
+    .gei-login__footer {
+        justify-content: center;
+        text-align: center;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+    }
+}
+
+.gei-login__back-link,
+.gei-login__forgot-link {
+    color: var(--gei-primary);
+    font-size: 0.9rem;
+    font-weight: 500;
+    text-decoration: none;
+}
+
+.gei-login__back-link {
+    display: inline-block;
+    margin-bottom: 1.5rem;
+}
+
+.gei-login__back-link:hover,
+.gei-login__forgot-link:hover {
+    color: var(--gei-primary-hover);
+    text-decoration: underline;
+}

@@ -1,0 +1,50 @@
+# Laravel / PHP
+src/vendor/
+src/node_modules/
+src/.env
+src/.env.*
+!src/.env.example
+src/storage/logs/*.log
+src/storage/framework/cache/*
+src/storage/framework/sessions/*
+src/storage/framework/views/*
+src/bootstrap/cache/*.php
+
+# Vite / build
+src/public/build/
+src/npm-debug.log*
+src/yarn-error.log*
+
+# IDE / sistema
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Dumps / backups / temporales
+*.sql
+*.dump
+*.backup
+*.bak
+backups/
+backup/
+tmp/
+temp/
+
+# Python / virtualenv si aparece
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Entorno raíz del stack Docker
+.env
+.env.*
+!.env.example
+
+# Papelera Linux accidental
+.Trash-1000/
+
+# SQL del proyecto versionado
+!src/sql/
+!src/sql/**/*.sql
