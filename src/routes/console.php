@@ -21,6 +21,7 @@ Artisan::command('gei:web-importar-cobol-piloto
     {--limite-movimientos-inquilino=20}
     {--cuenta-propietario=}
     {--cuenta-inquilino=}
+    {--sin-limite}
     {--dry-run}', function (WebCobolPilotImporter $importer) {
         $database = DB::connection()->getDatabaseName();
         $this->warn("Base destino: {$database}");
@@ -39,12 +40,13 @@ Artisan::command('gei:web-importar-cobol-piloto
 
         $resultado = $importer->importar([
             'base_dir' => (string) $this->option('base-dir'),
-            'limite_propietarios' => max(0, (int) $this->option('limite-propietarios')),
-            'limite_inquilinos' => max(0, (int) $this->option('limite-inquilinos')),
-            'limite_movimientos_propietario' => max(0, (int) $this->option('limite-movimientos-propietario')),
-            'limite_movimientos_inquilino' => max(0, (int) $this->option('limite-movimientos-inquilino')),
+            'limite_propietarios' => $this->option('sin-limite') ? null : max(0, (int) $this->option('limite-propietarios')),
+            'limite_inquilinos' => $this->option('sin-limite') ? null : max(0, (int) $this->option('limite-inquilinos')),
+            'limite_movimientos_propietario' => $this->option('sin-limite') ? null : max(0, (int) $this->option('limite-movimientos-propietario')),
+            'limite_movimientos_inquilino' => $this->option('sin-limite') ? null : max(0, (int) $this->option('limite-movimientos-inquilino')),
             'cuenta_propietario' => $this->option('cuenta-propietario') ?: null,
             'cuenta_inquilino' => $this->option('cuenta-inquilino') ?: null,
+            'sin_limite' => (bool) $this->option('sin-limite'),
             'dry_run' => (bool) $this->option('dry-run'),
         ]);
 

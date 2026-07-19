@@ -16,18 +16,20 @@ class WebCobolPilotImporter
     /**
      * @param array{
      *     base_dir: string,
-     *     limite_propietarios: int,
-     *     limite_inquilinos: int,
-     *     limite_movimientos_propietario: int,
-     *     limite_movimientos_inquilino: int,
+     *     limite_propietarios: ?int,
+     *     limite_inquilinos: ?int,
+     *     limite_movimientos_propietario: ?int,
+     *     limite_movimientos_inquilino: ?int,
      *     cuenta_propietario?: ?string,
      *     cuenta_inquilino?: ?string,
+     *     sin_limite: bool,
      *     dry_run: bool
      * } $options
      * @return array<string, mixed>
      */
     public function importar(array $options): array
     {
+        $inicio = microtime(true);
         $database = DB::connection()->getDatabaseName();
         $this->assertTemporalDatabase($database);
 
@@ -66,6 +68,7 @@ class WebCobolPilotImporter
             'database' => $database,
             'base_dir' => $this->basePath,
             'dry_run' => $options['dry_run'],
+            'sin_limite' => $options['sin_limite'],
             'version' => self::VERSION,
             'candidatos' => [
                 'propietarios' => count($propietarios),
@@ -75,15 +78,17 @@ class WebCobolPilotImporter
             ],
             'tablas' => [],
             'errores' => [],
+            'metricas' => [],
         ];
 
         if ($options['dry_run']) {
             $resultado['mensaje'] = 'Dry-run completado: no se escribieron tablas.';
+            $resultado['metricas'] = $this->metricas($inicio);
 
             return $resultado;
         }
 
-        return DB::transaction(function () use ($propietarios, $inquilinos, $movimientosPropietarios, $movimientosInquilinos, $resultado): array {
+        return DB::transaction(function () use ($propietarios, $inquilinos, $movimientosPropietarios, $movimientosInquilinos, $resultado, $inicio): array {
             $before = $this->conteos();
 
             $loteId = $this->upsertLote($propietarios, $inquilinos);
@@ -161,43 +166,23 @@ class WebCobolPilotImporter
                 );
             }
 
-            foreach ($movimientosPropietarios as $linea) {
-                $raw = $linea['raw'];
-                $cuenta = substr($raw, 0, 11);
-                if (! isset($cuentasCorrientesPropietario[$cuenta], $propietariosIds[$cuenta])) {
-                    continue;
-                }
+            $this->procesarMovimientosPropietarios(
+                $loteId,
+                $archivos['CTACTEPRO.TXT'],
+                $movimientosPropietarios,
+                $cuentasCorrientesPropietario,
+                $propietariosIds
+            );
 
-                $registroId = $this->upsertRegistro($loteId, $archivos['CTACTEPRO.TXT'], 'CTACTEPRO.TXT', 'cuenta_propietario', $linea);
-                $this->upsertMovimientoPropietario(
-                    $loteId,
-                    $archivos['CTACTEPRO.TXT'],
-                    $registroId,
-                    $cuentasCorrientesPropietario[$cuenta],
-                    $propietariosIds[$cuenta],
-                    $raw
-                );
-            }
-
-            foreach ($movimientosInquilinos as $linea) {
-                $raw = $linea['raw'];
-                $cuenta = substr($raw, 0, 11);
-                if (! isset($cuentasCorrientesInquilino[$cuenta], $inquilinosIds[$cuenta])) {
-                    continue;
-                }
-
-                $registroId = $this->upsertRegistro($loteId, $archivos['INQCTACTE.TXT'], 'INQCTACTE.TXT', 'cuenta_inquilino', $linea);
-                $this->upsertMovimientoInquilino(
-                    $loteId,
-                    $archivos['INQCTACTE.TXT'],
-                    $registroId,
-                    $cuentasCorrientesInquilino[$cuenta],
-                    $inquilinosIds[$cuenta],
-                    $contratosIds[$cuenta] ?? null,
-                    $inmueblesIds[$cuenta] ?? null,
-                    $raw
-                );
-            }
+            $this->procesarMovimientosInquilinos(
+                $loteId,
+                $archivos['INQCTACTE.TXT'],
+                $movimientosInquilinos,
+                $cuentasCorrientesInquilino,
+                $inquilinosIds,
+                $contratosIds,
+                $inmueblesIds
+            );
 
             $after = $this->conteos();
             $resultado['tablas'] = [
@@ -206,6 +191,7 @@ class WebCobolPilotImporter
                 'delta' => $this->delta($before, $after),
             ];
             $resultado['mensaje'] = 'Importacion piloto completada sobre base temporal.';
+            $resultado['metricas'] = $this->metricas($inicio);
 
             return $resultado;
         });
@@ -238,7 +224,7 @@ class WebCobolPilotImporter
     /**
      * @return array<string, array{line:int, raw:string}>
      */
-    private function seleccionarPropietarios(?string $cuenta, int $limite): array
+    private function seleccionarPropietarios(?string $cuenta, ?int $limite): array
     {
         $seleccion = [];
         foreach ($this->leerLineas('PROPIETAR.TXT') as $linea) {
@@ -248,7 +234,7 @@ class WebCobolPilotImporter
             }
 
             $seleccion[$cuentaLinea] = $linea;
-            if ($cuenta !== null || count($seleccion) >= $limite) {
+            if ($cuenta !== null || ($limite !== null && count($seleccion) >= $limite)) {
                 break;
             }
         }
@@ -259,7 +245,7 @@ class WebCobolPilotImporter
     /**
      * @return array<string, array{line:int, raw:string}>
      */
-    private function seleccionarInquilinos(?string $cuenta, int $limite): array
+    private function seleccionarInquilinos(?string $cuenta, ?int $limite): array
     {
         $seleccion = [];
         foreach ($this->leerLineas('INQUILINO.TXT') as $linea) {
@@ -269,7 +255,7 @@ class WebCobolPilotImporter
             }
 
             $seleccion[$cuentaLinea] = $linea;
-            if ($cuenta !== null || count($seleccion) >= $limite) {
+            if ($cuenta !== null || ($limite !== null && count($seleccion) >= $limite)) {
                 break;
             }
         }
@@ -314,9 +300,9 @@ class WebCobolPilotImporter
      * @param list<string> $cuentas
      * @return list<array{line:int, raw:string}>
      */
-    private function seleccionarMovimientos(string $archivo, array $cuentas, int $limite): array
+    private function seleccionarMovimientos(string $archivo, array $cuentas, ?int $limite): array
     {
-        if ($cuentas === [] || $limite <= 0) {
+        if ($cuentas === [] || $limite === 0) {
             return [];
         }
 
@@ -328,7 +314,7 @@ class WebCobolPilotImporter
             }
 
             $seleccion[] = $linea;
-            if (count($seleccion) >= $limite) {
+            if ($limite !== null && count($seleccion) >= $limite) {
                 break;
             }
         }
@@ -589,6 +575,7 @@ class WebCobolPilotImporter
     private function upsertContrato(int $loteId, int $archivoId, int $registroId, string $raw): int
     {
         $codigo = $this->codigoContrato($raw);
+        [$fechaInicio, $fechaFin] = $this->rangoContrato($raw);
 
         DB::table('web_contratos')->updateOrInsert(
             ['codigo_origen' => $codigo],
@@ -596,8 +583,8 @@ class WebCobolPilotImporter
                 'cuenta_inquilino_origen' => substr($raw, 0, 11),
                 'cuenta_propietario_origen' => substr($raw, 11, 11),
                 'fecha_contrato' => $this->fechaDmy(substr($raw, 92, 8)),
-                'fecha_inicio' => $this->fechaDmy(substr($raw, 325, 8)),
-                'fecha_fin' => $this->fechaDmy(substr($raw, 100, 8)),
+                'fecha_inicio' => $fechaInicio,
+                'fecha_fin' => $fechaFin,
                 'fecha_baja' => $this->fechaDmy(substr($raw, 145, 8)),
                 'marca_baja' => $this->texto(substr($raw, 144, 1)),
                 'plazo_meses' => (int) $this->texto(substr($raw, 116, 3)),
@@ -782,6 +769,251 @@ class WebCobolPilotImporter
     }
 
     /**
+     * @param list<array{line:int, raw:string}> $movimientos
+     * @param array<string, int> $cuentasCorrientes
+     * @param array<string, int> $propietariosIds
+     */
+    private function procesarMovimientosPropietarios(
+        int $loteId,
+        int $archivoId,
+        array $movimientos,
+        array $cuentasCorrientes,
+        array $propietariosIds
+    ): void {
+        $conceptos = [];
+        foreach (array_chunk($movimientos, 500) as $chunk) {
+            $registroIds = $this->upsertRegistrosBatch($loteId, $archivoId, 'CTACTEPRO.TXT', 'cuenta_propietario', $chunk);
+            $rows = [];
+            foreach ($chunk as $linea) {
+                $raw = $linea['raw'];
+                $cuenta = substr($raw, 0, 11);
+                if (! isset($cuentasCorrientes[$cuenta], $propietariosIds[$cuenta], $registroIds[$linea['line']])) {
+                    continue;
+                }
+
+                $codigo = $this->texto(substr($raw, 19, 2));
+                $numero = $this->texto(substr($raw, 21, 6));
+                $importe = $this->signedDecimal(substr($raw, 27, 12), 2);
+                $conceptoId = $this->conceptoCached($conceptos, 'PROPIETARIO', $codigo, $this->texto(substr($raw, 39, 40)));
+
+                $rows[] = [
+                    'cuenta_corriente_id' => $cuentasCorrientes[$cuenta],
+                    'dominio' => 'PROPIETARIO',
+                    'cuenta_origen' => $cuenta,
+                    'contrato_id' => null,
+                    'inmueble_id' => null,
+                    'propietario_id' => $propietariosIds[$cuenta],
+                    'inquilino_id' => null,
+                    'fecha' => $this->fechaYmd(substr($raw, 11, 8)),
+                    'periodo' => substr($raw, 11, 6),
+                    'codigo_concepto' => $codigo,
+                    'concepto_id' => $conceptoId,
+                    'numero_movimiento' => $numero,
+                    'descripcion' => $this->texto(substr($raw, 39, 40)),
+                    'importe' => $importe,
+                    'debe' => ((int) $codigo >= 21) ? $this->absDecimal($importe) : '0.00',
+                    'haber' => ((int) $codigo < 21) ? $this->absDecimal($importe) : '0.00',
+                    'penalidad' => null,
+                    'abonado' => null,
+                    'iva' => $this->decimal(substr($raw, 91, 10), 2),
+                    'no_gravado' => $this->decimal(substr($raw, 101, 10), 2),
+                    'liquidado_origen' => $this->texto(substr($raw, 90, 1)),
+                    'archivo_origen_id' => $archivoId,
+                    'registro_origen_id' => $registroIds[$linea['line']],
+                    'hash_origen' => hash('sha256', $raw),
+                    'origen' => 'COBOL',
+                    'version_regla' => self::VERSION,
+                    'estado' => 'ACTIVO',
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ];
+            }
+            $this->bulkUpsertMovimientos($rows);
+        }
+    }
+
+    /**
+     * @param list<array{line:int, raw:string}> $movimientos
+     * @param array<string, int> $cuentasCorrientes
+     * @param array<string, int> $inquilinosIds
+     * @param array<string, int> $contratosIds
+     * @param array<string, int> $inmueblesIds
+     */
+    private function procesarMovimientosInquilinos(
+        int $loteId,
+        int $archivoId,
+        array $movimientos,
+        array $cuentasCorrientes,
+        array $inquilinosIds,
+        array $contratosIds,
+        array $inmueblesIds
+    ): void {
+        $conceptos = [];
+        foreach (array_chunk($movimientos, 500) as $chunk) {
+            $registroIds = $this->upsertRegistrosBatch($loteId, $archivoId, 'INQCTACTE.TXT', 'cuenta_inquilino', $chunk);
+            $rows = [];
+            foreach ($chunk as $linea) {
+                $raw = $linea['raw'];
+                $cuenta = substr($raw, 0, 11);
+                if (! isset($cuentasCorrientes[$cuenta], $inquilinosIds[$cuenta], $registroIds[$linea['line']])) {
+                    continue;
+                }
+
+                $codigo = $this->texto(substr($raw, 19, 2));
+                $numero = $this->texto(substr($raw, 21, 6));
+                $importe = $this->signedDecimal(substr($raw, 27, 12), 2);
+                $conceptoId = $this->conceptoCached($conceptos, 'INQUILINO', $codigo, $this->texto(substr($raw, 63, 40)));
+
+                $rows[] = [
+                    'cuenta_corriente_id' => $cuentasCorrientes[$cuenta],
+                    'dominio' => 'INQUILINO',
+                    'cuenta_origen' => $cuenta,
+                    'contrato_id' => $contratosIds[$cuenta] ?? null,
+                    'inmueble_id' => $inmueblesIds[$cuenta] ?? null,
+                    'propietario_id' => null,
+                    'inquilino_id' => $inquilinosIds[$cuenta],
+                    'fecha' => $this->fechaYmd(substr($raw, 11, 8)),
+                    'periodo' => substr($raw, 11, 6),
+                    'codigo_concepto' => $codigo,
+                    'concepto_id' => $conceptoId,
+                    'numero_movimiento' => $numero,
+                    'descripcion' => $this->texto(substr($raw, 63, 40)),
+                    'importe' => $importe,
+                    'debe' => ((float) $importe >= 0) ? $this->absDecimal($importe) : '0.00',
+                    'haber' => ((float) $importe < 0) ? $this->absDecimal($importe) : '0.00',
+                    'penalidad' => $this->signedDecimal(substr($raw, 39, 12), 2),
+                    'abonado' => $this->signedDecimal(substr($raw, 51, 12), 2),
+                    'iva' => null,
+                    'no_gravado' => null,
+                    'liquidado_origen' => null,
+                    'archivo_origen_id' => $archivoId,
+                    'registro_origen_id' => $registroIds[$linea['line']],
+                    'hash_origen' => hash('sha256', $raw),
+                    'origen' => 'COBOL',
+                    'version_regla' => self::VERSION,
+                    'estado' => 'ACTIVO',
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ];
+            }
+            $this->bulkUpsertMovimientos($rows);
+        }
+    }
+
+    /**
+     * @param list<array{line:int, raw:string}> $lineas
+     * @return array<int, int>
+     */
+    private function upsertRegistrosBatch(int $loteId, int $archivoId, string $archivo, string $tipoRegistro, array $lineas): array
+    {
+        $tipoArchivo = pathinfo($archivo, PATHINFO_FILENAME);
+        $now = now();
+        $rows = [];
+        foreach ($lineas as $linea) {
+            $raw = $linea['raw'];
+            $clave = $this->claveRegistro($tipoArchivo, $raw);
+            $rows[] = [
+                'lote_importacion_id' => $loteId,
+                'archivo_importado_id' => $archivoId,
+                'archivo_origen' => $archivo,
+                'tipo_archivo' => $tipoArchivo,
+                'tipo_registro' => $tipoRegistro,
+                'numero_linea' => $linea['line'],
+                'orden_origen' => $linea['line'],
+                'clave_origen' => $clave,
+                'hash_registro' => hash('sha256', $raw),
+                'contenido_original' => $raw,
+                'payload_normalizado' => json_encode(['clave_origen' => $clave, 'piloto' => true], JSON_UNESCAPED_UNICODE),
+                'version_parser' => self::VERSION,
+                'version_regla' => self::VERSION,
+                'origen' => 'COBOL',
+                'estado' => 'GENERADO',
+                'entidad_destino' => null,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ];
+        }
+
+        DB::table('web_registros_origen')->upsert(
+            $rows,
+            ['archivo_importado_id', 'numero_linea'],
+            [
+                'lote_importacion_id',
+                'archivo_origen',
+                'tipo_archivo',
+                'tipo_registro',
+                'orden_origen',
+                'clave_origen',
+                'hash_registro',
+                'contenido_original',
+                'payload_normalizado',
+                'version_parser',
+                'version_regla',
+                'origen',
+                'estado',
+                'entidad_destino',
+                'updated_at',
+            ]
+        );
+
+        return DB::table('web_registros_origen')
+            ->where('archivo_importado_id', $archivoId)
+            ->whereIn('numero_linea', array_column($lineas, 'line'))
+            ->pluck('id', 'numero_linea')
+            ->map(fn ($id) => (int) $id)
+            ->all();
+    }
+
+    /**
+     * @param array<string, int> $cache
+     */
+    private function conceptoCached(array &$cache, string $dominio, string $codigo, string $descripcion): int
+    {
+        $key = "{$dominio}|{$codigo}";
+        if (! isset($cache[$key])) {
+            $cache[$key] = $this->upsertConcepto($dominio, $codigo, $descripcion);
+        }
+
+        return $cache[$key];
+    }
+
+    /**
+     * @param list<array<string, mixed>> $rows
+     */
+    private function bulkUpsertMovimientos(array $rows): void
+    {
+        if ($rows === []) {
+            return;
+        }
+
+        $columns = array_keys($rows[0]);
+        $quotedColumns = array_map(fn ($column) => "\"{$column}\"", $columns);
+        $placeholders = [];
+        $bindings = [];
+        foreach ($rows as $row) {
+            $placeholders[] = '('.implode(',', array_fill(0, count($columns), '?')).')';
+            foreach ($columns as $column) {
+                $bindings[] = $row[$column];
+            }
+        }
+
+        $updates = [];
+        foreach ($columns as $column) {
+            if (in_array($column, ['dominio', 'cuenta_origen', 'fecha', 'codigo_concepto', 'numero_movimiento', 'hash_origen', 'created_at'], true)) {
+                continue;
+            }
+            $updates[] = "\"{$column}\" = EXCLUDED.\"{$column}\"";
+        }
+
+        $sql = 'INSERT INTO "web_movimientos_cuenta" ('.implode(',', $quotedColumns).') VALUES '
+            .implode(',', $placeholders)
+            .' ON CONFLICT (dominio, cuenta_origen, COALESCE(fecha, DATE \'0001-01-01\'), codigo_concepto, numero_movimiento, hash_origen) DO UPDATE SET '
+            .implode(',', $updates);
+
+        DB::statement($sql, $bindings);
+    }
+
+    /**
      * @return array<string, string>
      */
     private function movimientoKeys(string $dominio, string $cuenta, string $codigo, string $numero, string $raw): array
@@ -917,6 +1149,21 @@ class WebCobolPilotImporter
     }
 
     /**
+     * @return array{0: ?string, 1: ?string}
+     */
+    private function rangoContrato(string $raw): array
+    {
+        $inicio = $this->fechaDmy(substr($raw, 325, 8));
+        $fin = $this->fechaDmy(substr($raw, 100, 8));
+
+        if ($inicio !== null && $fin !== null && $inicio > $fin) {
+            return [null, $fin];
+        }
+
+        return [$inicio, $fin];
+    }
+
+    /**
      * @return array<string, int>
      */
     private function conteos(): array
@@ -960,5 +1207,18 @@ class WebCobolPilotImporter
         }
 
         return $delta;
+    }
+
+    /**
+     * @return array<string, int|float>
+     */
+    private function metricas(float $inicio): array
+    {
+        $duracion = round(microtime(true) - $inicio, 3);
+
+        return [
+            'duracion_segundos' => $duracion,
+            'memoria_pico_mb' => round(memory_get_peak_usage(true) / 1024 / 1024, 2),
+        ];
     }
 }
