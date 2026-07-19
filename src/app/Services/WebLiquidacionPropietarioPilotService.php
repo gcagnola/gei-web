@@ -18,7 +18,8 @@ class WebLiquidacionPropietarioPilotService
         ?string $periodo = null,
         int $detalleLimite = 200,
         bool $clasificarMovimientos = false,
-        ?string $totalEsperado = null
+        ?string $totalEsperado = null,
+        bool $construirItems = false
     ): array {
         $version = DB::selectOne('select version() as version, current_database() as database');
         $this->assertTemporalPostgresql17((string) $version->version, (string) $version->database);
@@ -109,7 +110,11 @@ class WebLiquidacionPropietarioPilotService
 
         $movimientos = array_slice($movimientosCompletos, 0, $detalleLimite);
 
-        $clasificacion = $clasificarMovimientos
+        $debeTotalCents = $this->decimalToCents((string) $totales->total_debe);
+        $haberTotalCents = $this->decimalToCents((string) $totales->total_haber);
+        $netoTotalCents = $this->decimalToCents((string) $totales->total_neto);
+
+        $clasificacion = ($clasificarMovimientos || $construirItems)
             ? $this->clasificarMovimientos($movimientosCompletos, (string) $totales->total_neto, $totalEsperado)
             : null;
 
@@ -198,6 +203,16 @@ class WebLiquidacionPropietarioPilotService
 
         if ($clasificacion !== null) {
             $resultado['clasificacion_movimientos'] = $clasificacion;
+        }
+
+        if ($construirItems) {
+            $resultado['items_experimentales'] = $this->construirItemsExperimentales(
+                $clasificacion ?? $this->clasificarMovimientos($movimientosCompletos, (string) $totales->total_neto, $totalEsperado),
+                $debeTotalCents,
+                $haberTotalCents,
+                $netoTotalCents,
+                $totalEsperado
+            );
         }
 
         return $resultado;
@@ -326,6 +341,332 @@ class WebLiquidacionPropietarioPilotService
             'motivo' => 'Movimiento incluido en el total corriente por regla experimental inicial.',
             'regla' => 'EXPERIMENTAL_GIMB23: inclusion por defecto hasta modelar GIMB23 completo.',
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $clasificacion
+     * @return array<string, mixed>
+     */
+    private function construirItemsExperimentales(
+        array $clasificacion,
+        int $debeCrudo,
+        int $haberCrudo,
+        int $netoCrudo,
+        ?string $totalEsperado
+    ): array {
+        $movimientosIncluidos = $clasificacion['movimientos_incluidos'];
+        $items = [];
+        $orden = 1;
+
+        $alquileres = $this->filtrarMovimientosPorCodigo($movimientosIncluidos, '01');
+        foreach ($alquileres as $movimiento) {
+            $items[] = $this->itemIndividual(
+                $orden++,
+                $movimiento,
+                'ALQUILER',
+                'EXPERIMENTAL_GIMB23_ITEM_BUILDER: codigo 01 se imprime individualmente.'
+            );
+        }
+
+        $litoralGasDetalle = $this->filtrarMovimientosPorCodigo($movimientosIncluidos, '11');
+        usort($litoralGasDetalle, fn (array $a, array $b): int => $this->ordenLitoralGasDetalle($a) <=> $this->ordenLitoralGasDetalle($b));
+        foreach ($litoralGasDetalle as $movimiento) {
+            $items[] = $this->itemIndividual(
+                $orden++,
+                $movimiento,
+                'SERVICIO_DETALLE',
+                'EXPERIMENTAL_GIMB23_ITEM_BUILDER: codigo 11 se imprime individualmente cuando coincide con Litoral Gas.'
+            );
+        }
+
+        $comisionAlquileres = $this->filtrarMovimientosPorCodigo($movimientosIncluidos, '21');
+        if ($comisionAlquileres !== []) {
+            $items[] = $this->itemAgrupadoNetoIva(
+                $orden++,
+                $comisionAlquileres,
+                '21',
+                '07,5% Comision p/Admin.Alquileres',
+                'COMISION_ADMINISTRACION',
+                'EXPERIMENTAL_GIMB23_ITEM_BUILDER: codigo 21 se agrupa neto y el IVA se informa en item separado.'
+            );
+        }
+
+        $comisionImpuestos = $this->filtrarMovimientosPorCodigo($movimientosIncluidos, '22');
+        if ($comisionImpuestos !== []) {
+            $items[] = $this->itemAgrupadoNetoIva(
+                $orden++,
+                $comisionImpuestos,
+                '22',
+                'Com.s/Imp,ExpyServ.',
+                'COMISION_IMPUESTOS_SERVICIOS',
+                'EXPERIMENTAL_GIMB23_ITEM_BUILDER: codigo 22 se agrupa neto y el IVA se informa en item separado.'
+            );
+        }
+
+        $movimientosConIva = array_merge($comisionAlquileres, $comisionImpuestos);
+        $ivaComisiones = $this->sumarCampoCents($movimientosConIva, 'iva');
+        if ($ivaComisiones !== 0) {
+            $items[] = [
+                'orden_experimental' => $orden++,
+                'codigo_origen' => 'IVA_21_22',
+                'codigo_item' => 'IVA_COMISIONES',
+                'descripcion' => '21,0% IVA sobre comisiones',
+                'debe' => $this->centsToDecimal($ivaComisiones),
+                'haber' => '0.00',
+                'total' => $this->centsToDecimal($ivaComisiones),
+                'clasificacion' => 'ITEM_AGRUPADO',
+                'movimientos_origen_ids' => $this->movimientoIds($movimientosConIva),
+                'numeros_movimiento_origen' => $this->movimientoNumeros($movimientosConIva),
+                'cantidad_movimientos_origen' => count($movimientosConIva),
+                'regla_aplicada' => 'EXPERIMENTAL_GIMB23_ITEM_BUILDER: IVA de codigos 21 y 22 agrupado en linea separada.',
+                'advertencias' => ['IVA calculado desde el campo iva importado en web_movimientos_cuenta.'],
+            ];
+        }
+
+        $otrosIndividuales = array_values(array_filter(
+            $movimientosIncluidos,
+            fn (array $movimiento): bool => in_array(trim((string) $movimiento['codigo_concepto']), ['32', '43'], true)
+        ));
+        usort($otrosIndividuales, fn (array $a, array $b): int => $this->ordenOtrosItems($a) <=> $this->ordenOtrosItems($b));
+
+        foreach ($otrosIndividuales as $movimiento) {
+            $items[] = $this->itemIndividual(
+                $orden++,
+                $movimiento,
+                trim((string) $movimiento['codigo_concepto']) === '32' ? 'GASTO_EXPENSA_SERVICIO' : 'BONIFICACION',
+                'EXPERIMENTAL_GIMB23_ITEM_BUILDER: codigos 32 y 43 se imprimen individualmente para el caso piloto.'
+            );
+        }
+
+        $debeItems = 0;
+        $haberItems = 0;
+        foreach ($items as $item) {
+            $debeItems += $this->decimalToCents((string) $item['debe']);
+            $haberItems += $this->decimalToCents((string) $item['haber']);
+        }
+
+        $totalItems = $haberItems - $debeItems;
+        $totalEsperadoCents = $totalEsperado === null ? null : $this->decimalToCents($totalEsperado);
+        $movimientosAgrupados = count($comisionAlquileres) + count($comisionImpuestos);
+
+        return [
+            'version_regla' => 'EXPERIMENTAL_GIMB23_ITEM_BUILDER_v1',
+            'total_historico_esperado' => $totalEsperado,
+            'debe_crudo' => $this->centsToDecimal($debeCrudo),
+            'haber_crudo' => $this->centsToDecimal($haberCrudo),
+            'total_crudo' => $this->centsToDecimal($netoCrudo),
+            'total_liquidable_desde_movimientos' => (string) $clasificacion['total_liquidable'],
+            'debe_items' => $this->centsToDecimal($debeItems),
+            'haber_items' => $this->centsToDecimal($haberItems),
+            'total_items' => $this->centsToDecimal($totalItems),
+            'diferencia_movimientos_vs_historico' => $clasificacion['diferencia_con_historico'],
+            'diferencia_items_vs_historico' => $totalEsperadoCents === null
+                ? null
+                : $this->centsToDecimal($totalItems - $totalEsperadoCents),
+            'cantidad_items_construidos' => count($items),
+            'cantidad_movimientos_liquidables' => (int) $clasificacion['cantidad_incluidos'],
+            'cantidad_movimientos_excluidos' => (int) $clasificacion['cantidad_excluidos'],
+            'cantidad_movimientos_agrupados' => $movimientosAgrupados,
+            'agrupaciones' => [
+                [
+                    'codigo_origen' => '21',
+                    'descripcion' => '07,5% Comision p/Admin.Alquileres',
+                    'cantidad_movimientos' => count($comisionAlquileres),
+                    'debe_bruto' => $this->centsToDecimal($this->sumarCampoCents($comisionAlquileres, 'debe')),
+                    'iva' => $this->centsToDecimal($this->sumarCampoCents($comisionAlquileres, 'iva')),
+                    'debe_neto' => $this->centsToDecimal(
+                        $this->sumarCampoCents($comisionAlquileres, 'debe') - $this->sumarCampoCents($comisionAlquileres, 'iva')
+                    ),
+                ],
+                [
+                    'codigo_origen' => '22',
+                    'descripcion' => 'Com.s/Imp,ExpyServ.',
+                    'cantidad_movimientos' => count($comisionImpuestos),
+                    'debe_bruto' => $this->centsToDecimal($this->sumarCampoCents($comisionImpuestos, 'debe')),
+                    'iva' => $this->centsToDecimal($this->sumarCampoCents($comisionImpuestos, 'iva')),
+                    'debe_neto' => $this->centsToDecimal(
+                        $this->sumarCampoCents($comisionImpuestos, 'debe') - $this->sumarCampoCents($comisionImpuestos, 'iva')
+                    ),
+                ],
+                [
+                    'codigo_origen' => 'IVA_21_22',
+                    'descripcion' => 'IVA agrupado de comisiones',
+                    'cantidad_movimientos' => count($movimientosConIva),
+                    'debe' => $this->centsToDecimal($ivaComisiones),
+                ],
+            ],
+            'items' => $items,
+            'movimientos_excluidos' => $clasificacion['movimientos_excluidos'],
+            'advertencias' => [
+                'EXPERIMENTAL_GIMB23_ITEM_BUILDER: el orden, agrupacion y descripciones se validaron solo contra la cuenta 12020750010 periodo 202606.',
+                'REGLA_PENDIENTE_COBOL: falta resolver relacion directa movimiento-inquilino-inmueble para todos los items.',
+                'REGLA_PENDIENTE_COBOL: falta generalizar GIMB23/GIMB98 antes de PDF piloto.',
+            ],
+        ];
+    }
+
+    /**
+     * @param list<array<string, mixed>> $movimientos
+     * @return list<array<string, mixed>>
+     */
+    private function filtrarMovimientosPorCodigo(array $movimientos, string $codigo): array
+    {
+        return array_values(array_filter(
+            $movimientos,
+            fn (array $movimiento): bool => trim((string) $movimiento['codigo_concepto']) === $codigo
+        ));
+    }
+
+    /**
+     * @param array<string, mixed> $movimiento
+     * @return array<string, mixed>
+     */
+    private function itemIndividual(int $orden, array $movimiento, string $codigoItem, string $regla): array
+    {
+        $debe = $this->decimalToCents((string) $movimiento['debe']);
+        $haber = $this->decimalToCents((string) $movimiento['haber']);
+
+        return [
+            'orden_experimental' => $orden,
+            'codigo_origen' => trim((string) $movimiento['codigo_concepto']),
+            'codigo_item' => $codigoItem,
+            'descripcion' => $this->descripcionItem($movimiento),
+            'debe' => $this->centsToDecimal($debe),
+            'haber' => $this->centsToDecimal($haber),
+            'total' => $this->centsToDecimal($haber > 0 ? $haber : $debe),
+            'clasificacion' => 'ITEM_COINCIDE',
+            'movimientos_origen_ids' => [(int) $movimiento['id']],
+            'numeros_movimiento_origen' => [(string) $movimiento['numero_movimiento']],
+            'cantidad_movimientos_origen' => 1,
+            'regla_aplicada' => $regla,
+            'advertencias' => $movimiento['contrato_id'] === null
+                ? ['REGLA_PENDIENTE_COBOL: movimiento sin contrato/inquilino/inmueble directo resuelto en web_movimientos_cuenta.']
+                : [],
+        ];
+    }
+
+    /**
+     * @param list<array<string, mixed>> $movimientos
+     * @return array<string, mixed>
+     */
+    private function itemAgrupadoNetoIva(
+        int $orden,
+        array $movimientos,
+        string $codigoOrigen,
+        string $descripcion,
+        string $codigoItem,
+        string $regla
+    ): array {
+        $debe = $this->sumarCampoCents($movimientos, 'debe');
+        $iva = $this->sumarCampoCents($movimientos, 'iva');
+        $neto = $debe - $iva;
+
+        return [
+            'orden_experimental' => $orden,
+            'codigo_origen' => $codigoOrigen,
+            'codigo_item' => $codigoItem,
+            'descripcion' => $descripcion,
+            'debe' => $this->centsToDecimal($neto),
+            'haber' => '0.00',
+            'total' => $this->centsToDecimal($neto),
+            'clasificacion' => 'ITEM_AGRUPADO',
+            'movimientos_origen_ids' => $this->movimientoIds($movimientos),
+            'numeros_movimiento_origen' => $this->movimientoNumeros($movimientos),
+            'cantidad_movimientos_origen' => count($movimientos),
+            'regla_aplicada' => $regla,
+            'advertencias' => ['El importe impreso usa neto sin IVA; el IVA se agrega en item agrupado separado.'],
+        ];
+    }
+
+    /**
+     * @param list<array<string, mixed>> $movimientos
+     */
+    private function sumarCampoCents(array $movimientos, string $campo): int
+    {
+        $total = 0;
+        foreach ($movimientos as $movimiento) {
+            $total += $this->decimalToCents((string) ($movimiento[$campo] ?? '0.00'));
+        }
+
+        return $total;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $movimientos
+     * @return list<int>
+     */
+    private function movimientoIds(array $movimientos): array
+    {
+        return array_map(fn (array $movimiento): int => (int) $movimiento['id'], $movimientos);
+    }
+
+    /**
+     * @param list<array<string, mixed>> $movimientos
+     * @return list<string>
+     */
+    private function movimientoNumeros(array $movimientos): array
+    {
+        return array_map(fn (array $movimiento): string => (string) $movimiento['numero_movimiento'], $movimientos);
+    }
+
+    /**
+     * @param array<string, mixed> $movimiento
+     */
+    private function descripcionItem(array $movimiento): string
+    {
+        $descripcion = trim((string) $movimiento['descripcion']);
+        if ($descripcion !== '') {
+            return $descripcion;
+        }
+
+        $concepto = trim((string) $movimiento['concepto']);
+
+        return $concepto !== '' ? $concepto : 'Movimiento '.$movimiento['numero_movimiento'];
+    }
+
+    /**
+     * @param array<string, mixed> $movimiento
+     */
+    private function ordenLitoralGasDetalle(array $movimiento): int
+    {
+        $descripcion = $this->normalizarTexto((string) $movimiento['descripcion']);
+
+        if (str_contains($descripcion, '2-2')) {
+            return 1;
+        }
+
+        if (str_contains($descripcion, '1-2')) {
+            return 2;
+        }
+
+        return 99;
+    }
+
+    /**
+     * @param array<string, mixed> $movimiento
+     */
+    private function ordenOtrosItems(array $movimiento): int
+    {
+        $codigo = trim((string) $movimiento['codigo_concepto']);
+        $descripcion = $this->normalizarTexto((string) $movimiento['descripcion']);
+
+        if ($codigo === '32' && str_contains($descripcion, 'GASTOS BANCARIOS')) {
+            return 1;
+        }
+
+        if ($codigo === '32' && str_contains($descripcion, 'LITORAL GAS')) {
+            return 2;
+        }
+
+        if ($codigo === '32' && str_contains($descripcion, 'EXP.COMUNES')) {
+            return 3;
+        }
+
+        if ($codigo === '43') {
+            return 4;
+        }
+
+        return 99;
     }
 
     private function decimalToCents(string $value): int

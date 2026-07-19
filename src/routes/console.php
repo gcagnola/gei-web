@@ -65,13 +65,15 @@ Artisan::command('gei:web-liquidacion-propietario-piloto
     {--periodo=}
     {--detalle-limite=200}
     {--clasificar-movimientos}
+    {--construir-items}
     {--total-esperado=}', function (WebLiquidacionPropietarioPilotService $service) {
         $resultado = $service->reconstruir(
             (string) $this->argument('cuenta'),
             $this->option('periodo') ? (string) $this->option('periodo') : null,
             max(1, (int) $this->option('detalle-limite')),
             (bool) $this->option('clasificar-movimientos'),
-            $this->option('total-esperado') ? (string) $this->option('total-esperado') : null
+            $this->option('total-esperado') ? (string) $this->option('total-esperado') : null,
+            (bool) $this->option('construir-items')
         );
 
         $this->line(json_encode($resultado, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
