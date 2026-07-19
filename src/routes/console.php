@@ -4,6 +4,7 @@ use App\Services\ImportadorPythonService;
 use App\Services\MigracionKngGeiPostgresqlService;
 use App\Services\ValidacionKngGeiPostgresqlService;
 use App\Services\WebCobolPilotImporter;
+use App\Services\WebLiquidacionPropietarioPdfPilotService;
 use App\Services\WebLiquidacionPropietarioPilotService;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
@@ -106,6 +107,27 @@ Artisan::command('gei:web-liquidacion-propietario-piloto
 
         return 0;
 })->purpose('Reconstruye una liquidacion piloto de propietario desde tablas web_* en PostgreSQL 17 temporal.');
+
+Artisan::command('gei:web-liquidacion-pdf-piloto
+    {json}
+    {--output=}', function (WebLiquidacionPropietarioPdfPilotService $service) {
+        $json = (string) $this->argument('json');
+        $output = $this->option('output') ?: preg_replace('/\.json$/', '.pdf', $json);
+
+        if (! is_string($output) || $output === '') {
+            $this->error('Debe indicarse --output o usar un JSON con extension .json.');
+
+            return 2;
+        }
+
+        $resultado = $service->generar(base_path($json), base_path($output));
+        $resultado['json'] = $json;
+        $resultado['output'] = $output;
+
+        $this->line(json_encode($resultado, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+
+        return 0;
+})->purpose('Genera un PDF piloto aislado desde JSON intermedio web_* sin recalcular liquidacion.');
 
 Artisan::command('gei:marcar-clientes-validados {--repositorio-id=} {--dry-run}', function (
     ImportadorPythonService $importadorPython
