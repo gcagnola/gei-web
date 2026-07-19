@@ -13,8 +13,13 @@ class WebLiquidacionPropietarioPilotService
     /**
      * @return array<string, mixed>
      */
-    public function reconstruir(string $cuentaPropietario, ?string $periodo = null, int $detalleLimite = 200): array
-    {
+    public function reconstruir(
+        string $cuentaPropietario,
+        ?string $periodo = null,
+        int $detalleLimite = 200,
+        bool $clasificarMovimientos = false,
+        ?string $totalEsperado = null
+    ): array {
         $version = DB::selectOne('select version() as version, current_database() as database');
         $this->assertTemporalPostgresql17((string) $version->version, (string) $version->database);
 
@@ -75,10 +80,9 @@ class WebLiquidacionPropietarioPilotService
             ->selectRaw('count(*) as cantidad, coalesce(sum(m.debe), 0) as total_debe, coalesce(sum(m.haber), 0) as total_haber, coalesce(sum(m.haber), 0) - coalesce(sum(m.debe), 0) as total_neto')
             ->first();
 
-        $movimientos = (clone $baseMovimientos)
+        $movimientosCompletos = (clone $baseMovimientos)
             ->orderBy('r.numero_linea')
             ->orderBy('m.id')
-            ->limit($detalleLimite)
             ->get([
                 'm.id',
                 'm.fecha',
@@ -100,28 +104,18 @@ class WebLiquidacionPropietarioPilotService
                 'r.numero_linea',
                 'r.hash_registro',
             ])
-            ->map(fn ($row) => [
-                'id' => (int) $row->id,
-                'fecha' => $row->fecha,
-                'periodo' => $row->periodo,
-                'codigo_concepto' => $row->codigo_concepto,
-                'concepto' => $row->concepto_catalogo ?: $row->descripcion,
-                'numero_movimiento' => $row->numero_movimiento,
-                'descripcion' => $row->descripcion,
-                'debe' => (string) $row->debe,
-                'haber' => (string) $row->haber,
-                'importe' => (string) $row->importe,
-                'iva' => $row->iva === null ? null : (string) $row->iva,
-                'no_gravado' => $row->no_gravado === null ? null : (string) $row->no_gravado,
-                'liquidado_origen' => $row->liquidado_origen,
-                'contrato_id' => $row->contrato_id === null ? null : (int) $row->contrato_id,
-                'inquilino_id' => $row->inquilino_id === null ? null : (int) $row->inquilino_id,
-                'inmueble_id' => $row->inmueble_id === null ? null : (int) $row->inmueble_id,
-                'archivo_origen' => $row->archivo_origen,
-                'numero_linea' => $row->numero_linea === null ? null : (int) $row->numero_linea,
-                'hash_registro' => $row->hash_registro,
-            ])
+            ->map(fn ($row) => $this->movimientoPayload($row))
             ->all();
+
+        $movimientos = array_slice($movimientosCompletos, 0, $detalleLimite);
+
+        $clasificacion = $clasificarMovimientos
+            ? $this->clasificarMovimientos($movimientosCompletos, (string) $totales->total_neto, $totalEsperado)
+            : null;
+
+        if ($clasificacion !== null) {
+            $movimientos = array_slice($clasificacion['movimientos_clasificados'], 0, $detalleLimite);
+        }
 
         [$periodoInicio, $periodoFin] = $this->periodoRango($periodoUsado);
 
@@ -183,7 +177,7 @@ class WebLiquidacionPropietarioPilotService
         $totalDebe = (string) $totales->total_debe;
         $totalHaber = (string) $totales->total_haber;
 
-        return [
+        $resultado = [
             'database' => $version->database,
             'postgresql_version' => $version->version,
             'estado' => 'LIQUIDACION_PILOTO_RECONSTRUIDA',
@@ -199,8 +193,178 @@ class WebLiquidacionPropietarioPilotService
             'detalle_movimientos' => $movimientos,
             'contratos_inquilinos_relacionados' => $contratos,
             'movimientos_sin_contrato' => $movimientosSinContrato,
-            'advertencias' => $this->advertencias($movimientosSinContrato, count($contratos)),
+            'advertencias' => $this->advertencias($movimientosSinContrato, count($contratos), $clasificarMovimientos),
         ];
+
+        if ($clasificacion !== null) {
+            $resultado['clasificacion_movimientos'] = $clasificacion;
+        }
+
+        return $resultado;
+    }
+
+    /**
+     * @param object $row
+     * @return array<string, mixed>
+     */
+    private function movimientoPayload(object $row): array
+    {
+        return [
+                'id' => (int) $row->id,
+                'fecha' => $row->fecha,
+                'periodo' => $row->periodo,
+                'codigo_concepto' => $row->codigo_concepto,
+                'concepto' => $row->concepto_catalogo ?: $row->descripcion,
+                'numero_movimiento' => $row->numero_movimiento,
+                'descripcion' => $row->descripcion,
+                'debe' => (string) $row->debe,
+                'haber' => (string) $row->haber,
+                'importe' => (string) $row->importe,
+                'iva' => $row->iva === null ? null : (string) $row->iva,
+                'no_gravado' => $row->no_gravado === null ? null : (string) $row->no_gravado,
+                'liquidado_origen' => $row->liquidado_origen,
+                'contrato_id' => $row->contrato_id === null ? null : (int) $row->contrato_id,
+                'inquilino_id' => $row->inquilino_id === null ? null : (int) $row->inquilino_id,
+                'inmueble_id' => $row->inmueble_id === null ? null : (int) $row->inmueble_id,
+                'archivo_origen' => $row->archivo_origen,
+                'numero_linea' => $row->numero_linea === null ? null : (int) $row->numero_linea,
+                'hash_registro' => $row->hash_registro,
+        ];
+    }
+
+    /**
+     * @param list<array<string, mixed>> $movimientos
+     * @return array<string, mixed>
+     */
+    private function clasificarMovimientos(array $movimientos, string $netoCrudo, ?string $totalEsperado): array
+    {
+        $incluidos = [];
+        $excluidos = [];
+        $debeIncluido = 0;
+        $haberIncluido = 0;
+        $debeExcluido = 0;
+        $haberExcluido = 0;
+        $movimientosClasificados = [];
+
+        foreach ($movimientos as $movimiento) {
+            $clasificacion = $this->clasificarMovimiento($movimiento);
+            $movimientoClasificado = [
+                ...$movimiento,
+                'clasificacion' => $clasificacion['clasificacion'],
+                'liquidable' => $clasificacion['liquidable'],
+                'motivo_clasificacion' => $clasificacion['motivo'],
+                'regla_aplicada' => $clasificacion['regla'],
+            ];
+
+            $debe = $this->decimalToCents((string) $movimiento['debe']);
+            $haber = $this->decimalToCents((string) $movimiento['haber']);
+
+            if ($clasificacion['liquidable']) {
+                $debeIncluido += $debe;
+                $haberIncluido += $haber;
+                $incluidos[] = $movimientoClasificado;
+            } else {
+                $debeExcluido += $debe;
+                $haberExcluido += $haber;
+                $excluidos[] = $movimientoClasificado;
+            }
+
+            $movimientosClasificados[] = $movimientoClasificado;
+        }
+
+        $totalLiquidable = $haberIncluido - $debeIncluido;
+        $totalEsperadoCents = $totalEsperado === null ? null : $this->decimalToCents($totalEsperado);
+
+        return [
+            'version_regla' => 'EXPERIMENTAL_GIMB23_v1',
+            'clasificaciones_disponibles' => [
+                'LIQUIDABLE',
+                'NO_LIQUIDABLE',
+                'REFERENCIA_LIQUIDACION_ANTERIOR',
+                'REGLA_PENDIENTE_COBOL',
+            ],
+            'total_crudo' => $this->centsToDecimal($this->decimalToCents($netoCrudo)),
+            'debe_liquidable' => $this->centsToDecimal($debeIncluido),
+            'haber_liquidable' => $this->centsToDecimal($haberIncluido),
+            'total_liquidable' => $this->centsToDecimal($totalLiquidable),
+            'debe_excluido_no_liquidable' => $this->centsToDecimal($debeExcluido),
+            'haber_excluido_no_liquidable' => $this->centsToDecimal($haberExcluido),
+            'total_excluido_no_liquidable' => $this->centsToDecimal($debeExcluido - $haberExcluido),
+            'total_historico_esperado' => $totalEsperado,
+            'diferencia_con_historico' => $totalEsperadoCents === null
+                ? null
+                : $this->centsToDecimal($totalLiquidable - $totalEsperadoCents),
+            'cantidad_incluidos' => count($incluidos),
+            'cantidad_excluidos' => count($excluidos),
+            'movimientos_clasificados' => $movimientosClasificados,
+            'movimientos_incluidos' => $incluidos,
+            'movimientos_excluidos' => $excluidos,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $movimiento
+     * @return array{clasificacion: string, liquidable: bool, motivo: string, regla: string}
+     */
+    private function clasificarMovimiento(array $movimiento): array
+    {
+        $codigo = trim((string) $movimiento['codigo_concepto']);
+        $descripcion = $this->normalizarTexto((string) $movimiento['descripcion']);
+
+        if ($codigo === '29' || str_contains($descripcion, 'PAGO LIQ')) {
+            return [
+                'clasificacion' => 'REFERENCIA_LIQUIDACION_ANTERIOR',
+                'liquidable' => false,
+                'motivo' => 'Movimiento de pago/cancelacion de liquidacion anterior; se conserva como referencia y no descuenta el total corriente.',
+                'regla' => 'EXPERIMENTAL_GIMB23: codigo 29 o detalle con Pago Liq.',
+            ];
+        }
+
+        return [
+            'clasificacion' => 'LIQUIDABLE',
+            'liquidable' => true,
+            'motivo' => 'Movimiento incluido en el total corriente por regla experimental inicial.',
+            'regla' => 'EXPERIMENTAL_GIMB23: inclusion por defecto hasta modelar GIMB23 completo.',
+        ];
+    }
+
+    private function decimalToCents(string $value): int
+    {
+        $normalized = trim(str_replace(',', '.', $value));
+        $negative = str_starts_with($normalized, '-');
+        $normalized = ltrim($normalized, '+-');
+        [$integer, $decimal] = array_pad(explode('.', $normalized, 2), 2, '0');
+        $decimal = substr(str_pad($decimal, 2, '0'), 0, 2);
+        $cents = ((int) $integer * 100) + (int) $decimal;
+
+        return $negative ? -$cents : $cents;
+    }
+
+    private function centsToDecimal(int $cents): string
+    {
+        $negative = $cents < 0;
+        $absolute = abs($cents);
+        $value = intdiv($absolute, 100).'.'.str_pad((string) ($absolute % 100), 2, '0', STR_PAD_LEFT);
+
+        return $negative ? "-{$value}" : $value;
+    }
+
+    private function normalizarTexto(string $texto): string
+    {
+        $texto = strtr($texto, [
+            'á' => 'a',
+            'é' => 'e',
+            'í' => 'i',
+            'ó' => 'o',
+            'ú' => 'u',
+            'Á' => 'A',
+            'É' => 'E',
+            'Í' => 'I',
+            'Ó' => 'O',
+            'Ú' => 'U',
+        ]);
+
+        return strtoupper($texto);
     }
 
     private function assertTemporalPostgresql17(string $version, string $database): void
@@ -290,7 +454,7 @@ class WebLiquidacionPropietarioPilotService
     /**
      * @return list<string>
      */
-    private function advertencias(int $movimientosSinContrato, int $contratosRelacionados): array
+    private function advertencias(int $movimientosSinContrato, int $contratosRelacionados, bool $clasificarMovimientos = false): array
     {
         $advertencias = [
             'REGLA_PENDIENTE_COBOL: esta reconstruccion suma movimientos de propietario por periodo; aun no reproduce GIMB23 completo.',
@@ -303,6 +467,10 @@ class WebLiquidacionPropietarioPilotService
 
         if ($contratosRelacionados === 0) {
             $advertencias[] = 'No se encontraron contratos/inquilinos relacionados para el propietario en el periodo usado.';
+        }
+
+        if ($clasificarMovimientos) {
+            $advertencias[] = 'EXPERIMENTAL_GIMB23: la clasificacion de movimientos solo excluye pagos de liquidaciones anteriores; no es regla definitiva.';
         }
 
         return $advertencias;

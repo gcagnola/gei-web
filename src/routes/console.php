@@ -63,11 +63,15 @@ Artisan::command('gei:web-importar-cobol-piloto
 Artisan::command('gei:web-liquidacion-propietario-piloto
     {cuenta=12020240300}
     {--periodo=}
-    {--detalle-limite=200}', function (WebLiquidacionPropietarioPilotService $service) {
+    {--detalle-limite=200}
+    {--clasificar-movimientos}
+    {--total-esperado=}', function (WebLiquidacionPropietarioPilotService $service) {
         $resultado = $service->reconstruir(
             (string) $this->argument('cuenta'),
             $this->option('periodo') ? (string) $this->option('periodo') : null,
-            max(1, (int) $this->option('detalle-limite'))
+            max(1, (int) $this->option('detalle-limite')),
+            (bool) $this->option('clasificar-movimientos'),
+            $this->option('total-esperado') ? (string) $this->option('total-esperado') : null
         );
 
         $this->line(json_encode($resultado, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
