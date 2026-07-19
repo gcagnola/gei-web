@@ -21,6 +21,8 @@ Artisan::command('gei:web-importar-cobol-piloto
     {--limite-movimientos-inquilino=20}
     {--cuenta-propietario=}
     {--cuenta-inquilino=}
+    {--modo=piloto}
+    {--chunk-size=5000}
     {--sin-limite}
     {--dry-run}', function (WebCobolPilotImporter $importer) {
         $database = DB::connection()->getDatabaseName();
@@ -39,6 +41,8 @@ Artisan::command('gei:web-importar-cobol-piloto
         }
 
         $resultado = $importer->importar([
+            'modo' => (string) $this->option('modo'),
+            'chunk_size' => max(100, (int) $this->option('chunk-size')),
             'base_dir' => (string) $this->option('base-dir'),
             'limite_propietarios' => $this->option('sin-limite') ? null : max(0, (int) $this->option('limite-propietarios')),
             'limite_inquilinos' => $this->option('sin-limite') ? null : max(0, (int) $this->option('limite-inquilinos')),
