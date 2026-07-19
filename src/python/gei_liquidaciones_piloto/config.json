@@ -1,0 +1,19 @@
+{
+  "encoding": "cp1252",
+  "punto_venta": 0,
+  "no_sobrescribir": true,
+  "empresa": {
+    "razon_social": "GUASTAVINO E IMBERT & CIA. S.R.L.",
+    "domicilio": "San Martin 2765",
+    "localidad": "Santa Fe - 3000",
+    "cuit": "30-52890985-6",
+    "ingresos_brutos": "011-000567-4",
+    "dri": "00301",
+    "inicio_actividades": "01/03/1955"
+  },
+  "estilo": {
+    "violeta": "#a000a8",
+    "violeta_claro": "#d8afea",
+    "violeta_importes": "#ead7f5"
+  }
+}
