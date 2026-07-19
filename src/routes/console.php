@@ -4,6 +4,7 @@ use App\Services\ImportadorPythonService;
 use App\Services\MigracionKngGeiPostgresqlService;
 use App\Services\ValidacionKngGeiPostgresqlService;
 use App\Services\WebCobolPilotImporter;
+use App\Services\WebLiquidacionPropietarioPilotService;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -58,6 +59,21 @@ Artisan::command('gei:web-importar-cobol-piloto
 
         return 0;
 })->purpose('Importador piloto COBOL limitado para tablas web_* en base temporal.');
+
+Artisan::command('gei:web-liquidacion-propietario-piloto
+    {cuenta=12020240300}
+    {--periodo=}
+    {--detalle-limite=200}', function (WebLiquidacionPropietarioPilotService $service) {
+        $resultado = $service->reconstruir(
+            (string) $this->argument('cuenta'),
+            $this->option('periodo') ? (string) $this->option('periodo') : null,
+            max(1, (int) $this->option('detalle-limite'))
+        );
+
+        $this->line(json_encode($resultado, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+
+        return 0;
+})->purpose('Reconstruye una liquidacion piloto de propietario desde tablas web_* en PostgreSQL 17 temporal.');
 
 Artisan::command('gei:marcar-clientes-validados {--repositorio-id=} {--dry-run}', function (
     ImportadorPythonService $importadorPython
