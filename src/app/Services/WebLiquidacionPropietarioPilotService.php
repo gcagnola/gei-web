@@ -219,6 +219,94 @@ class WebLiquidacionPropietarioPilotService
     }
 
     /**
+     * @param array<string, mixed> $resultado
+     * @return array<string, mixed>
+     */
+    public function jsonIntermedio(array $resultado): array
+    {
+        $itemsExperimentales = $resultado['items_experimentales'] ?? [];
+        $clasificacion = $resultado['clasificacion_movimientos'] ?? [];
+        $propietario = $resultado['propietario'] ?? [];
+        $periodo = (string) ($resultado['periodo_usado'] ?? '');
+        $cuenta = (string) ($resultado['cuenta_propietario'] ?? '');
+        $comprobanteHistorico = $this->comprobanteHistoricoPiloto($cuenta, $periodo);
+        $advertencias = array_values(array_unique(array_merge(
+            (array) ($resultado['advertencias'] ?? []),
+            (array) ($itemsExperimentales['advertencias'] ?? []),
+            [
+                'EXPERIMENTAL_NO_PRODUCTIVO: JSON intermedio para PDF piloto controlado; no usar como salida productiva.',
+                'REGLA_PENDIENTE_COBOL: faltan validaciones ampliadas de GIMB23/GIMB98 antes de generalizar.',
+            ]
+        )));
+
+        return [
+            'metadata' => [
+                'version_regla' => $itemsExperimentales['version_regla'] ?? 'EXPERIMENTAL_GIMB23_ITEM_BUILDER_v1',
+                'generado_en' => now()->toIso8601String(),
+                'origen' => 'WEB_PILOTO',
+                'base' => $resultado['database'] ?? null,
+                'postgresql_version' => $resultado['postgresql_version'] ?? null,
+                'advertencia' => 'EXPERIMENTAL_NO_PRODUCTIVO',
+            ],
+            'encabezado' => [
+                'cuenta_propietario' => $cuenta,
+                'propietario' => $propietario,
+                'periodo' => $periodo,
+                'periodo_texto' => $this->periodoTexto($periodo),
+                'comprobante_historico_tipo' => $comprobanteHistorico['tipo'],
+                'comprobante_historico_numero' => $comprobanteHistorico['numero'],
+                'total_historico_esperado' => $itemsExperimentales['total_historico_esperado'] ?? $clasificacion['total_historico_esperado'] ?? null,
+                'total_movimientos_liquidables' => $itemsExperimentales['total_liquidable_desde_movimientos'] ?? $clasificacion['total_liquidable'] ?? null,
+                'total_items' => $itemsExperimentales['total_items'] ?? null,
+                'diferencia' => $itemsExperimentales['diferencia_items_vs_historico'] ?? $clasificacion['diferencia_con_historico'] ?? null,
+            ],
+            'resumen' => [
+                'movimientos_totales' => $resultado['cantidad_movimientos'] ?? null,
+                'movimientos_liquidables' => $itemsExperimentales['cantidad_movimientos_liquidables'] ?? $clasificacion['cantidad_incluidos'] ?? null,
+                'movimientos_excluidos' => $itemsExperimentales['cantidad_movimientos_excluidos'] ?? $clasificacion['cantidad_excluidos'] ?? null,
+                'items_construidos' => $itemsExperimentales['cantidad_items_construidos'] ?? null,
+                'movimientos_agrupados' => $itemsExperimentales['cantidad_movimientos_agrupados'] ?? null,
+            ],
+            'items' => array_map(fn (array $item): array => [
+                'orden' => $item['orden_experimental'],
+                'codigo' => $item['codigo_origen'],
+                'codigo_item' => $item['codigo_item'],
+                'descripcion' => $item['descripcion'],
+                'debe' => $item['debe'],
+                'haber' => $item['haber'],
+                'total' => $item['total'],
+                'clasificacion' => $item['clasificacion'],
+                'regla_aplicada' => $item['regla_aplicada'],
+                'movimientos_origen_ids' => $item['movimientos_origen_ids'],
+                'numeros_movimiento_origen' => $item['numeros_movimiento_origen'],
+                'cantidad_movimientos_origen' => $item['cantidad_movimientos_origen'],
+                'advertencias' => $item['advertencias'],
+            ], (array) ($itemsExperimentales['items'] ?? [])),
+            'movimientos_excluidos' => array_map(fn (array $movimiento): array => [
+                'id' => $movimiento['id'],
+                'codigo' => $movimiento['codigo_concepto'],
+                'detalle' => $movimiento['descripcion'],
+                'importe' => $movimiento['importe'],
+                'debe' => $movimiento['debe'],
+                'haber' => $movimiento['haber'],
+                'clasificacion' => $movimiento['clasificacion'],
+                'regla_aplicada' => $movimiento['regla_aplicada'],
+                'motivo' => $movimiento['motivo_clasificacion'],
+            ], (array) ($itemsExperimentales['movimientos_excluidos'] ?? $clasificacion['movimientos_excluidos'] ?? [])),
+            'agrupaciones' => array_map(fn (array $agrupacion): array => [
+                'codigo_origen' => $agrupacion['codigo_origen'],
+                'descripcion' => $agrupacion['descripcion'],
+                'cantidad_movimientos' => $agrupacion['cantidad_movimientos'],
+                'total' => $agrupacion['debe_neto'] ?? $agrupacion['debe'] ?? null,
+                'debe_bruto' => $agrupacion['debe_bruto'] ?? null,
+                'iva' => $agrupacion['iva'] ?? null,
+                'regla_aplicada' => 'EXPERIMENTAL_GIMB23_ITEM_BUILDER',
+            ], (array) ($itemsExperimentales['agrupaciones'] ?? [])),
+            'advertencias' => $advertencias,
+        ];
+    }
+
+    /**
      * @param object $row
      * @return array<string, mixed>
      */
@@ -622,6 +710,51 @@ class WebLiquidacionPropietarioPilotService
         $concepto = trim((string) $movimiento['concepto']);
 
         return $concepto !== '' ? $concepto : 'Movimiento '.$movimiento['numero_movimiento'];
+    }
+
+    /**
+     * @return array{tipo: string|null, numero: string|null}
+     */
+    private function comprobanteHistoricoPiloto(string $cuentaPropietario, string $periodo): array
+    {
+        if ($cuentaPropietario === '12020750010' && $periodo === '202606') {
+            return [
+                'tipo' => 'A',
+                'numero' => '00363119',
+            ];
+        }
+
+        return [
+            'tipo' => null,
+            'numero' => null,
+        ];
+    }
+
+    private function periodoTexto(string $periodo): ?string
+    {
+        if (! preg_match('/^\d{6}$/', $periodo)) {
+            return null;
+        }
+
+        $meses = [
+            '01' => 'ENERO',
+            '02' => 'FEBRERO',
+            '03' => 'MARZO',
+            '04' => 'ABRIL',
+            '05' => 'MAYO',
+            '06' => 'JUNIO',
+            '07' => 'JULIO',
+            '08' => 'AGOSTO',
+            '09' => 'SEPTIEMBRE',
+            '10' => 'OCTUBRE',
+            '11' => 'NOVIEMBRE',
+            '12' => 'DICIEMBRE',
+        ];
+
+        $mes = substr($periodo, 4, 2);
+        $anio = substr($periodo, 0, 4);
+
+        return isset($meses[$mes]) ? "{$meses[$mes]} {$anio}" : null;
     }
 
     /**

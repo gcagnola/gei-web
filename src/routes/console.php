@@ -8,6 +8,7 @@ use App\Services\WebLiquidacionPropietarioPilotService;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
 
 Artisan::command('inspire', function () {
@@ -66,15 +67,40 @@ Artisan::command('gei:web-liquidacion-propietario-piloto
     {--detalle-limite=200}
     {--clasificar-movimientos}
     {--construir-items}
+    {--export-json}
+    {--output=}
     {--total-esperado=}', function (WebLiquidacionPropietarioPilotService $service) {
+        $exportJson = (bool) $this->option('export-json');
+        $construirItems = (bool) $this->option('construir-items') || $exportJson;
         $resultado = $service->reconstruir(
             (string) $this->argument('cuenta'),
             $this->option('periodo') ? (string) $this->option('periodo') : null,
             max(1, (int) $this->option('detalle-limite')),
-            (bool) $this->option('clasificar-movimientos'),
+            (bool) $this->option('clasificar-movimientos') || $exportJson,
             $this->option('total-esperado') ? (string) $this->option('total-esperado') : null,
-            (bool) $this->option('construir-items')
+            $construirItems
         );
+
+        if ($exportJson) {
+            $payload = $service->jsonIntermedio($resultado);
+            $periodo = $resultado['periodo_usado'] ?? 'sin_periodo';
+            $output = $this->option('output') ?: "storage/app/private/liquidaciones/piloto/{$this->argument('cuenta')}_{$periodo}/liquidacion_web_piloto.json";
+            $outputPath = base_path((string) $output);
+
+            File::ensureDirectoryExists(dirname($outputPath));
+            File::put($outputPath, json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES).PHP_EOL);
+
+            $this->line(json_encode([
+                'estado' => 'JSON_INTERMEDIO_EXPORTADO',
+                'output' => $output,
+                'bytes' => File::size($outputPath),
+                'total_items' => $payload['encabezado']['total_items'],
+                'diferencia' => $payload['encabezado']['diferencia'],
+                'items' => $payload['resumen']['items_construidos'],
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+
+            return 0;
+        }
 
         $this->line(json_encode($resultado, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
 
