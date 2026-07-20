@@ -10,6 +10,8 @@ RUN apt-get update \
         git \
         curl \
         python3 \
+        python3-venv \
+        python3-pip \
         python3-psycopg \
         unzip \
         zip \
@@ -40,6 +42,13 @@ RUN groupmod -o -g "${GID}" www-data \
     && usermod -o -u "${UID}" -g www-data www-data
 
 WORKDIR /var/www/html
+
+COPY src/python/gei_liquidaciones_piloto/requirements.txt /tmp/gei_pdf_requirements.txt
+
+RUN python3 -m venv /opt/gei-python \
+    && /opt/gei-python/bin/pip install --upgrade pip \
+    && /opt/gei-python/bin/pip install --no-cache-dir -r /tmp/gei_pdf_requirements.txt \
+    && rm -f /tmp/gei_pdf_requirements.txt
 
 COPY docker/apache/000-default.conf /etc/apache2/sites-available/000-default.conf
 

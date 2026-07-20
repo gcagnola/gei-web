@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
+use Symfony\Component\Process\Process;
 
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
@@ -352,3 +353,76 @@ Artisan::command('gei:migrar-kng-gei-postgresql {importacion_id?} {--confirmar} 
 
     return 0;
 })->purpose('Valida por defecto staging KNG/GeI contra Fox; solo escribe heredadas con --confirmar explicito.');
+
+Artisan::command('gei:web-liquidacion-reportlab-piloto {json} {--output=}', function () {
+    $jsonPath = base_path($this->argument('json'));
+
+    if (! file_exists($jsonPath)) {
+        $this->error("No existe el JSON: {$jsonPath}");
+        return 1;
+    }
+
+    $output = $this->option('output');
+
+    if ($output === null || $output === '') {
+        $dir = dirname($jsonPath);
+        $outputPath = $dir . DIRECTORY_SEPARATOR . 'liquidacion_web_piloto_reportlab_artisan.pdf';
+    } else {
+        $outputPath = base_path($output);
+    }
+
+    $python = env('GEI_PDF_PYTHON', '/opt/gei-python/bin/python');
+    $script = base_path('python/gei_liquidaciones_piloto/pdf_desde_json_web_piloto.py');
+
+    if (! file_exists($python)) {
+        $this->error("No existe el runtime Python: {$python}");
+        return 1;
+    }
+
+    if (! file_exists($script)) {
+        $this->error("No existe el script piloto: {$script}");
+        return 1;
+    }
+
+    if (! is_dir(dirname($outputPath))) {
+        mkdir(dirname($outputPath), 0775, true);
+    }
+
+    $cmd = [
+        $python,
+        $script,
+        $jsonPath,
+        '--output',
+        $outputPath,
+    ];
+
+    $process = new Symfony\Component\Process\Process($cmd, base_path());
+    $process->setTimeout(120);
+    $process->run();
+
+    if (! $process->isSuccessful()) {
+        $this->error('Falló la generación PDF piloto.');
+        $this->line($process->getErrorOutput());
+        $this->line($process->getOutput());
+        return 1;
+    }
+
+    if (! file_exists($outputPath) || filesize($outputPath) <= 0) {
+        $this->error("El PDF no fue generado correctamente: {$outputPath}");
+        return 1;
+    }
+
+    $header = file_get_contents($outputPath, false, null, 0, 5);
+
+    if ($header !== '%PDF-') {
+        $this->error("El archivo generado no parece PDF válido: {$outputPath}");
+        return 1;
+    }
+
+    $this->info('PDF piloto ReportLab generado correctamente.');
+    $this->line("JSON: {$jsonPath}");
+    $this->line("PDF: {$outputPath}");
+    $this->line('Tamaño: ' . filesize($outputPath) . ' bytes');
+
+    return 0;
+});
