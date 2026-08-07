@@ -1,11 +1,10 @@
 <?php
 
-use App\Http\Controllers\ActualizarDbController;
 use App\Http\Controllers\Auth\LoginController;
 use App\Http\Controllers\Auth\RecuperarClaveController;
 use App\Http\Controllers\ClienteController;
-use App\Http\Controllers\ClienteLiquidacionController;
 use App\Http\Controllers\ImportacionArchivosController;
+use App\Http\Controllers\LiquidacionPropietarioController;
 use Illuminate\Support\Facades\Route;
 
 Route::middleware('guest')->group(function () {
@@ -46,60 +45,18 @@ Route::middleware('auth')->group(function () {
         ]);
     };
 
-    Route::get(
-        '/archivo/clientes/localidades',
-        [ClienteController::class, 'localidades']
-    )->name('clientes.localidades');
-
-    Route::get(
-        '/archivo/clientes/pendientes-validacion.csv',
-        [ClienteController::class, 'exportarPendientesValidacion']
-    )->name('clientes.validacion-pendientes.csv');
-
-    Route::get(
-        '/archivo/clientes/{cliente}/liquidaciones/{liquidacion}/ver',
-        [ClienteLiquidacionController::class, 'ver']
-    )->name('clientes.liquidaciones.ver');
-
-    Route::get(
-        '/archivo/clientes/{cliente}/liquidaciones/{liquidacion}/descargar',
-        [ClienteLiquidacionController::class, 'descargar']
-    )->name('clientes.liquidaciones.descargar');
-
-    Route::post(
-        '/archivo/clientes/{cliente}/liquidaciones/{liquidacion}/enviar',
-        [ClienteLiquidacionController::class, 'enviar']
-    )->name('clientes.liquidaciones.enviar');
-
     Route::get('/archivo/importar', [ImportacionArchivosController::class, 'index'])
         ->name('archivo.importar');
 
     Route::post('/archivo/importar', [ImportacionArchivosController::class, 'store'])
         ->name('archivo.importar.store');
 
-    Route::get('/archivo/actualizar-db', [ActualizarDbController::class, 'index'])
-        ->name('archivo.actualizar-db');
-
-    Route::post('/archivo/actualizar-db/validar-cobol', [ActualizarDbController::class, 'validarCobol'])
-        ->name('archivo.actualizar-db.validar-cobol');
-
-    Route::post('/archivo/actualizar-db/comparar-cobol', [ActualizarDbController::class, 'compararCobol'])
-        ->name('archivo.actualizar-db.comparar-cobol');
-
-    Route::post('/archivo/actualizar-db/validar-lote', [ActualizarDbController::class, 'validarLoteMigracion'])
-        ->name('archivo.actualizar-db.validar-lote');
-
-    Route::post('/archivo/actualizar-db/importar-lote', [ActualizarDbController::class, 'importarLoteMigracion'])
-        ->name('archivo.actualizar-db.importar-lote');
-
-    Route::post('/archivo/actualizar-db/reconciliar-lote', [ActualizarDbController::class, 'reconciliarLoteMigracion'])
-        ->name('archivo.actualizar-db.reconciliar-lote');
-
-    Route::post('/archivo/actualizar-db/simular-persistencia-postgresql', [ActualizarDbController::class, 'simularPersistenciaPostgresql'])
-        ->name('archivo.actualizar-db.simular-persistencia-postgresql');
-
-    Route::get('/archivo/clientes/cuenta-corriente', $modulo('Cuenta Corriente de Clientes', 'Archivo / Clientes'))
-        ->name('clientes.cuenta-corriente');
+    Route::post(
+        '/archivo/importar/{periodo}/migrar',
+        [ImportacionArchivosController::class, 'migrar']
+    )
+        ->where('periodo', '(19|20)[0-9]{2}(0[1-9]|1[0-2])')
+        ->name('archivo.importar.migrar');
 
     Route::resource('/archivo/clientes', ClienteController::class)
         ->parameters(['clientes' => 'cliente'])
@@ -113,10 +70,23 @@ Route::middleware('auth')->group(function () {
     Route::get('/archivo/contratos', $modulo('Contratos', 'Archivo'))
         ->name('contratos.index');
 
-    Route::get('/propietarios/liquidaciones', $modulo('Administrador de Liquidaciones', 'Propietarios'))
+    Route::get('/propietarios/liquidaciones', [LiquidacionPropietarioController::class, 'index'])
         ->name('propietarios.liquidaciones.index');
-    Route::get('/propietarios/liquidaciones/generar', $modulo('Generar Liquidación de Propietarios', 'Propietarios'))
+    Route::get('/propietarios/liquidaciones/generar', [LiquidacionPropietarioController::class, 'index'])
         ->name('propietarios.liquidaciones.generar');
+    Route::post('/propietarios/liquidaciones/generar', [LiquidacionPropietarioController::class, 'procesar'])
+        ->name('propietarios.liquidaciones.procesar');
+    Route::post('/propietarios/liquidaciones/enviar-emails', [LiquidacionPropietarioController::class, 'enviarEmails'])
+        ->name('propietarios.liquidaciones.enviar-emails');
+    Route::post('/propietarios/liquidaciones/{liquidacion}/enviar-email', [LiquidacionPropietarioController::class, 'enviarEmail'])
+        ->whereNumber('liquidacion')
+        ->name('propietarios.liquidaciones.enviar-email');
+    Route::get('/propietarios/liquidaciones/{liquidacion}/ver', [LiquidacionPropietarioController::class, 'ver'])
+        ->whereNumber('liquidacion')
+        ->name('propietarios.liquidaciones.ver');
+    Route::get('/propietarios/liquidaciones/{liquidacion}/descargar', [LiquidacionPropietarioController::class, 'descargar'])
+        ->whereNumber('liquidacion')
+        ->name('propietarios.liquidaciones.descargar');
     Route::get('/propietarios/saldos', $modulo('Consulta de saldos de Propietarios', 'Propietarios'))
         ->name('propietarios.saldos');
 

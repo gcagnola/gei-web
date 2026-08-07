@@ -6,7 +6,7 @@
 @section('content')
     <header class="gei-page-heading">
         <h1>Modificar cliente</h1>
-        <p>{{ $cliente->nombre_visible }} · Código {{ $cliente->codigo_cliente }}</p>
+        <p>{{ $cliente->nombre_visible }} · Cliente #{{ $cliente->id }}</p>
     </header>
 
     @include('clientes.partials.formulario')

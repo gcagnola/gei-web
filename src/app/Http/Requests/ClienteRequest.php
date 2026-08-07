@@ -3,8 +3,6 @@
 namespace App\Http\Requests;
 
 use App\Models\Cliente;
-use App\Rules\DocumentoClienteUnico;
-use App\Services\NormalizadorDocumentoCliente;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -17,109 +15,65 @@ abstract class ClienteRequest extends FormRequest
 
     protected function prepareForValidation(): void
     {
-        $personeria = trim((string) $this->input('personeria'));
-        $tipoDocumento = trim((string) $this->input('doctipo'));
-        $cuit = NormalizadorDocumentoCliente::cuit($this->input('cuit'));
-        $cliente = $this->route('cliente');
-
-        if (
-            $personeria === 'Jurídica'
-            && (
-                ! $cliente instanceof Cliente
-                || trim((string) $cliente->personeria) !== 'Jurídica'
-            )
-        ) {
-            $tipoDocumento = 'CUIT';
+        foreach ([
+            'tipo_persona', 'nombre', 'tipo_documento', 'numero_documento',
+            'cuit', 'condicion_iva', 'domicilio', 'codigo_postal', 'localidad',
+            'provincia', 'telefono', 'telefono_alternativo', 'email',
+        ] as $campo) {
+            if ($this->has($campo)) {
+                $this->merge([$campo => trim((string) $this->input($campo))]);
+            }
         }
 
-        $numeroDocumento = $personeria === 'Jurídica'
-            && $tipoDocumento === 'CUIT'
-                ? $cuit
-                : NormalizadorDocumentoCliente::documento(
-                    $tipoDocumento,
-                    $this->input('docnro')
-                );
-
         $this->merge([
-            'personeria' => $personeria,
-            'doctipo' => $tipoDocumento,
-            'docnro' => $numeroDocumento,
-            'cuit' => $cuit,
+            'tipo_persona' => strtoupper((string) $this->input('tipo_persona')),
+            'tipo_documento' => strtoupper((string) $this->input('tipo_documento')),
+            'numero_documento' => preg_replace('/\D+/', '', (string) $this->input('numero_documento')),
+            'cuit' => preg_replace('/\D+/', '', (string) $this->input('cuit')),
+            'activo' => $this->boolean('activo'),
         ]);
     }
 
     public function rules(): array
     {
         $cliente = $this->route('cliente');
-        $codigoCliente = $cliente instanceof Cliente
-            ? (int) $cliente->codigo_cliente
-            : null;
-        $personaFisica = $this->input('personeria') === 'Física';
+        $clienteId = $cliente instanceof Cliente ? $cliente->id : null;
+        $tipoDocumento = (string) $this->input('tipo_documento');
 
         return [
-            'personeria' => ['required', Rule::in(['Física', 'Jurídica'])],
-            'apellidos' => [
-                Rule::requiredIf($personaFisica),
+            'tipo_persona' => ['required', Rule::in(['FISICA', 'JURIDICA', 'DESCONOCIDA'])],
+            'nombre' => ['required', 'string', 'max:180'],
+            'tipo_documento' => ['nullable', Rule::in(['DNI', 'LC', 'LE', 'CUIT', 'CEDULA', 'PASAPORTE', 'OTRO'])],
+            'numero_documento' => [
                 'nullable',
                 'string',
-                'max:40',
+                'max:30',
+                Rule::unique('clientes', 'numero_documento')
+                    ->ignore($clienteId)
+                    ->where(fn ($query) => $query->where('tipo_documento', $tipoDocumento)),
             ],
-            'nombres' => [
-                Rule::requiredIf($personaFisica),
-                'nullable',
-                'string',
-                'max:80',
-            ],
-            'razon_social' => [
-                Rule::requiredIf(! $personaFisica),
-                'nullable',
-                'string',
-                'max:100',
-            ],
-            'doctipo' => [
-                'required',
-                Rule::in($personaFisica
-                    ? ['DNI', 'LC', 'LE']
-                    : ['CUIT', 'DNI', 'LC', 'LE']),
-            ],
-            'docnro' => [
-                'required',
-                'string',
-                'max:12',
-                new DocumentoClienteUnico(
-                    (string) $this->input('doctipo'),
-                    $codigoCliente
-                ),
-            ],
-            'cuit' => [
-                Rule::requiredIf(! $personaFisica),
-                'nullable',
-                'digits:11',
-            ],
-            'domicilio' => ['nullable', 'string', 'max:100'],
-            'provincia' => ['required', 'string', 'max:30'],
-            'departamento' => ['nullable', 'string', 'max:30'],
-            'localidad' => ['required', 'string', 'max:50'],
-            'cp' => ['nullable', 'string', 'max:8'],
-            'caractel' => ['nullable', 'string', 'max:6'],
-            'telefonos' => ['nullable', 'string', 'max:50'],
-            'celular' => ['nullable', 'string', 'max:25'],
-            'fax' => ['nullable', 'string', 'max:25'],
-            'email' => ['nullable', 'email', 'max:255'],
-            'nacionalidad' => ['required', 'string', 'max:40'],
+            'cuit' => ['nullable', 'digits:11', Rule::unique('clientes', 'cuit')->ignore($clienteId)],
             'condicion_iva' => [
-                'required',
+                'nullable',
                 Rule::in([
-                    'Categorizado',
-                    'Consumidor Final',
-                    'Exento',
-                    'Responsable Inscripto',
-                    'Responsable Monotributo',
-                    'Sujeto no Categorizado',
+                    'RESPONSABLE_INSCRIPTO',
+                    'RESPONSABLE_NO_INSCRIPTO',
+                    'CONSUMIDOR_FINAL',
+                    'EXENTO',
+                    'MONOTRIBUTISTA',
+                    'NO_CATEGORIZADO',
                 ]),
             ],
-            'profesion' => ['nullable', 'string', 'max:100'],
-            'lugar_de_trabajo' => ['nullable', 'string', 'max:100'],
+            'domicilio' => ['nullable', 'string', 'max:180'],
+            'codigo_postal' => ['nullable', 'string', 'max:12'],
+            'localidad' => ['nullable', 'string', 'max:120'],
+            'provincia' => ['nullable', 'string', 'max:120'],
+            'telefono' => ['nullable', 'string', 'max:100'],
+            'telefono_alternativo' => ['nullable', 'string', 'max:100'],
+            'email' => ['nullable', 'email', 'max:180'],
+            'activo' => ['required', 'boolean'],
+            'roles' => ['nullable', 'array'],
+            'roles.*' => ['integer', 'exists:roles,id'],
         ];
     }
 
@@ -127,48 +81,44 @@ abstract class ClienteRequest extends FormRequest
     {
         return [
             'required' => 'El campo :attribute es obligatorio.',
+            'unique' => 'Ya existe un cliente con ese :attribute.',
             'email' => 'Ingresá un correo electrónico válido.',
             'digits' => 'El campo :attribute debe contener :digits dígitos.',
-            'max.string' => 'El campo :attribute no puede superar :max caracteres.',
-            'in' => 'El valor seleccionado para :attribute no es válido.',
         ];
     }
 
     public function attributes(): array
     {
         return [
-            'personeria' => 'personería',
-            'apellidos' => 'apellidos',
-            'nombres' => 'nombres',
-            'razon_social' => 'razón social',
-            'doctipo' => 'tipo de documento',
-            'docnro' => 'número de documento',
+            'tipo_persona' => 'tipo de persona',
+            'nombre' => 'nombre o razón social',
+            'tipo_documento' => 'tipo de documento',
+            'numero_documento' => 'número de documento',
             'cuit' => 'CUIT',
-            'domicilio' => 'domicilio',
-            'provincia' => 'provincia',
-            'localidad' => 'localidad',
             'condicion_iva' => 'condición de IVA',
         ];
     }
 
     public function datosCliente(): array
     {
-        $datos = $this->validated();
+        $datos = $this->safe()->only([
+            'tipo_persona', 'nombre', 'tipo_documento', 'numero_documento',
+            'cuit', 'condicion_iva', 'domicilio', 'codigo_postal', 'localidad',
+            'provincia', 'telefono', 'telefono_alternativo', 'email', 'activo',
+        ]);
 
         foreach ($datos as $campo => $valor) {
-            if (is_string($valor)) {
-                $datos[$campo] = trim($valor);
-            }
-
-            if ($valor === null) {
-                $datos[$campo] = '';
+            if ($valor === '') {
+                $datos[$campo] = null;
             }
         }
 
-        $datos['cuit'] = NormalizadorDocumentoCliente::cuitFormateado(
-            $datos['cuit'] ?? ''
-        );
-
         return $datos;
+    }
+
+    /** @return list<int> */
+    public function rolesIds(): array
+    {
+        return array_values(array_unique(array_map('intval', $this->validated('roles', []))));
     }
 }

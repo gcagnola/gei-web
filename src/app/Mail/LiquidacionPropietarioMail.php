@@ -3,7 +3,7 @@
 namespace App\Mail;
 
 use App\Models\Cliente;
-use App\Models\LiquidacionCliente;
+use App\Models\LiquidacionPropietario;
 use Illuminate\Bus\Queueable;
 use Illuminate\Mail\Mailables\Attachment;
 use Illuminate\Mail\Mailables\Content;
@@ -18,7 +18,7 @@ class LiquidacionPropietarioMail extends Mailable
 
     public function __construct(
         public Cliente $cliente,
-        public LiquidacionCliente $liquidacion,
+        public LiquidacionPropietario $liquidacion,
         private readonly string $rutaRelativa,
         private readonly string $nombreArchivo
     ) {}
@@ -26,7 +26,7 @@ class LiquidacionPropietarioMail extends Mailable
     public function envelope(): Envelope
     {
         return new Envelope(
-            subject: 'Liquidacion de propietario '.$this->liquidacion->periodo_limpio
+            subject: 'Liquidación de propietario - '.$this->liquidacion->periodo_formateado
         );
     }
 

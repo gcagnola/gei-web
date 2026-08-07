@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 
@@ -11,49 +12,48 @@ class Usuario extends Authenticatable
 
     protected $table = 'usuarios';
 
-    protected $primaryKey = 'cod_usuario';
-
-    public $timestamps = false;
-
-    protected $guarded = [];
+    protected $fillable = [
+        'perfil_id',
+        'nombre_usuario',
+        'nombre',
+        'email',
+        'password',
+        'activo',
+    ];
 
     protected $hidden = [
-        'clave',
-        'web_clave_hash',
-        'web_recordar_token',
+        'password',
+        'remember_token',
     ];
 
-    protected $casts = [
-        'cod_usuario' => 'integer',
-        'habilitado' => 'integer',
-        'web_intentos_fallidos' => 'integer',
-        'web_ultimo_acceso' => 'datetime',
-        'web_bloqueado_hasta' => 'datetime',
-        'web_clave_actualizada' => 'datetime',
-    ];
-
-    public function getAuthPassword(): string
+    protected function casts(): array
     {
-        return trim((string) $this->web_clave_hash);
+        return [
+            'activo' => 'boolean',
+            'intentos_fallidos' => 'integer',
+            'bloqueado_hasta' => 'datetime',
+            'ultimo_acceso' => 'datetime',
+            'password' => 'hashed',
+        ];
     }
 
-    public function getRememberTokenName(): string
+    public function perfil(): BelongsTo
     {
-        return 'web_recordar_token';
+        return $this->belongsTo(Perfil::class);
     }
 
     public function getNombreLimpioAttribute(): string
     {
-        return trim((string) $this->nombre);
+        return trim($this->nombre);
     }
 
     public function getTipoUsuarioLimpioAttribute(): string
     {
-        return trim((string) $this->tipo_de_usuario);
+        return $this->perfil?->nombre ?? '';
     }
 
     public function estaHabilitado(): bool
     {
-        return (int) $this->habilitado === 1;
+        return $this->activo;
     }
-}   
+}

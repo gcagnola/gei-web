@@ -13,6 +13,7 @@ RUN apt-get update \
         python3-venv \
         python3-pip \
         python3-psycopg \
+        postgresql-client \
         unzip \
         zip \
         libicu-dev \

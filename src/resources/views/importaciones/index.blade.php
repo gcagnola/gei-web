@@ -18,7 +18,7 @@
 
     <header class="gei-page-heading">
         <h1>Importar archivos</h1>
-        <p>Archivos COBOL vigentes y liquidaciones agrupadas por período.</p>
+        <p>Archivos COBOL y liquidaciones conservados juntos en cada período.</p>
     </header>
 
     <section class="gei-card p-4 mb-4">
@@ -47,7 +47,7 @@
             <div class="col-sm-4 col-lg-2">
                 <label for="periodo_mes" class="form-label fw-semibold">Mes</label>
                 <select id="periodo_mes" name="periodo_mes" class="form-select">
-                    <option value="">Detectar</option>
+                    <option value="">Detectar desde los archivos</option>
                     @foreach ($meses as $numero => $nombre)
                         <option value="{{ $numero }}" @selected((int) old('periodo_mes') === $numero)>
                             {{ $nombre }}
@@ -76,92 +76,235 @@
                 </button>
             </div>
         </form>
+
+        <p class="small text-muted mb-0 mt-3">
+            El período se aplica a todos los archivos de la carga. En COBOL se obtiene de la última
+            fecha válida de CTACTEPRO, INQCTACTE o PROPIETAR. INQUILINO no permite detectarlo por sí solo.
+        </p>
     </section>
 
-    <div class="row g-4">
-        <div class="col-xl-5">
-            <section class="gei-card p-4 h-100">
-                <div class="gei-section-title mb-3">
-                    <div>
-                        <h2>Archivos COBOL</h2>
-                        <p>Estos cuatro archivos se reemplazan en cada carga.</p>
-                    </div>
-                </div>
-
-                <div class="table-responsive">
-                    <table class="table table-sm align-middle mb-0">
-                        <thead>
-                            <tr>
-                                <th>Archivo</th>
-                                <th>Estado</th>
-                                <th>Fecha</th>
-                                <th class="text-end">Tamaño</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            @foreach ($archivosCobol as $archivo)
-                                <tr>
-                                    <td class="fw-semibold">{{ $archivo['nombre'] }}</td>
-                                    <td>
-                                        @if ($archivo['existe'])
-                                            <span class="badge text-bg-success">Cargado</span>
-                                        @else
-                                            <span class="badge text-bg-secondary">Faltante</span>
-                                        @endif
-                                    </td>
-                                    <td>{{ $archivo['fecha'] ?? '—' }}</td>
-                                    <td class="text-end">{{ $archivo['tamano'] ?? '—' }}</td>
-                                </tr>
-                            @endforeach
-                        </tbody>
-                    </table>
-                </div>
-            </section>
+    <section class="gei-card p-4">
+        <div class="gei-section-title mb-3">
+            <div>
+                <h2>Archivos por período</h2>
+                <p>
+                    Cada período conserva sus 4 archivos COBOL y 7 archivos obligatorios de
+                    liquidación. dailoc2.SF.txt es opcional porque continúa dailoc.SF.txt.
+                </p>
+            </div>
         </div>
 
-        <div class="col-xl-7">
-            <section class="gei-card p-4 h-100">
-                <div class="gei-section-title mb-3">
+        @forelse ($periodos as $periodo)
+            @php
+                $estadoMigracion = array_merge([
+                    'estado' => 'NO_DISPONIBLE',
+                    'disponible' => false,
+                    'mensaje' => 'La información de migración no está disponible.',
+                ], $periodo['migracion'] ?? []);
+                $estadoTablas = array_merge([
+                    'estado' => 'PENDIENTE',
+                    'mensaje' => 'Las tablas definitivas todavía no fueron actualizadas.',
+                ], $periodo['tablas'] ?? []);
+            @endphp
+            <div class="gei-periodo">
+                <div class="gei-periodo__encabezado">
                     <div>
-                        <h2>Liquidaciones por período</h2>
-                        <p>Los archivos mensuales se agrupan por mes y año.</p>
+                        <strong>{{ $periodo['etiqueta'] }}</strong>
+                        <span class="text-muted">({{ $periodo['periodo'] }})</span>
                     </div>
-                </div>
-
-                @forelse ($periodos as $periodo)
-                    <details class="gei-periodo">
-                        <summary class="gei-periodo__summary">
-                            <div>
-                                <strong>{{ $periodo['etiqueta'] }}</strong>
-                                <span class="text-muted">({{ $periodo['periodo'] }})</span>
-                            </div>
-                            <span class="text-muted">
-                                {{ $periodo['cantidad'] }} archivos
+                    <div class="d-flex flex-wrap align-items-center justify-content-end gap-2">
+                        @if ($periodo['completo'])
+                            <span class="badge text-bg-success">Completo</span>
+                        @else
+                            <span class="badge text-bg-warning">
+                                {{ $periodo['cantidad_obligatorios'] }}/{{ $periodo['total_obligatorios'] }}
                             </span>
-                        </summary>
+                        @endif
 
-                        <div class="table-responsive gei-periodo__archivos">
-                            <table class="table table-sm align-middle mb-0">
-                                <tbody>
-                                    @foreach ($periodo['archivos'] as $archivo)
-                                        <tr>
-                                            <td>{{ $archivo['nombre'] }}</td>
-                                            <td>{{ $archivo['fecha'] ?? '—' }}</td>
-                                            <td class="text-end">{{ $archivo['tamano'] ?? '—' }}</td>
-                                        </tr>
-                                    @endforeach
-                                </tbody>
-                            </table>
-                        </div>
-                    </details>
-                @empty
-                    <div class="gei-empty-state gei-empty-state--large">
-                        Todavía no hay liquidaciones cargadas.
+                        @if ($periodo['cantidad_opcionales'] > 0)
+                            <span class="text-muted small">
+                                +{{ $periodo['cantidad_opcionales'] }} opcional(es)
+                            </span>
+                        @endif
+
+                        @switch($estadoMigracion['estado'])
+                            @case('OK')
+                                <span class="badge text-bg-success">Crudos migrados</span>
+                                @break
+                            @case('MODIFICADO')
+                                <span class="badge text-bg-warning">Archivos modificados</span>
+                                @break
+                            @case('ERROR')
+                                <span class="badge text-bg-danger">Error al migrar</span>
+                                @break
+                            @default
+                                <span class="badge text-bg-secondary">Pendiente de migrar</span>
+                        @endswitch
+
+                        @switch($estadoTablas['estado'])
+                            @case('OK')
+                                <span class="badge text-bg-success">Tablas actualizadas</span>
+                                @break
+                            @case('MODIFICADO')
+                                <span class="badge text-bg-warning">Tablas desactualizadas</span>
+                                @break
+                            @case('ERROR')
+                                <span class="badge text-bg-danger">Error en tablas</span>
+                                @break
+                            @case('PROCESANDO')
+                                <span class="badge text-bg-info">Actualizando tablas</span>
+                                @break
+                            @default
+                                <span class="badge text-bg-secondary">Tablas pendientes</span>
+                        @endswitch
+
+                        <form
+                            method="POST"
+                            action="{{ route('archivo.importar.migrar', $periodo['periodo']) }}"
+                            class="d-inline"
+                            data-migration-ui="v7"
+                            data-periodo="{{ $periodo['periodo'] }}"
+                            data-etiqueta="{{ $periodo['etiqueta'] }}"
+                            onsubmit="
+                                if (this.dataset.enviando === '1') {
+                                    return false;
+                                }
+
+                                this.dataset.enviando = '1';
+
+                                const overlay = document.getElementById('migrationProgressOverlay');
+                                const periodo = overlay
+                                    ? overlay.querySelector('[data-migration-period]')
+                                    : null;
+                                const elapsed = overlay
+                                    ? overlay.querySelector('[data-migration-elapsed]')
+                                    : null;
+                                const submit = this.querySelector('[data-migration-submit]');
+                                const startedAt = Date.now();
+                                const form = this;
+
+                                if (periodo) {
+                                    periodo.textContent = 'Período: ' + (this.dataset.etiqueta || this.dataset.periodo || '');
+                                }
+
+                                if (elapsed) {
+                                    elapsed.textContent = '0 s';
+                                }
+
+                                if (submit) {
+                                    submit.disabled = true;
+                                    submit.textContent = 'Procesando...';
+                                }
+
+                                if (overlay) {
+                                    overlay.classList.add('gei-visible');
+                                    overlay.style.display = 'flex';
+                                }
+
+                                document.body.style.overflow = 'hidden';
+
+                                window.geiMigrationElapsedTimer = window.setInterval(function () {
+                                    if (elapsed) {
+                                        elapsed.textContent = Math.floor((Date.now() - startedAt) / 1000) + ' s';
+                                    }
+                                }, 1000);
+
+                                window.setTimeout(function () {
+                                    HTMLFormElement.prototype.submit.call(form);
+                                }, 150);
+
+                                return false;
+                            "
+                        >
+                            @csrf
+                            <button
+                                type="submit"
+                                class="btn btn-sm gei-button gei-button--primary"
+                                data-migration-submit
+                                @disabled(! $estadoMigracion['disponible'])
+                                title="{{ $estadoMigracion['disponible']
+                                    ? $estadoMigracion['mensaje']
+                                    : 'El período debe tener los 11 archivos obligatorios para poder migrarse.' }}"
+                            >
+                                @if ($estadoMigracion['estado'] === 'OK' && $estadoTablas['estado'] === 'OK')
+                                    Procesar nuevamente
+                                @elseif ($estadoMigracion['estado'] === 'ERROR' || $estadoTablas['estado'] === 'ERROR')
+                                    Reintentar
+                                @else
+                                    Migrar y actualizar tablas
+                                @endif
+                            </button>
+                        </form>
                     </div>
-                @endforelse
-            </section>
-        </div>
-    </div>
+                </div>
+
+                <details class="gei-periodo__detalle">
+                    <summary class="gei-periodo__summary">
+                        Ver archivos del período
+                    </summary>
+
+                    <div class="row g-4 gei-periodo__archivos">
+                        <div class="col-xl-5">
+                            <h3 class="h6 mb-2">COBOL</h3>
+                            <div class="table-responsive">
+                                <table class="table table-sm align-middle mb-0">
+                                    <tbody>
+                                        @foreach ($periodo['archivos_cobol'] as $archivo)
+                                            <tr>
+                                                <td class="fw-semibold">{{ $archivo['nombre'] }}</td>
+                                                <td>
+                                                    @if ($archivo['existe'])
+                                                        <span class="badge text-bg-success">Cargado</span>
+                                                    @else
+                                                        <span class="badge text-bg-secondary">Faltante</span>
+                                                    @endif
+                                                </td>
+                                                <td>{{ $archivo['fecha'] ?? '—' }}</td>
+                                                <td class="text-end">{{ $archivo['tamano'] ?? '—' }}</td>
+                                            </tr>
+                                        @endforeach
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div class="col-xl-7">
+                            <h3 class="h6 mb-2">Liquidaciones</h3>
+                            <div class="table-responsive">
+                                <table class="table table-sm align-middle mb-0">
+                                    <tbody>
+                                        @foreach ($periodo['archivos_liquidaciones'] as $archivo)
+                                            <tr>
+                                                <td class="fw-semibold">
+                                                    {{ $archivo['nombre'] }}
+                                                    @if ($archivo['opcional'] ?? false)
+                                                        <span class="text-muted fw-normal">(opcional)</span>
+                                                    @endif
+                                                </td>
+                                                <td>
+                                                    @if ($archivo['existe'])
+                                                        <span class="badge text-bg-success">Cargado</span>
+                                                    @else
+                                                        <span class="badge text-bg-secondary">Faltante</span>
+                                                    @endif
+                                                </td>
+                                                <td>{{ $archivo['fecha'] ?? '—' }}</td>
+                                                <td class="text-end">{{ $archivo['tamano'] ?? '—' }}</td>
+                                            </tr>
+                                        @endforeach
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </details>
+            </div>
+        @empty
+            <div class="gei-empty-state gei-empty-state--large">
+                Todavía no hay períodos cargados.
+            </div>
+        @endforelse
+    </section>
 
     <div
         class="modal fade"
@@ -207,6 +350,82 @@
             </div>
         </div>
     </div>
+
+    <style>
+        @keyframes gei-migration-progress {
+            from { transform: translateX(-100%); }
+            to { transform: translateX(250%); }
+        }
+
+        #migrationProgressOverlay {
+            position: fixed;
+            inset: 0;
+            z-index: 2000;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            background: rgba(15, 23, 42, .62);
+        }
+
+        #migrationProgressOverlay.gei-visible {
+            display: flex;
+        }
+
+        .gei-migration-panel {
+            width: min(100%, 520px);
+            padding: 26px;
+            border-radius: 14px;
+            background: #fff;
+            box-shadow: 0 24px 60px rgba(15, 23, 42, .28);
+        }
+
+        .gei-migration-track {
+            height: 14px;
+            margin-top: 22px;
+            overflow: hidden;
+            border-radius: 999px;
+            background: #eadced;
+        }
+
+        .gei-migration-bar {
+            width: 42%;
+            height: 100%;
+            border-radius: inherit;
+            background: var(--gei-primary, #962aa8);
+            animation: gei-migration-progress 1.35s ease-in-out infinite;
+        }
+    </style>
+
+    <div
+        id="migrationProgressOverlay"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="migrationProgressTitle"
+        aria-live="polite"
+    >
+        <div class="gei-migration-panel">
+            <div class="d-flex align-items-center gap-3">
+                <div class="spinner-border text-primary" role="status" aria-hidden="true"></div>
+                <div>
+                    <h2 class="h5 mb-1" id="migrationProgressTitle">Migrando y actualizando PostgreSQL</h2>
+                    <p class="mb-0 text-muted" data-migration-period>
+                        Preparando el período...
+                    </p>
+                </div>
+            </div>
+
+            <div class="gei-migration-track" aria-label="Migración en curso">
+                <div class="gei-migration-bar"></div>
+            </div>
+
+            <div class="d-flex justify-content-between gap-3 small text-muted mt-3">
+                <span>Cargando datos crudos y actualizando clientes, inmuebles, contratos y cuentas corrientes. No cierres esta ventana.</span>
+                <strong class="text-nowrap" data-migration-elapsed>0 s</strong>
+            </div>
+        </div>
+    </div>
+
 @endsection
 
 @push('styles')
@@ -215,12 +434,21 @@
             border-top: 1px solid var(--gei-border);
         }
 
-        .gei-periodo__summary {
+        .gei-periodo__encabezado {
             display: flex;
             align-items: center;
             justify-content: space-between;
             gap: 14px;
             padding: 14px 0;
+        }
+
+        .gei-periodo__summary {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            width: max-content;
+            padding: 0 0 12px;
+            color: var(--gei-primary);
             cursor: pointer;
             list-style: none;
         }
@@ -229,7 +457,7 @@
             display: none;
         }
 
-        .gei-periodo__summary::after {
+        .gei-periodo__summary::before {
             width: 8px;
             height: 8px;
             flex: 0 0 8px;
@@ -240,12 +468,19 @@
             transition: transform .18s ease;
         }
 
-        .gei-periodo[open] .gei-periodo__summary::after {
+        .gei-periodo__detalle[open] .gei-periodo__summary::before {
             transform: rotate(225deg) translate(-1px, -1px);
         }
 
         .gei-periodo__archivos {
             padding-bottom: 12px;
+        }
+
+        @media (max-width: 767.98px) {
+            .gei-periodo__encabezado {
+                align-items: flex-start;
+                flex-direction: column;
+            }
         }
     </style>
 @endpush

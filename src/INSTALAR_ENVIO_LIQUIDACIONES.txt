@@ -1,0 +1,48 @@
+ENVÍO DE LIQUIDACIONES DE PROPIETARIOS POR EMAIL
+================================================
+
+1. Copiar los archivos del paquete sobre la raíz de Laravel:
+
+   cd ~/proyectos/gei-web/src
+   tar -xzf RUTA/gei-envio-liquidaciones-implementado-20260806.tar.gz -C .
+
+2. Limpiar la configuración y ejecutar la migración:
+
+   gei-artisan optimize:clear
+   gei-artisan migrate
+
+3. Verificar las rutas nuevas:
+
+   gei-artisan route:list --name=propietarios.liquidaciones
+
+4. Para probar el envío, dejar este worker ejecutándose en otra terminal:
+
+   gei-artisan queue:work liquidaciones_emails \
+       --queue=liquidaciones-emails \
+       --tries=3 \
+       --timeout=120
+
+   Para procesar solamente lo pendiente y finalizar:
+
+   gei-artisan queue:work liquidaciones_emails \
+       --queue=liquidaciones-emails \
+       --tries=3 \
+       --timeout=120 \
+       --stop-when-empty
+
+5. Comprobaciones útiles:
+
+   gei-artisan tinker --execute="dump(DB::table('liquidaciones_email_jobs')->count());"
+
+   gei-artisan tinker --execute="dump(DB::table('liquidaciones_propietarios_envios')->latest('id')->limit(10)->get());"
+
+IMPORTANTE
+---------
+- El botón masivo procesa todas las liquidaciones del período y filtros activos,
+  no solamente la página visible.
+- Se omiten liquidaciones sin email válido o sin PDF disponible.
+- Mientras exista un envío pendiente o procesándose, no se programa otro para
+  la misma liquidación.
+- El worker debe quedar ejecutándose permanentemente en producción. Después de
+  validar la función, conviene agregarlo como servicio independiente en Docker
+  Compose o administrarlo con Supervisor.

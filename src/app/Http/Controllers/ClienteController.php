@@ -5,16 +5,13 @@ namespace App\Http\Controllers;
 use App\Http\Requests\StoreClienteRequest;
 use App\Http\Requests\UpdateClienteRequest;
 use App\Models\Cliente;
-use App\Models\Contrato;
-use App\Models\LiquidacionCliente;
-use App\Services\LiquidacionPdfService;
+use App\Models\Role;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Collection;
 use Illuminate\View\View;
-use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class ClienteController extends Controller
 {
@@ -35,9 +32,12 @@ class ClienteController extends Controller
 
     public function store(StoreClienteRequest $request): RedirectResponse
     {
-        $cliente = DB::transaction(
-            fn () => Cliente::query()->create($request->datosCliente())
-        );
+        $cliente = DB::transaction(function () use ($request): Cliente {
+            $cliente = Cliente::query()->create($request->datosCliente());
+            $cliente->roles()->sync($request->rolesIds());
+
+            return $cliente;
+        });
 
         return redirect()
             ->route('clientes.show', $cliente)
@@ -46,434 +46,287 @@ class ClienteController extends Controller
 
     public function edit(Cliente $cliente): View
     {
+        $cliente->load('roles:id');
+
         return view('clientes.edit', [
             ...$this->datosFormulario(),
             'cliente' => $cliente,
         ]);
     }
 
-    public function update(
-        UpdateClienteRequest $request,
-        Cliente $cliente
-    ): RedirectResponse {
-        DB::transaction(
-            fn () => $cliente->update($request->datosCliente())
-        );
+    public function update(UpdateClienteRequest $request, Cliente $cliente): RedirectResponse
+    {
+        DB::transaction(function () use ($request, $cliente): void {
+            $cliente->update($request->datosCliente());
+            $cliente->roles()->sync($request->rolesIds());
+        });
 
         return redirect()
             ->route('clientes.show', $cliente)
             ->with('estado', 'Los datos del cliente fueron actualizados.');
     }
 
-    public function localidades(Request $request): JsonResponse
+    private function vistaListado(Request $request, ?Cliente $clienteSeleccionado = null): View
     {
-        $provincia = trim((string) $request->query('provincia'));
-
-        if ($provincia === '') {
-            return response()->json([]);
-        }
-
-        $localidades = DB::table('localidades')
-            ->selectRaw(
-                'TRIM(nombre) AS nombre, '
-                .'TRIM(COALESCE(caractel, \'\')) AS caractel, '
-                .'TRIM(COALESCE(cp, \'\')) AS cp'
-            )
-            ->whereRaw('TRIM(provincia) = ?', [$provincia])
-            ->orderByRaw('TRIM(nombre)')
-            ->get();
-
-        return response()->json($localidades);
-    }
-
-    public function exportarPendientesValidacion(): StreamedResponse
-    {
-        return response()->streamDownload(function (): void {
-            $salida = fopen('php://output', 'w');
-
-            fputcsv($salida, [
-                'codigo_cliente',
-                'nombre',
-                'personeria',
-                'doctipo',
-                'docnro',
-                'cuit',
-                'id_inq',
-                'id_prop',
-                'localidad',
-                'telefonos',
-                'email',
-            ]);
-
-            DB::table('clientes')
-                ->select([
-                    'codigo_cliente',
-                    'personeria',
-                    'doctipo',
-                    'docnro',
-                    'apellidos',
-                    'nombres',
-                    'razon_social',
-                    'cuit',
-                    'id_inq',
-                    'id_prop',
-                    'localidad',
-                    'telefonos',
-                    'email',
-                ])
-                ->where('web_validada', false)
-                ->orderBy('codigo_cliente')
-                ->cursor()
-                ->each(function ($cliente) use ($salida): void {
-                    $nombre = trim((string) $cliente->razon_social);
-                    if ($nombre === '') {
-                        $nombre = trim(trim((string) $cliente->apellidos).' '.trim((string) $cliente->nombres));
-                    }
-
-                    fputcsv($salida, [
-                        $cliente->codigo_cliente,
-                        $nombre,
-                        trim((string) $cliente->personeria),
-                        trim((string) $cliente->doctipo),
-                        trim((string) $cliente->docnro),
-                        trim((string) $cliente->cuit),
-                        (string) $cliente->id_inq,
-                        (string) $cliente->id_prop,
-                        trim((string) $cliente->localidad),
-                        trim((string) $cliente->telefonos),
-                        trim((string) $cliente->email),
-                    ]);
-                });
-
-            fclose($salida);
-        }, 'clientes-pendientes-validacion.csv', [
-            'Content-Type' => 'text/csv; charset=UTF-8',
-        ]);
-    }
-
-    private function vistaListado(
-        Request $request,
-        ?Cliente $clienteSeleccionado = null
-    ): View {
         $busqueda = trim((string) $request->query('buscar'));
-        $filtro = (string) $request->query('filtro', 'todos');
-        $mostrarValidacion = $request->boolean('mostrar_validacion');
-        $validacion = (string) $request->query('validacion', 'todos');
-        $actividad = (string) $request->query('actividad', 'activos');
-        $liquidacionAnio = trim((string) $request->query('liquidacion_anio'));
-        $liquidacionMes = trim((string) $request->query('liquidacion_mes'));
-        $liquidacionPeriodo = trim((string) $request->query('liquidacion_periodo'));
+        $rol = strtoupper(trim((string) $request->query('rol', 'TODOS')));
+        $actividad = strtolower(trim((string) $request->query('actividad', 'todos')));
 
-        if (! in_array($filtro, ['todos', 'propietarios', 'inquilinos'], true)) {
-            $filtro = 'todos';
-        }
-        if (! in_array($validacion, ['todos', 'validados', 'pendientes'], true)) {
-            $validacion = 'todos';
-        }
-        if (! $mostrarValidacion) {
-            $validacion = 'todos';
+        if (! in_array($rol, ['TODOS', 'PROPIETARIO', 'INQUILINO', 'GARANTE', 'PROVEEDOR', 'OTRO'], true)) {
+            $rol = 'TODOS';
         }
         if (! in_array($actividad, ['todos', 'activos', 'inactivos'], true)) {
             $actividad = 'todos';
         }
 
-        $consulta = Cliente::query()
-            ->select([
-                'codigo_cliente',
-                'personeria',
-                'doctipo',
-                'docnro',
-                'apellidos',
-                'nombres',
-                'razon_social',
-                'domicilio',
-                'provincia',
-                'departamento',
-                'localidad',
-                'cp',
-                'caractel',
-                'telefonos',
-                'celular',
-                'fax',
-                'email',
-                'nacionalidad',
-                'cuit',
-                'condicion_iva',
-                'profesion',
-                'lugar_de_trabajo',
-                'web_validada',
-                'web_operativo',
+        $clientes = Cliente::query()
+            ->with([
+                'roles:id,codigo,nombre',
+                'cuentas' => fn ($query) => $query
+                    ->select(['id', 'cliente_id', 'cuenta', 'rol', 'activo'])
+                    ->orderBy('rol')
+                    ->orderBy('cuenta'),
             ])
+            ->when($busqueda !== '', fn (Builder $query) => $this->aplicarBusqueda($query, $busqueda))
             ->when(
-                $busqueda !== '',
-                fn (Builder $query) => $this->aplicarBusqueda(
-                    $query,
-                    $busqueda
+                $rol !== 'TODOS',
+                fn (Builder $query) => $query->whereHas(
+                    'roles',
+                    fn (Builder $roles) => $roles->where('codigo', $rol)
                 )
             )
-            ->when(
-                $filtro === 'propietarios',
-                fn (Builder $query) => $query->whereExists(
-                    fn ($subquery) => $subquery
-                        ->selectRaw('1')
-                        ->from('inmuebles_propietarios')
-                        ->whereColumn(
-                            'inmuebles_propietarios.codigo_cliente',
-                            'clientes.codigo_cliente'
-                        )
-                )
-            )
-            ->when(
-                $filtro === 'inquilinos',
-                fn (Builder $query) => $query->whereExists(
-                    fn ($subquery) => $subquery
-                        ->selectRaw('1')
-                        ->from('contratos_inquilinos')
-                        ->whereColumn(
-                            'contratos_inquilinos.codigo_cliente',
-                            'clientes.codigo_cliente'
-                        )
-                )
-            )
-            ->when(
-                $validacion === 'validados',
-                fn (Builder $query) => $query->where('web_validada', true)
-            )
-            ->when(
-                $validacion === 'pendientes',
-                fn (Builder $query) => $query->where('web_validada', false)
-            )
-            ->when(
-                $actividad === 'activos',
-                fn (Builder $query) => $this->aplicarActividad(
-                    $query,
-                    true,
-                    $filtro
-                )
-            )
-            ->when(
-                $actividad === 'inactivos',
-                fn (Builder $query) => $this->aplicarActividad(
-                    $query,
-                    false,
-                    $filtro
-                )
-            )
-            ->orderByRaw("COALESCE(NULLIF(TRIM(razon_social), ''), TRIM(apellidos), '')")
-            ->orderByRaw('TRIM(nombres)')
-            ->orderBy('codigo_cliente');
-
-        $clientes = $consulta
+            ->when($actividad === 'activos', fn (Builder $query) => $query->where('activo', true))
+            ->when($actividad === 'inactivos', fn (Builder $query) => $query->where('activo', false))
+            ->orderByRaw("TRANSLATE(LOWER(TRIM(nombre)), 'áéíóúüñ', 'aeiouun')")
+            ->orderBy('id')
             ->paginate(25)
             ->withQueryString();
 
         if (! $clienteSeleccionado && $request->filled('cliente')) {
-            $clienteSeleccionado = Cliente::query()->find(
-                (int) $request->query('cliente')
-            );
+            $clienteSeleccionado = Cliente::query()->find((int) $request->query('cliente'));
         }
 
         $clienteSeleccionado ??= $clientes->first();
-        $contratos = null;
-        $liquidaciones = null;
+        $inmuebles = collect();
+        $contratos = collect();
+        $inquilinosDePropietario = collect();
+        $liquidaciones = collect();
 
         if ($clienteSeleccionado) {
-            $contratos = Contrato::query()
-                ->select([
-                    'contratos.codigo_contrato',
-                    'contratos.numero_de_contrato',
-                    'contratos.fecha_inicio',
-                    'contratos.fecha_fin',
-                    'contratos.importe_inicial',
-                    'contratos_inquilinos.porcentaje_participacion',
-                ])
-                ->join(
-                    'contratos_inquilinos',
-                    'contratos_inquilinos.codigo_contrato',
-                    '=',
-                    'contratos.codigo_contrato'
-                )
-                ->where(
-                    'contratos_inquilinos.codigo_cliente',
-                    $clienteSeleccionado->codigo_cliente
-                )
-                ->with([
-                    'inmuebles' => fn ($query) => $query
-                        ->select([
-                            'inmuebles.codigo_inmueble',
-                            'domicilio_calle',
-                            'domicilio_nro',
-                            'domicilio_edificio',
-                            'domicilio_piso',
-                            'domicilio_dpto',
-                            'localidad',
-                            'cod_tipo_inmueble',
-                        ])
-                        ->with([
-                            'tipo:cod_tipo_inmueble,tipo_inmueble',
-                            'propietarios' => fn ($propietarios) => $propietarios
-                                ->select([
-                                    'clientes.codigo_cliente',
-                                    'personeria',
-                                    'apellidos',
-                                    'nombres',
-                                    'razon_social',
-                                    'cuit',
-                                    'docnro',
-                                ])
-                                ->orderByRaw("COALESCE(NULLIF(TRIM(razon_social), ''), TRIM(apellidos), '')")
-                                ->orderByRaw('TRIM(nombres)'),
-                        ]),
-                ])
-                ->orderByDesc('contratos.fecha_inicio')
-                ->orderByDesc('contratos.codigo_contrato')
-                ->paginate(8, ['*'], 'contratos_page')
-                ->withQueryString();
+            $clienteSeleccionado->load([
+                'roles:id,codigo,nombre',
+                'cuentas' => fn ($query) => $query->orderBy('rol')->orderBy('cuenta'),
+            ]);
 
-            if ((int) $clienteSeleccionado->id_prop !== 0) {
-                $pdfService = app(LiquidacionPdfService::class);
+            $inmuebles = $this->inmueblesDelPropietario($clienteSeleccionado->id);
 
-                $liquidaciones = LiquidacionCliente::query()
-                    ->select([
-                        'numero_de_liquidacion',
-                        'punto_venta',
-                        'numero',
-                        'fecha',
-                        'nro_cuenta',
-                        'periodo',
-                        'nombre',
-                        'razon_social',
-                        'fecha_desde',
-                        'fecha_hasta',
-                        'numero_de_comprobante',
-                        'total_liquidado',
-                    ])
-                    ->where('nro_cuenta', (int) $clienteSeleccionado->id_prop)
-                    ->when(
-                        $liquidacionAnio !== '' && ctype_digit($liquidacionAnio),
-                        fn (Builder $query) => $query->whereYear(
-                            'fecha',
-                            (int) $liquidacionAnio
-                        )
-                    )
-                    ->when(
-                        $liquidacionMes !== '' && ctype_digit($liquidacionMes),
-                        fn (Builder $query) => $query->whereMonth(
-                            'fecha',
-                            (int) $liquidacionMes
-                        )
-                    )
-                    ->when(
-                        $liquidacionPeriodo !== '',
-                        fn (Builder $query) => $query->whereRaw(
-                            'LOWER(TRIM(periodo)) LIKE ?',
-                            ['%'.mb_strtolower($liquidacionPeriodo).'%']
-                        )
-                    )
-                    ->orderByDesc('fecha')
-                    ->orderByDesc('numero')
-                    ->paginate(8, ['*'], 'liquidaciones_page')
-                    ->withQueryString();
+            $contratos = $this->contratosDelInquilino($clienteSeleccionado->id);
 
-                $liquidaciones->getCollection()->transform(
-                    function (LiquidacionCliente $liquidacion) use ($pdfService) {
-                        $liquidacion->pdf_disponible = $pdfService->existe($liquidacion);
-                        $liquidacion->pdf_ruta_relativa = $pdfService->rutaRelativaExistente($liquidacion)
-                            ?? $pdfService->rutaRelativa($liquidacion);
+            $inquilinosDePropietario = $this->inquilinosDelPropietario(
+                $clienteSeleccionado->id
+            );
 
-                        return $liquidacion;
-                    }
-                );
-            }
+            $liquidaciones = $this->liquidacionesDelPropietario($clienteSeleccionado);
         }
 
         return view('clientes.index', compact(
             'clientes',
             'clienteSeleccionado',
-            'contratos',
             'busqueda',
-            'filtro',
-            'mostrarValidacion',
-            'validacion',
+            'rol',
             'actividad',
-            'liquidaciones',
-            'liquidacionAnio',
-            'liquidacionMes',
-            'liquidacionPeriodo'
+            'inmuebles',
+            'contratos',
+            'inquilinosDePropietario',
+            'liquidaciones'
         ));
     }
 
-    private function aplicarActividad(
-        Builder $query,
-        bool $activos,
-        string $filtro
-    ): void {
-        if ($filtro === 'inquilinos') {
-            $existeContratoVigenteComoInquilino = function ($subquery): void {
-                $hoy = now()->toDateString();
-
-                $subquery
-                    ->selectRaw('1')
-                    ->from('contratos')
-                    ->join(
-                        'contratos_inquilinos',
-                        'contratos_inquilinos.codigo_contrato',
-                        '=',
-                        'contratos.codigo_contrato'
-                    )
-                    ->whereColumn(
-                        'contratos_inquilinos.codigo_cliente',
-                        'clientes.codigo_cliente'
-                    )
-                    ->whereDate('contratos.fecha_inicio', '<=', $hoy)
-                    ->whereDate('contratos.fecha_fin', '>=', $hoy);
-            };
-
-            $activos
-                ? $query->whereExists($existeContratoVigenteComoInquilino)
-                : $query->whereNotExists($existeContratoVigenteComoInquilino);
-
-            return;
-        }
-
-        $this->aplicarActividadOperativa($query, $activos);
-    }
-
-    private function aplicarActividadOperativa(Builder $query, bool $activos): void
+    private function inmueblesDelPropietario(int $clienteId): Collection
     {
-        $activos
-            ? $query->where('web_operativo', true)
-            : $query->where('web_operativo', false);
+        return DB::table('inmuebles as i')
+                ->join('inmuebles_propietarios as ip', 'ip.inmueble_id', '=', 'i.id')
+                ->leftJoin('clientes_cuentas as cc', 'cc.id', '=', 'ip.cliente_cuenta_id')
+                ->where('ip.cliente_id', $clienteId)
+                ->select([
+                    'i.id',
+                    'i.domicilio',
+                    'i.domicilio_normalizado',
+                    'i.estado',
+                    'ip.porcentaje',
+                    'ip.activo',
+                    'cc.cuenta',
+                ])
+                ->orderBy('i.domicilio')
+                ->orderBy('cc.cuenta')
+                ->get()
+                ->groupBy(fn (object $fila): string => trim((string) $fila->domicilio_normalizado) !== ''
+                    ? trim((string) $fila->domicilio_normalizado)
+                    : 'ID:'.$fila->id)
+                ->map(function (Collection $filas): object {
+                    $primera = $filas->first();
+                    $porcentajes = $filas->pluck('porcentaje')
+                        ->filter(fn (mixed $valor): bool => $valor !== null)
+                        ->map(fn (mixed $valor): string => rtrim(rtrim(number_format((float) $valor, 6, ',', '.'), '0'), ','))
+                        ->unique()
+                        ->values();
+
+                    return (object) [
+                        'id' => $primera->id,
+                        'domicilio' => $primera->domicilio,
+                        'estado' => $filas->contains(fn (object $fila): bool => $fila->estado === 'ACTIVO')
+                            ? 'ACTIVO'
+                            : $primera->estado,
+                        'porcentajes' => $porcentajes->implode(' / '),
+                        'cuentas' => $filas->pluck('cuenta')->filter()->unique()->sort()->values()->implode(' · '),
+                        'relaciones' => $filas->count(),
+                    ];
+                })
+                ->sortBy(fn (object $inmueble): string => mb_strtolower($inmueble->domicilio))
+                ->values();
     }
 
-    private function aplicarBusqueda(
-        Builder $query,
-        string $busqueda
-    ): void {
+    private function contratosDelInquilino(int $clienteId): Collection
+    {
+        return DB::table('contratos as c')
+                ->join('contratos_inquilinos as ci', 'ci.contrato_id', '=', 'c.id')
+                ->leftJoin('contratos_inmuebles as cim', 'cim.contrato_id', '=', 'c.id')
+                ->leftJoin('inmuebles as i', 'i.id', '=', 'cim.inmueble_id')
+                ->leftJoin('inmuebles_propietarios as ip', function ($join): void {
+                    $join->on('ip.inmueble_id', '=', 'i.id')
+                        ->where('ip.activo', true);
+                })
+                ->leftJoin('clientes as propietario', 'propietario.id', '=', 'ip.cliente_id')
+                ->where('ci.cliente_id', $clienteId)
+                ->select([
+                    'c.id',
+                    'c.codigo_origen',
+                    'c.fecha_inicio',
+                    'c.fecha_fin',
+                    'c.estado',
+                    'c.cuenta_inquilino',
+                    'c.cuenta_propietario',
+                    'i.id as inmueble_id',
+                    'i.domicilio as inmueble_domicilio',
+                    'propietario.id as propietario_id',
+                    'propietario.nombre as propietario_nombre',
+                ])
+                ->orderByDesc('c.fecha_inicio')
+                ->orderBy('c.id')
+                ->get()
+                ->groupBy('id')
+                ->map(function (Collection $filas): object {
+                    $contrato = clone $filas->first();
+                    $contrato->inmuebles = $filas->pluck('inmueble_domicilio')
+                        ->filter()->unique()->sort()->values()->implode(' · ');
+                    $contrato->propietarios = $filas->pluck('propietario_nombre')
+                        ->filter()->map(fn (string $nombre): string => trim($nombre))
+                        ->unique()->sort()->values()->implode(' · ');
+
+                    return $contrato;
+                })
+                ->values();
+    }
+
+    private function inquilinosDelPropietario(int $clienteId): Collection
+    {
+        return DB::table('inmuebles_propietarios as ip')
+                ->join('inmuebles as i', 'i.id', '=', 'ip.inmueble_id')
+                ->join('contratos_inmuebles as cim', 'cim.inmueble_id', '=', 'i.id')
+                ->join('contratos as c', 'c.id', '=', 'cim.contrato_id')
+                ->join('contratos_inquilinos as ci', 'ci.contrato_id', '=', 'c.id')
+                ->join('clientes as inquilino', 'inquilino.id', '=', 'ci.cliente_id')
+                ->where('ip.cliente_id', $clienteId)
+                ->select([
+                    'c.id as contrato_id',
+                    'c.codigo_origen',
+                    'c.cuenta_inquilino',
+                    'c.fecha_inicio',
+                    'c.fecha_fin',
+                    'c.estado',
+                    'i.id as inmueble_id',
+                    'i.domicilio as inmueble_domicilio',
+                    'inquilino.id as inquilino_id',
+                    'inquilino.nombre as inquilino_nombre',
+                    'inquilino.cuit as inquilino_cuit',
+                ])
+                ->orderByDesc('c.fecha_inicio')
+                ->get()
+                ->unique(fn (object $fila): string => implode('|', [
+                    $fila->contrato_id,
+                    $fila->inmueble_id,
+                    $fila->inquilino_id,
+                ]))
+                ->sortBy(fn (object $fila): string => mb_strtolower(trim($fila->inquilino_nombre)))
+                ->values();
+    }
+
+    private function liquidacionesDelPropietario(Cliente $cliente): Collection
+    {
+        $cuit = preg_replace('/\D+/', '', (string) $cliente->cuit) ?: '';
+        $cuentas = $cliente->cuentas
+            ->where('rol', 'PROPIETARIO')
+            ->pluck('cuenta')
+            ->map(fn (mixed $cuenta): string => preg_replace('/\D+/', '', (string) $cuenta) ?: '')
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+
+        return DB::table('liquidaciones_propietarios')
+            ->where(function ($query) use ($cliente, $cuit, $cuentas): void {
+                $query->where('cliente_id', $cliente->id);
+
+                if ($cuit !== '') {
+                    $query->orWhereRaw(
+                        "REGEXP_REPLACE(COALESCE(cuit, ''), '[^0-9]', '', 'g') = ?",
+                        [$cuit]
+                    );
+                }
+
+                if ($cuentas !== []) {
+                    $query->orWhereIn('cuenta', $cuentas);
+                }
+            })
+            ->select([
+                'id',
+                'periodo',
+                'fecha',
+                'cuenta_impresa',
+                'comprobante',
+                'numero_interno',
+                'total_final',
+                'estado',
+                'pdf_ruta',
+            ])
+            ->orderByDesc('periodo')
+            ->orderByDesc('numero_interno')
+            ->limit(24)
+            ->get();
+    }
+
+    private function aplicarBusqueda(Builder $query, string $busqueda): void
+    {
         $termino = '%'.mb_strtolower($busqueda).'%';
-        $palabras = preg_split('/\s+/', mb_strtolower($busqueda), -1, PREG_SPLIT_NO_EMPTY);
+        $cuenta = preg_replace('/\D+/', '', $busqueda) ?: '';
 
-        $query->where(function (Builder $subquery) use ($termino, $palabras) {
+        $query->where(function (Builder $subquery) use ($termino, $cuenta): void {
             $subquery
-                ->whereRaw('LOWER(CAST(codigo_cliente AS TEXT)) LIKE ?', [$termino])
-                ->orWhereRaw('LOWER(TRIM(apellidos)) LIKE ?', [$termino])
-                ->orWhereRaw('LOWER(TRIM(nombres)) LIKE ?', [$termino])
-                ->orWhereRaw('LOWER(TRIM(razon_social)) LIKE ?', [$termino])
-                ->orWhereRaw('LOWER(TRIM(docnro)) LIKE ?', [$termino])
-                ->orWhereRaw('LOWER(TRIM(cuit)) LIKE ?', [$termino])
-                ->orWhereRaw('LOWER(TRIM(email)) LIKE ?', [$termino])
-                ->orWhereRaw('LOWER(TRIM(telefonos)) LIKE ?', [$termino])
-                ->orWhereRaw('LOWER(TRIM(celular)) LIKE ?', [$termino]);
+                ->whereRaw('LOWER(CAST(clientes.id AS TEXT)) LIKE ?', [$termino])
+                ->orWhereRaw('LOWER(TRIM(clientes.nombre)) LIKE ?', [$termino])
+                ->orWhereRaw("LOWER(TRIM(COALESCE(clientes.numero_documento, ''))) LIKE ?", [$termino])
+                ->orWhereRaw("LOWER(TRIM(COALESCE(clientes.cuit, ''))) LIKE ?", [$termino])
+                ->orWhereRaw("LOWER(TRIM(COALESCE(clientes.email, ''))) LIKE ?", [$termino])
+                ->orWhereRaw("LOWER(TRIM(COALESCE(clientes.telefono, ''))) LIKE ?", [$termino]);
 
-            if (count($palabras) > 1) {
-                $subquery->orWhere(function (Builder $nombre) use ($palabras) {
-                    foreach ($palabras as $palabra) {
-                        $nombre->whereRaw(
-                            "LOWER(TRIM(apellidos) || ' ' || TRIM(nombres) || ' ' || TRIM(nombres) || ' ' || TRIM(apellidos)) LIKE ?",
-                            ['%'.$palabra.'%']
-                        );
-                    }
-                });
+            if ($cuenta !== '') {
+                $subquery->orWhereHas(
+                    'cuentas',
+                    fn (Builder $cuentas) => $cuentas->whereRaw(
+                        "REGEXP_REPLACE(cuenta, '[^0-9]', '', 'g') LIKE ?",
+                        ['%'.$cuenta.'%']
+                    )
+                );
             }
         });
     }
@@ -481,17 +334,17 @@ class ClienteController extends Controller
     private function datosFormulario(): array
     {
         return [
-            'provincias' => DB::table('provincias')
-                ->selectRaw('TRIM(nombre) AS nombre')
-                ->orderByRaw('TRIM(nombre)')
-                ->pluck('nombre'),
+            'rolesDisponibles' => Role::query()
+                ->where('activo', true)
+                ->orderBy('nombre')
+                ->get(['id', 'codigo', 'nombre']),
             'condicionesIva' => [
-                'Categorizado',
-                'Consumidor Final',
-                'Exento',
-                'Responsable Inscripto',
-                'Responsable Monotributo',
-                'Sujeto no Categorizado',
+                'RESPONSABLE_INSCRIPTO' => 'Responsable inscripto',
+                'RESPONSABLE_NO_INSCRIPTO' => 'Responsable no inscripto',
+                'CONSUMIDOR_FINAL' => 'Consumidor final',
+                'EXENTO' => 'Exento',
+                'MONOTRIBUTISTA' => 'Monotributista',
+                'NO_CATEGORIZADO' => 'No categorizado',
             ],
         ];
     }

@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>
+        Restablecer contraseña — Guastavino e Imbert
+    </title>
+
+    <link
+        rel="icon"
+        type="image/png"
+        href="{{ asset('images/gei/favicon.png') }}"
+    >
+
+    @vite([
+        'resources/css/app.css',
+        'resources/js/app.js'
+    ])
+</head>
+
+<body class="gei-login-body">
+    <main class="gei-login">
+        <section class="gei-login__institutional">
+            <div class="gei-login__institutional-content">
+                <img
+                    src="{{ asset('images/gei/logo-horizontal-blanco.webp') }}"
+                    alt="Guastavino e Imbert"
+                    class="gei-login__logo"
+                >
+
+                <p class="gei-login__tagline">
+                    La tranquilidad de un siglo de experiencia
+                </p>
+            </div>
+        </section>
+
+        <section class="gei-login__form-panel">
+            <div class="gei-login__form-container">
+                <h1 class="gei-login__title">
+                    Nueva contraseña
+                </h1>
+
+                <p class="gei-login__description">
+                    Elegí una nueva contraseña para ingresar al sistema.
+                </p>
+
+                <form
+                    method="POST"
+                    action="{{ route('password.update') }}"
+                    class="gei-login__form"
+                >
+                    @csrf
+
+                    <input
+                        type="hidden"
+                        name="token"
+                        value="{{ $token }}"
+                    >
+
+                    <div class="mb-3">
+                        <label
+                            for="email"
+                            class="form-label"
+                        >
+                            Correo electrónico
+                        </label>
+
+                        <input
+                            type="email"
+                            id="email"
+                            name="email"
+                            value="{{ old('email', $email) }}"
+                            class="form-control @error('email') is-invalid @enderror"
+                            maxlength="255"
+                            autocomplete="email"
+                            required
+                            readonly
+                        >
+
+                        @error('email')
+                            <div class="invalid-feedback">
+                                {{ $message }}
+                            </div>
+                        @enderror
+                    </div>
+
+                    <div class="mb-3">
+                        <label
+                            for="password"
+                            class="form-label"
+                        >
+                            Nueva contraseña
+                        </label>
+
+                        <input
+                            type="password"
+                            id="password"
+                            name="password"
+                            class="form-control @error('password') is-invalid @enderror"
+                            minlength="8"
+                            autocomplete="new-password"
+                            required
+                        >
+
+                        @error('password')
+                            <div class="invalid-feedback">
+                                {{ $message }}
+                            </div>
+                        @enderror
+                    </div>
+
+                    <div class="mb-4">
+                        <label
+                            for="password_confirmation"
+                            class="form-label"
+                        >
+                            Repetir nueva contraseña
+                        </label>
+
+                        <input
+                            type="password"
+                            id="password_confirmation"
+                            name="password_confirmation"
+                            class="form-control"
+                            minlength="8"
+                            autocomplete="new-password"
+                            required
+                        >
+                    </div>
+
+                    <button
+                        type="submit"
+                        class="btn btn-primary w-100"
+                    >
+                        Guardar nueva contraseña
+                    </button>
+                </form>
+            </div>
+        </section>
+    </main>
+</body>
+</html>

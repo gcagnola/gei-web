@@ -4,93 +4,56 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Cliente extends Model
 {
     protected $table = 'clientes';
 
-    protected $primaryKey = 'codigo_cliente';
-
-    public $timestamps = false;
-
     protected $fillable = [
-        'personeria',
-        'doctipo',
-        'docnro',
-        'apellidos',
-        'nombres',
-        'razon_social',
-        'domicilio',
-        'provincia',
-        'departamento',
-        'localidad',
-        'cp',
-        'caractel',
-        'telefonos',
-        'celular',
-        'fax',
-        'email',
-        'nacionalidad',
+        'tipo_persona',
+        'nombre',
+        'tipo_documento',
+        'numero_documento',
         'cuit',
         'condicion_iva',
-        'profesion',
-        'lugar_de_trabajo',
-        'web_validada',
-        'web_operativo',
+        'domicilio',
+        'codigo_postal',
+        'localidad',
+        'provincia',
+        'telefono',
+        'telefono_alternativo',
+        'email',
+        'activo',
     ];
 
     protected function casts(): array
     {
         return [
-            'codigo_cliente' => 'integer',
-            'web_validada' => 'boolean',
-            'web_operativo' => 'boolean',
+            'activo' => 'boolean',
         ];
     }
 
-    public function contratos(): BelongsToMany
+    public function roles(): BelongsToMany
     {
         return $this->belongsToMany(
-            Contrato::class,
-            'contratos_inquilinos',
-            'codigo_cliente',
-            'codigo_contrato'
-        )->withPivot(['porcentaje_participacion', 'id_inq']);
+            Role::class,
+            'clientes_roles',
+            'cliente_id',
+            'rol_id'
+        )
+            ->withTimestamps();
     }
 
-    public function inmueblesPropios(): BelongsToMany
+    public function cuentas(): HasMany
     {
-        return $this->belongsToMany(
-            Inmueble::class,
-            'inmuebles_propietarios',
-            'codigo_cliente',
-            'codigo_inmueble'
-        )->withPivot(['porcentaje_titularidad', 'id_prop']);
+        return $this->hasMany(ClienteCuenta::class);
     }
 
     public function getNombreVisibleAttribute(): string
     {
-        $razonSocial = trim((string) $this->razon_social);
-        $nombrePersonal = trim(implode(', ', array_filter([
-            trim((string) $this->apellidos),
-            trim((string) $this->nombres),
-        ])));
-
-        if (trim((string) $this->personeria) === 'Física' && $nombrePersonal !== '') {
-            return $nombrePersonal;
-        }
-
-        foreach ([
-            $razonSocial,
-            $nombrePersonal,
-            trim((string) $this->cuit),
-            trim((string) $this->docnro),
-        ] as $valor) {
-            if ($valor !== '') {
-                return $valor;
-            }
-        }
-
-        return "Cliente #{$this->codigo_cliente}";
+        return trim((string) $this->nombre) !== ''
+            ? trim((string) $this->nombre)
+            : "Cliente #{$this->id}";
     }
 }

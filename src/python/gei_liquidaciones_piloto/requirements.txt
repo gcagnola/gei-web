@@ -1,1 +1,3 @@
-reportlab
+reportlab==4.4.3
+dbfread>=2.0.7
+smbprotocol>=1.12.0

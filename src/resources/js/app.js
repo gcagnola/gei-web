@@ -306,3 +306,110 @@ document.addEventListener('DOMContentLoaded', () => {
         request.send(data);
     });
 });
+
+document.addEventListener('DOMContentLoaded', () => {
+    const forms = document.querySelectorAll('[data-migration-form]');
+    const overlay = document.getElementById('migrationProgressOverlay');
+
+    if (!forms.length || !overlay) {
+        return;
+    }
+
+    const periodText = overlay.querySelector('[data-migration-period]');
+    const elapsedText = overlay.querySelector('[data-migration-elapsed]');
+    let migrationStarted = false;
+    let elapsedTimer = null;
+
+    const setOverlayVisible = (visible) => {
+        overlay.classList.toggle('gei-visible', visible);
+        document.body.style.overflow = visible ? 'hidden' : '';
+    };
+
+    forms.forEach((form) => {
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+
+            if (migrationStarted) {
+                return;
+            }
+
+            migrationStarted = true;
+
+            const button = form.querySelector('[data-migration-submit]');
+            const originalButtonText = button?.textContent.trim() || 'Migrar';
+            const label = form.dataset.etiqueta || form.dataset.periodo || '';
+            const startedAt = Date.now();
+
+            if (button) {
+                button.disabled = true;
+                button.textContent = 'Migrando...';
+            }
+
+            if (periodText) {
+                periodText.textContent = `Período: ${label}`;
+            }
+
+            if (elapsedText) {
+                elapsedText.textContent = '0 s';
+            }
+
+            setOverlayVisible(true);
+
+            elapsedTimer = window.setInterval(() => {
+                if (elapsedText) {
+                    const seconds = Math.floor((Date.now() - startedAt) / 1000);
+                    elapsedText.textContent = `${seconds} s`;
+                }
+            }, 1000);
+
+            try {
+                const response = await fetch(form.action, {
+                    method: form.method || 'POST',
+                    body: new FormData(form),
+                    headers: {
+                        Accept: 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                    },
+                });
+
+                let result = {};
+
+                try {
+                    result = await response.json();
+                } catch {
+                    result = {};
+                }
+
+                if (!response.ok) {
+                    throw new Error(
+                        result.message
+                        || `La migración fue rechazada por el servidor (${response.status}).`
+                    );
+                }
+
+                const minimumVisibleTime = 700;
+                const elapsed = Date.now() - startedAt;
+
+                if (elapsed < minimumVisibleTime) {
+                    await new Promise((resolve) => {
+                        window.setTimeout(resolve, minimumVisibleTime - elapsed);
+                    });
+                }
+
+                window.location.href = result.redirect || window.location.href;
+            } catch (error) {
+                window.clearInterval(elapsedTimer);
+                elapsedTimer = null;
+                migrationStarted = false;
+                setOverlayVisible(false);
+
+                if (button) {
+                    button.disabled = false;
+                    button.textContent = originalButtonText;
+                }
+
+                window.alert(error.message || 'No se pudo completar la migración.');
+            }
+        });
+    });
+});

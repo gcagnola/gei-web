@@ -1,5 +1,6 @@
 @php
-    $archivoActivo = request()->routeIs('archivo.*');
+    $archivoActivo = request()->routeIs('archivo.*') || request()->routeIs('clientes.*');
+    $propietariosActivo = request()->routeIs('propietarios.*');
 @endphp
 
 <ul class="gei-menu">
@@ -14,7 +15,10 @@
     </li>
 
     <li>
-        <details class="gei-menu__group {{ $archivoActivo ? 'is-active' : '' }}">
+        <details
+            class="gei-menu__group {{ $archivoActivo ? 'is-active' : '' }}"
+            @if ($archivoActivo) open @endif
+        >
             <summary class="gei-menu__summary">
                 <span class="gei-menu__icon" aria-hidden="true">▣</span>
                 <span class="gei-menu__label">Archivo</span>
@@ -28,13 +32,32 @@
                     </a>
                 </li>
                 <li>
-                    <a href="{{ route('archivo.actualizar-db') }}" class="gei-menu__link {{ request()->routeIs('archivo.actualizar-db*') ? 'is-active' : '' }}">
-                        <span class="gei-menu__label">Actualizar DB</span>
-                    </a>
-                </li>
-                <li>
                     <a href="{{ route('clientes.index') }}" class="gei-menu__link {{ request()->routeIs('clientes.*') ? 'is-active' : '' }}">
                         <span class="gei-menu__label">Clientes</span>
+                    </a>
+                </li>
+            </ul>
+        </details>
+    </li>
+
+    <li>
+        <details
+            class="gei-menu__group {{ $propietariosActivo ? 'is-active' : '' }}"
+            @if ($propietariosActivo) open @endif
+        >
+            <summary class="gei-menu__summary">
+                <span class="gei-menu__icon" aria-hidden="true">⌂</span>
+                <span class="gei-menu__label">Propietarios</span>
+                <span class="gei-menu__chevron" aria-hidden="true"></span>
+            </summary>
+
+            <ul class="gei-submenu">
+                <li>
+                    <a
+                        href="{{ route('propietarios.liquidaciones.index') }}"
+                        class="gei-menu__link {{ request()->routeIs('propietarios.liquidaciones.*') ? 'is-active' : '' }}"
+                    >
+                        <span class="gei-menu__label">Liquidaciones</span>
                     </a>
                 </li>
             </ul>

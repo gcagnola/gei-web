@@ -2,6 +2,9 @@
 
 namespace App\Http\Controllers;
 
+use App\Exceptions\MigracionExploracionException;
+use App\Services\MigracionExploracionService;
+use App\Services\TransformacionCobolService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -21,7 +24,6 @@ class ImportacionArchivosController extends Controller
     ];
 
     private const LIQUIDACIONES = [
-        'dailoc2.sf.txt' => 'dailoc2.SF.txt',
         'dailoc.sf.txt' => 'dailoc.SF.txt',
         'liquida.sf.txt' => 'liquida.sf.txt',
         'liquida.st.txt' => 'liquida.st.txt',
@@ -29,6 +31,10 @@ class ImportacionArchivosController extends Controller
         'liquidb.st.txt' => 'liquidb.st.txt',
         'pliqloc.sf.txt' => 'pliqloc.sf.txt',
         'pliqloc.st.txt' => 'pliqloc.st.txt',
+    ];
+
+    private const LIQUIDACIONES_OPCIONALES = [
+        'dailoc2.sf.txt' => 'dailoc2.SF.txt',
     ];
 
     private const MESES = [
@@ -47,13 +53,15 @@ class ImportacionArchivosController extends Controller
         'DICIEMBRE' => '12',
     ];
 
-    public function index(): View
+    public function index(
+        MigracionExploracionService $migracion,
+        TransformacionCobolService $transformacion
+    ): View
     {
         $this->crearDirectoriosBase();
 
         return view('importaciones.index', [
-            'archivosCobol' => $this->archivosCobol(),
-            'periodos' => $this->periodosLiquidaciones(),
+            'periodos' => $this->periodosImportaciones($migracion, $transformacion),
             'meses' => $this->mesesFormulario(),
         ]);
     }
@@ -76,6 +84,7 @@ class ImportacionArchivosController extends Controller
         $liquidaciones = [];
         $rechazados = [];
         $periodosDetectados = [];
+        $periodosCobolDetectados = [];
 
         try {
             foreach ($request->file('archivos', []) as $archivo) {
@@ -113,16 +122,29 @@ class ImportacionArchivosController extends Controller
 
                 if ($clasificacion['tipo'] === 'cobol') {
                     $cobol[] = $entrada;
+                    $periodoCobol = $this->detectarPeriodoCobol(
+                        $entrada['ruta'],
+                        $entrada['nombre']
+                    );
+
+                    if ($periodoCobol !== null) {
+                        $periodosCobolDetectados[] = $periodoCobol;
+                    }
 
                     continue;
                 }
 
                 $liquidaciones[] = $entrada;
-                $periodoDetectado = $this->detectarPeriodo($entrada['ruta']);
+                $periodoDetectado = $this->detectarPeriodoLiquidacion($entrada['ruta']);
 
                 if ($periodoDetectado !== null) {
                     $periodosDetectados[$periodoDetectado] = true;
                 }
+            }
+
+            if ($periodosCobolDetectados !== []) {
+                $periodoCobol = max($periodosCobolDetectados);
+                $periodosDetectados[$periodoCobol] = true;
             }
 
             if ($rechazados !== []) {
@@ -135,45 +157,45 @@ class ImportacionArchivosController extends Controller
 
             $periodo = $periodoManual;
 
-            if ($liquidaciones !== []) {
-                $detectados = array_keys($periodosDetectados);
+            $detectados = array_keys($periodosDetectados);
 
-                if ($periodo === null && count($detectados) === 1) {
-                    $periodo = $detectados[0];
-                }
+            if ($periodo === null && count($detectados) === 1) {
+                $periodo = $detectados[0];
+            }
 
-                if ($periodo === null) {
-                    return $this->respuestaError(
-                        $request,
-                        'periodo_mes',
-                        'No se pudo detectar un único período. Indicá mes y año para guardar las liquidaciones.'
-                    );
-                }
+            if (count($detectados) > 1 && $periodoManual === null) {
+                return $this->respuestaError(
+                    $request,
+                    'archivos',
+                    'Los archivos contienen períodos distintos: '.implode(', ', $detectados)
+                );
+            }
 
-                if (count($detectados) > 1 && $periodoManual === null) {
-                    return $this->respuestaError(
-                        $request,
-                        'archivos',
-                        'Los archivos contienen períodos distintos: '.implode(', ', $detectados)
-                    );
-                }
+            if ($periodo === null) {
+                return $this->respuestaError(
+                    $request,
+                    'periodo_mes',
+                    'No se pudo detectar un único período. Indicá mes y año para guardar todos los archivos.'
+                );
             }
 
             foreach ($cobol as $entrada) {
                 Storage::put(
-                    "liquidaciones/cobol/{$entrada['nombre']}",
+                    "liquidaciones/periodos/{$periodo}/cobol/{$entrada['nombre']}",
                     file_get_contents($entrada['ruta'])
                 );
             }
 
             foreach ($liquidaciones as $entrada) {
                 Storage::put(
-                    "liquidaciones/periodos/{$periodo}/{$entrada['nombre']}",
+                    "liquidaciones/periodos/{$periodo}/liquidaciones/{$entrada['nombre']}",
                     file_get_contents($entrada['ruta'])
                 );
             }
 
-            $mensaje = 'Archivos importados: '.count($cobol).' COBOL y '.count($liquidaciones).' de liquidaciones.';
+            $mensaje = 'Período '.$this->etiquetaPeriodo($periodo).': '
+                .count($cobol).' COBOL y '
+                .count($liquidaciones).' de liquidaciones importados.';
         } finally {
             Storage::deleteDirectory($temporal);
         }
@@ -190,9 +212,93 @@ class ImportacionArchivosController extends Controller
             ->with('estado', $mensaje);
     }
 
+    public function migrar(
+        Request $request,
+        string $periodo,
+        MigracionExploracionService $migracion,
+        TransformacionCobolService $transformacion
+    ): RedirectResponse|JsonResponse {
+        $faltantes = $this->archivosObligatoriosFaltantes($periodo);
+
+        if ($faltantes !== []) {
+            $mensaje = 'No se puede migrar el período porque faltan: '
+                .implode(', ', $faltantes).'.';
+
+            if ($request->expectsJson()) {
+                return response()->json([
+                    'message' => $mensaje,
+                ], 422);
+            }
+
+            return redirect()
+                ->route('archivo.importar')
+                ->withErrors(['migracion' => $mensaje]);
+        }
+
+        try {
+            $resultadoCrudo = $migracion->migrar($periodo);
+        } catch (MigracionExploracionException $exception) {
+            if ($request->expectsJson()) {
+                return response()->json([
+                    'message' => $exception->getMessage(),
+                ], 422);
+            }
+
+            return redirect()
+                ->route('archivo.importar')
+                ->withErrors([
+                    'migracion' => $exception->getMessage(),
+                ]);
+        }
+
+        try {
+            $resultadoTablas = $transformacion->ejecutar($periodo);
+        } catch (\Throwable $exception) {
+            $mensaje = sprintf(
+                'Los archivos crudos del período %s se migraron correctamente, pero falló la actualización de las tablas definitivas: %s. Podés reintentar el mismo período sin duplicar datos.',
+                $this->etiquetaPeriodo($periodo),
+                $exception->getMessage()
+            );
+
+            if ($request->expectsJson()) {
+                return response()->json([
+                    'message' => $mensaje,
+                    'resultado' => [
+                        'crudos' => $resultadoCrudo,
+                        'tablas' => null,
+                    ],
+                ], 422);
+            }
+
+            return redirect()
+                ->route('archivo.importar')
+                ->withErrors(['migracion' => $mensaje]);
+        }
+
+        $mensaje = $this->mensajeMigracionCompleta(
+            $periodo,
+            $resultadoCrudo,
+            $resultadoTablas
+        );
+
+        if ($request->expectsJson()) {
+            return response()->json([
+                'message' => $mensaje,
+                'redirect' => route('archivo.importar'),
+                'resultado' => [
+                    'crudos' => $resultadoCrudo,
+                    'tablas' => $resultadoTablas,
+                ],
+            ]);
+        }
+
+        return redirect()
+            ->route('archivo.importar')
+            ->with('estado', $mensaje);
+    }
+
     private function crearDirectoriosBase(): void
     {
-        Storage::makeDirectory('liquidaciones/cobol');
         Storage::makeDirectory('liquidaciones/periodos');
         Storage::makeDirectory('liquidaciones/tmp');
     }
@@ -208,10 +314,10 @@ class ImportacionArchivosController extends Controller
             ];
         }
 
-        if (isset(self::LIQUIDACIONES[$clave])) {
+        if (isset(self::LIQUIDACIONES[$clave]) || isset(self::LIQUIDACIONES_OPCIONALES[$clave])) {
             return [
                 'tipo' => 'liquidacion',
-                'nombre' => self::LIQUIDACIONES[$clave],
+                'nombre' => self::LIQUIDACIONES[$clave] ?? self::LIQUIDACIONES_OPCIONALES[$clave],
             ];
         }
 
@@ -324,41 +430,117 @@ class ImportacionArchivosController extends Controller
             ]);
     }
 
-    private function archivosCobol(): array
-    {
-        return collect(self::COBOL)
-            ->values()
-            ->map(fn (string $nombre) => $this->datosArchivo(
-                "liquidaciones/cobol/{$nombre}",
-                $nombre
-            ))
-            ->all();
-    }
-
-    private function periodosLiquidaciones(): array
+    private function periodosImportaciones(
+        MigracionExploracionService $migracion,
+        TransformacionCobolService $transformacion
+    ): array
     {
         return collect(Storage::directories('liquidaciones/periodos'))
-            ->map(function (string $directorio) {
+            ->map(function (string $directorio) use ($migracion, $transformacion) {
                 $periodo = basename($directorio);
-                $archivos = collect(Storage::files($directorio))
-                    ->map(fn (string $archivo) => $this->datosArchivo(
-                        $archivo,
-                        basename($archivo)
-                    ))
-                    ->sortBy('nombre')
+                $archivosCobol = collect(self::COBOL)
+                    ->values()
+                    ->map(fn (string $nombre) => $this->datosArchivo(
+                        "{$directorio}/cobol/{$nombre}",
+                        $nombre
+                    ));
+
+                $archivosLiquidaciones = collect(self::LIQUIDACIONES)
+                    ->values()
+                    ->map(fn (string $nombre) => $this->datosArchivoCompatible(
+                        "{$directorio}/liquidaciones/{$nombre}",
+                        "{$directorio}/{$nombre}",
+                        $nombre
+                    ));
+
+                $archivosOpcionales = collect(self::LIQUIDACIONES_OPCIONALES)
+                    ->values()
+                    ->map(function (string $nombre) use ($directorio) {
+                        return array_merge(
+                            $this->datosArchivoCompatible(
+                                "{$directorio}/liquidaciones/{$nombre}",
+                                "{$directorio}/{$nombre}",
+                                $nombre
+                            ),
+                            ['opcional' => true]
+                        );
+                    })
+                    ->where('existe', true)
                     ->values();
+
+                $archivosObligatorios = $archivosCobol->concat($archivosLiquidaciones);
+                $todosLosArchivos = $archivosObligatorios->concat($archivosOpcionales);
+                $cantidadObligatorios = $archivosObligatorios
+                    ->where('existe', true)
+                    ->count();
+                $completo = $cantidadObligatorios === $archivosObligatorios->count();
+                $estadoMigracion = $migracion->estado($periodo);
+                $estadoTablas = $transformacion->estado($periodo);
 
                 return [
                     'periodo' => $periodo,
                     'etiqueta' => $this->etiquetaPeriodo($periodo),
-                    'archivos' => $archivos,
-                    'cantidad' => $archivos->count(),
-                    'actualizado' => $archivos->pluck('timestamp')->filter()->max(),
+                    'archivos_cobol' => $archivosCobol->all(),
+                    'archivos_liquidaciones' => $archivosLiquidaciones
+                        ->concat($archivosOpcionales)
+                        ->all(),
+                    'cantidad_obligatorios' => $cantidadObligatorios,
+                    'total_obligatorios' => $archivosObligatorios->count(),
+                    'cantidad_opcionales' => $archivosOpcionales
+                        ->where('existe', true)
+                        ->count(),
+                    'completo' => $completo,
+                    'actualizado' => $todosLosArchivos->pluck('timestamp')->filter()->max(),
+                    'migracion' => [
+                        ...$estadoMigracion,
+                        'disponible' => $completo
+                            && ($estadoMigracion['disponible'] ?? false),
+                    ],
+                    'tablas' => $estadoTablas,
                 ];
             })
             ->sortByDesc('periodo')
             ->values()
             ->all();
+    }
+
+    private function archivosObligatoriosFaltantes(string $periodo): array
+    {
+        if (! preg_match('/^(19|20)\d{2}(0[1-9]|1[0-2])$/', $periodo)) {
+            return ['período inválido'];
+        }
+
+        $base = "liquidaciones/periodos/{$periodo}";
+        $faltantes = [];
+
+        foreach (self::COBOL as $nombre) {
+            if (! Storage::exists("{$base}/cobol/{$nombre}")) {
+                $faltantes[] = $nombre;
+            }
+        }
+
+        foreach (self::LIQUIDACIONES as $nombre) {
+            $rutaActual = "{$base}/liquidaciones/{$nombre}";
+            $rutaAnterior = "{$base}/{$nombre}";
+
+            if (! Storage::exists($rutaActual) && ! Storage::exists($rutaAnterior)) {
+                $faltantes[] = $nombre;
+            }
+        }
+
+        return $faltantes;
+    }
+
+    private function datosArchivoCompatible(
+        string $rutaActual,
+        string $rutaAnterior,
+        string $nombre
+    ): array {
+        if (Storage::exists($rutaActual)) {
+            return $this->datosArchivo($rutaActual, $nombre);
+        }
+
+        return $this->datosArchivo($rutaAnterior, $nombre);
     }
 
     private function datosArchivo(string $ruta, string $nombre): array
@@ -384,7 +566,65 @@ class ImportacionArchivosController extends Controller
         ];
     }
 
-    private function detectarPeriodo(string $ruta): ?string
+    private function detectarPeriodoCobol(string $ruta, string $nombre): ?string
+    {
+        $posicionFecha = match ($nombre) {
+            'CTACTEPRO.TXT', 'INQCTACTE.TXT' => 11,
+            'PROPIETAR.TXT' => 159,
+            // INQUILINO.TXT no contiene una fecha que permita determinar el período.
+            default => null,
+        };
+
+        if ($posicionFecha === null) {
+            return null;
+        }
+
+        $archivo = fopen($ruta, 'rb');
+
+        if ($archivo === false) {
+            return null;
+        }
+
+        $ultimaFecha = null;
+
+        try {
+            while (($linea = fgets($archivo)) !== false) {
+                $fecha = substr($linea, $posicionFecha, 8);
+
+                if (! $this->esFechaCobolValida($fecha)) {
+                    continue;
+                }
+
+                if ($ultimaFecha === null || $fecha > $ultimaFecha) {
+                    $ultimaFecha = $fecha;
+                }
+            }
+        } finally {
+            fclose($archivo);
+        }
+
+        return $ultimaFecha === null
+            ? null
+            : substr($ultimaFecha, 0, 6);
+    }
+
+    private function esFechaCobolValida(string $fecha): bool
+    {
+        // Valor erróneo conocido de INQCTACTE.TXT.
+        if ($fecha === '22200612' || ! preg_match('/^\d{8}$/', $fecha)) {
+            return false;
+        }
+
+        $anio = (int) substr($fecha, 0, 4);
+        $mes = (int) substr($fecha, 4, 2);
+        $dia = (int) substr($fecha, 6, 2);
+
+        return $anio >= 2000
+            && $anio <= 2100
+            && checkdate($mes, $dia, $anio);
+    }
+
+    private function detectarPeriodoLiquidacion(string $ruta): ?string
     {
         $contenido = file_get_contents($ruta, false, null, 0, 524288);
 
@@ -474,5 +714,35 @@ class ImportacionArchivosController extends Controller
             11 => 'Noviembre',
             12 => 'Diciembre',
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $crudos
+     * @param array<string, mixed> $tablas
+     */
+    private function mensajeMigracionCompleta(
+        string $periodo,
+        array $crudos,
+        array $tablas
+    ): string {
+        $clientes = $tablas['clientes'] ?? [];
+        $inmuebles = $tablas['inmuebles'] ?? [];
+        $contratos = $tablas['contratos'] ?? [];
+        $cuentas = $tablas['cuentas_corrientes'] ?? [];
+
+        return sprintf(
+            'Período %s listo. Crudos: %d cargados y %d omitidos. Tablas: %d clientes creados, %d actualizados; %d inmuebles creados, %d actualizados; %d contratos creados, %d actualizados; %d movimientos creados, %d actualizados.',
+            $this->etiquetaPeriodo($periodo),
+            (int) ($crudos['registros_cargados'] ?? 0),
+            (int) ($crudos['registros_omitidos'] ?? 0),
+            (int) ($clientes['clientes_creados'] ?? 0),
+            (int) ($clientes['clientes_actualizados'] ?? 0),
+            (int) ($inmuebles['inmuebles_creados'] ?? 0),
+            (int) ($inmuebles['inmuebles_actualizados'] ?? 0),
+            (int) ($contratos['contratos_creados'] ?? 0),
+            (int) ($contratos['contratos_actualizados'] ?? 0),
+            (int) ($cuentas['movimientos_creados'] ?? 0),
+            (int) ($cuentas['movimientos_actualizados'] ?? 0)
+        );
     }
 }

@@ -8,9 +8,12 @@
         content="width=device-width, initial-scale=1.0"
     >
 
-    <title>
-        Restablecer contraseña — Guastavino e Imbert
-    </title>
+    <meta
+        name="theme-color"
+        content="#962aa8"
+    >
+
+    <title>Nueva contraseña | Guastavino e Imbert</title>
 
     <link
         rel="icon"
@@ -20,41 +23,101 @@
 
     @vite([
         'resources/css/app.css',
-        'resources/js/app.js'
+        'resources/js/app.js',
     ])
 </head>
 
 <body class="gei-login-body">
     <main class="gei-login">
-        <section class="gei-login__institutional">
-            <div class="gei-login__institutional-content">
+        <section class="gei-login__brand">
+            <div
+                class="gei-login__decoration
+                       gei-login__decoration--one"
+            ></div>
+
+            <div
+                class="gei-login__decoration
+                       gei-login__decoration--two"
+            ></div>
+
+            <div class="gei-login__brand-content">
                 <img
                     src="{{ asset('images/gei/logo-horizontal-blanco.webp') }}"
-                    alt="Guastavino e Imbert"
+                    alt="Guastavino e Imbert Inmobiliaria"
                     class="gei-login__logo"
                 >
 
-                <p class="gei-login__tagline">
+                <div class="gei-login__separator"></div>
+
+                <p class="gei-login__claim">
                     La tranquilidad de un siglo de experiencia
                 </p>
             </div>
+
+            <p class="gei-login__brand-footer">
+                Guastavino e Imbert — Administración
+            </p>
         </section>
 
         <section class="gei-login__form-panel">
             <div class="gei-login__form-container">
-                <h1 class="gei-login__title">
-                    Nueva contraseña
-                </h1>
+                <a
+                    href="{{ route('login') }}"
+                    class="gei-login__back-link"
+                >
+                    ← Volver al inicio de sesión
+                </a>
 
-                <p class="gei-login__description">
-                    Elegí una nueva contraseña para el sistema web.
-                    La contraseña utilizada por Visual FoxPro no será modificada.
-                </p>
+                <header class="gei-login__header">
+                    <img
+                        src="{{ asset('images/gei/logo-compacto.webp') }}"
+                        alt=""
+                        class="gei-login__compact-logo"
+                        aria-hidden="true"
+                    >
+
+                    <p class="gei-login__eyebrow">
+                        Sistema administrativo
+                    </p>
+
+                    <h1 class="gei-login__title">
+                        Nueva contraseña
+                    </h1>
+
+                    <p class="gei-login__description">
+                        Elegí una nueva contraseña para ingresar al sistema.
+                    </p>
+                </header>
+
+                @if ($errors->any())
+                    <div
+                        class="alert gei-alert gei-alert--error"
+                        role="alert"
+                    >
+                        <div
+                            class="gei-alert__icon"
+                            aria-hidden="true"
+                        >
+                            !
+                        </div>
+
+                        <div>
+                            <strong>
+                                No pudimos actualizar la contraseña.
+                            </strong>
+
+                            <div>
+                                Revisá los datos ingresados.
+                            </div>
+                        </div>
+                    </div>
+                @endif
 
                 <form
                     method="POST"
                     action="{{ route('password.update') }}"
                     class="gei-login__form"
+                    novalidate
                 >
                     @csrf
 
@@ -64,10 +127,10 @@
                         value="{{ $token }}"
                     >
 
-                    <div class="mb-3">
+                    <div class="gei-field">
                         <label
                             for="email"
-                            class="form-label"
+                            class="gei-field__label"
                         >
                             Correo electrónico
                         </label>
@@ -77,9 +140,10 @@
                             id="email"
                             name="email"
                             value="{{ old('email', $email) }}"
-                            class="form-control @error('email') is-invalid @enderror"
                             maxlength="255"
                             autocomplete="email"
+                            class="form-control gei-field__control
+                                   @error('email') is-invalid @enderror"
                             required
                             readonly
                         >
@@ -91,10 +155,10 @@
                         @enderror
                     </div>
 
-                    <div class="mb-3">
+                    <div class="gei-field">
                         <label
                             for="password"
-                            class="form-label"
+                            class="gei-field__label"
                         >
                             Nueva contraseña
                         </label>
@@ -103,9 +167,11 @@
                             type="password"
                             id="password"
                             name="password"
-                            class="form-control @error('password') is-invalid @enderror"
                             minlength="8"
                             autocomplete="new-password"
+                            class="form-control gei-field__control
+                                   @error('password') is-invalid @enderror"
+                            autofocus
                             required
                         >
 
@@ -116,10 +182,10 @@
                         @enderror
                     </div>
 
-                    <div class="mb-4">
+                    <div class="gei-field">
                         <label
                             for="password_confirmation"
-                            class="form-label"
+                            class="gei-field__label"
                         >
                             Repetir nueva contraseña
                         </label>
@@ -128,20 +194,26 @@
                             type="password"
                             id="password_confirmation"
                             name="password_confirmation"
-                            class="form-control"
                             minlength="8"
                             autocomplete="new-password"
+                            class="form-control gei-field__control"
                             required
                         >
                     </div>
 
                     <button
                         type="submit"
-                        class="btn btn-primary w-100"
+                        class="btn gei-button gei-button--primary"
                     >
                         Guardar nueva contraseña
                     </button>
                 </form>
+
+                <footer class="gei-login__footer">
+                    <span>Guastavino e Imbert</span>
+                    <span aria-hidden="true">·</span>
+                    <span>Administración</span>
+                </footer>
             </div>
         </section>
     </main>

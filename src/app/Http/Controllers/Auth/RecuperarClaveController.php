@@ -13,17 +13,11 @@ use Illuminate\Support\Str;
 
 class RecuperarClaveController extends Controller
 {
-    /**
-     * Muestra el formulario donde el usuario ingresa su correo.
-     */
     public function mostrarSolicitud()
     {
         return view('auth.clave-olvidada');
     }
 
-    /**
-     * Genera el token y envía el correo de recuperación.
-     */
     public function enviarEnlace(Request $request)
     {
         $datos = $request->validate([
@@ -33,52 +27,41 @@ class RecuperarClaveController extends Controller
         $email = trim($datos['email']);
 
         $usuario = Usuario::query()
-            ->whereRaw('LOWER(TRIM(web_email)) = LOWER(?)', [$email])
-            ->where('habilitado', 1)
+            ->whereRaw('LOWER(email) = LOWER(?)', [$email])
+            ->where('activo', true)
             ->first();
 
-        /*
-         * No informamos si el correo existe o no.
-         * Esto evita revelar usuarios registrados.
-         */
+        $mensaje = 'Si el correo está registrado, recibirás un enlace para restablecer la contraseña.';
+
         if (!$usuario) {
-            return back()->with(
-                'estado',
-                'Si el correo está registrado, recibirás un enlace para restablecer la contraseña.'
-            );
+            return back()->with('estado', $mensaje);
         }
 
         $tokenPlano = Str::random(64);
-        $tokenHash = hash('sha256', $tokenPlano);
 
-        DB::table('web_password_reset_tokens')->updateOrInsert(
-            ['email' => trim((string) $usuario->web_email)],
+        DB::table('password_reset_tokens')->updateOrInsert(
+            ['email' => $usuario->email],
             [
-                'token' => $tokenHash,
+                'token' => hash('sha256', $tokenPlano),
                 'created_at' => now(),
             ]
         );
 
         $urlRecuperacion = route('password.reset', [
             'token' => $tokenPlano,
-            'email' => trim((string) $usuario->web_email),
+            'email' => $usuario->email,
         ]);
 
-        Mail::to(trim((string) $usuario->web_email))
-            ->send(new RecuperarClaveMail(
+        Mail::to($usuario->email)->send(
+            new RecuperarClaveMail(
                 nombreUsuario: $usuario->nombre_limpio,
                 urlRecuperacion: $urlRecuperacion
-            ));
-
-        return back()->with(
-            'estado',
-            'Si el correo está registrado, recibirás un enlace para restablecer la contraseña.'
+            )
         );
+
+        return back()->with('estado', $mensaje);
     }
 
-    /**
-     * Muestra el formulario para elegir una nueva contraseña.
-     */
     public function mostrarRestablecimiento(
         Request $request,
         string $token
@@ -89,9 +72,6 @@ class RecuperarClaveController extends Controller
         ]);
     }
 
-    /**
-     * Valida el token y actualiza únicamente la contraseña web.
-     */
     public function restablecer(Request $request)
     {
         $datos = $request->validate([
@@ -107,13 +87,9 @@ class RecuperarClaveController extends Controller
 
         $email = trim($datos['email']);
 
-        $registroToken = DB::table('web_password_reset_tokens')
+        $registroToken = DB::table('password_reset_tokens')
             ->whereRaw('LOWER(email) = LOWER(?)', [$email])
-            ->where(
-                'created_at',
-                '>=',
-                now()->subMinutes(60)
-            )
+            ->where('created_at', '>=', now()->subMinutes(60))
             ->first();
 
         if (
@@ -131,8 +107,8 @@ class RecuperarClaveController extends Controller
         }
 
         $usuario = Usuario::query()
-            ->whereRaw('LOWER(TRIM(web_email)) = LOWER(?)', [$email])
-            ->where('habilitado', 1)
+            ->whereRaw('LOWER(email) = LOWER(?)', [$email])
+            ->where('activo', true)
             ->first();
 
         if (!$usuario) {
@@ -145,13 +121,12 @@ class RecuperarClaveController extends Controller
 
         DB::transaction(function () use ($usuario, $datos, $email) {
             $usuario->forceFill([
-                'web_clave_hash' => Hash::make($datos['password']),
-                'web_clave_actualizada' => now(),
-                'web_intentos_fallidos' => 0,
-                'web_bloqueado_hasta' => null,
+                'password' => Hash::make($datos['password']),
+                'intentos_fallidos' => 0,
+                'bloqueado_hasta' => null,
             ])->save();
 
-            DB::table('web_password_reset_tokens')
+            DB::table('password_reset_tokens')
                 ->whereRaw('LOWER(email) = LOWER(?)', [$email])
                 ->delete();
         });

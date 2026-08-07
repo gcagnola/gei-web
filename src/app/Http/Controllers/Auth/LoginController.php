@@ -19,35 +19,31 @@ class LoginController extends Controller
     public function ingresar(Request $request)
     {
         $datos = $request->validate([
-            'nombre' => ['required', 'string', 'max:25'],
+            'nombre' => ['required', 'string', 'max:50'],
             'clave' => ['required', 'string'],
         ]);
 
         $usuario = Usuario::query()
-            ->whereRaw('TRIM(nombre) = ?', [
-                trim($datos['nombre']),
-            ])
+            ->where('nombre_usuario', trim($datos['nombre']))
             ->first();
 
         if (
             !$usuario ||
             !$usuario->estaHabilitado() ||
-            $this->estaBloqueado($usuario) ||
-            !$this->validarClave($usuario, $datos['clave'])
+            $this->estaBloqueado($usuario)
         ) {
-            if ($usuario && !$this->estaBloqueado($usuario)) {
-                $this->registrarIntentoFallido($usuario);
-            }
+            $this->credencialesIncorrectas();
+        }
 
-            throw ValidationException::withMessages([
-                'nombre' => 'Usuario o contraseña incorrectos.',
-            ]);
+        if (!Hash::check($datos['clave'], $usuario->password)) {
+            $this->registrarIntentoFallido($usuario);
+            $this->credencialesIncorrectas();
         }
 
         $usuario->forceFill([
-            'web_ultimo_acceso' => now(),
-            'web_intentos_fallidos' => 0,
-            'web_bloqueado_hasta' => null,
+            'ultimo_acceso' => now(),
+            'intentos_fallidos' => 0,
+            'bloqueado_hasta' => null,
         ])->save();
 
         Auth::login(
@@ -70,62 +66,34 @@ class LoginController extends Controller
         return redirect()->route('login');
     }
 
-    private function validarClave(
-        Usuario $usuario,
-        string $claveIngresada
-    ): bool {
-        $hashWeb = trim((string) $usuario->web_clave_hash);
-
-        if ($hashWeb !== '') {
-            if (! $this->esHashBcrypt($hashWeb)) {
-                return false;
-            }
-
-            return Hash::check($claveIngresada, $hashWeb);
-        }
-
-        $md5Almacenado = strtolower(
-            trim((string) $usuario->clave)
-        );
-
-        $md5Ingresado = md5($claveIngresada);
-
-        if (!hash_equals($md5Almacenado, $md5Ingresado)) {
-            return false;
-        }
-
-        $usuario->forceFill([
-            'web_clave_hash' => Hash::make($claveIngresada),
-            'web_clave_actualizada' => now(),
-        ])->save();
-
-        return true;
-    }
-
-    private function esHashBcrypt(string $hash): bool
-    {
-        return password_get_info($hash)['algoName'] === 'bcrypt';
-    }
-
     private function estaBloqueado(Usuario $usuario): bool
     {
-        return $usuario->web_bloqueado_hasta !== null
-            && $usuario->web_bloqueado_hasta->isFuture();
+        return $usuario->bloqueado_hasta !== null
+            && $usuario->bloqueado_hasta->isFuture();
     }
 
     private function registrarIntentoFallido(Usuario $usuario): void
     {
-        $intentos = (int) $usuario->web_intentos_fallidos + 1;
-
-        $datos = [
-            'web_intentos_fallidos' => $intentos,
-        ];
+        $intentos = $usuario->intentos_fallidos + 1;
 
         if ($intentos >= 5) {
-            $datos['web_bloqueado_hasta'] = now()->addMinutes(15);
-            $datos['web_intentos_fallidos'] = 0;
+            $usuario->forceFill([
+                'intentos_fallidos' => 0,
+                'bloqueado_hasta' => now()->addMinutes(15),
+            ])->save();
+
+            return;
         }
 
-        $usuario->forceFill($datos)->save();
+        $usuario->forceFill([
+            'intentos_fallidos' => $intentos,
+        ])->save();
+    }
+
+    private function credencialesIncorrectas(): never
+    {
+        throw ValidationException::withMessages([
+            'nombre' => 'Usuario o contraseña incorrectos.',
+        ]);
     }
 }

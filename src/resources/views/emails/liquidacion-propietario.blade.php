@@ -2,10 +2,21 @@
 
 <p>
     Adjuntamos la liquidación de propietario correspondiente al período
-    {{ $liquidacion->periodo_limpio ?: 'indicado' }}.
+    <strong>{{ $liquidacion->periodo_formateado }}</strong>.
 </p>
 
 <p>
     Número de liquidación:
-    {{ (int) $liquidacion->punto_venta }}-{{ (int) $liquidacion->numero }}.
+    <strong>{{ sprintf('%04d-%08d', 0, $liquidacion->numero_interno) }}</strong>.
+</p>
+
+<p>
+    Cuenta:
+    <strong>{{ $liquidacion->cuenta_impresa }}</strong>.
+</p>
+
+<p>Saludos cordiales.</p>
+
+<p>
+    Guastavino e Imbert - Administración
 </p>

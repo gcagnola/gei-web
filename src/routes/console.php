@@ -1,6 +1,5 @@
 <?php
 
-use App\Services\ImportadorPythonService;
 use App\Services\MigracionKngGeiPostgresqlService;
 use App\Services\ValidacionKngGeiPostgresqlService;
 use App\Services\WebCobolPilotImporter;
@@ -10,7 +9,6 @@ use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
-use Illuminate\Support\Facades\Schema;
 use Symfony\Component\Process\Process;
 
 Artisan::command('inspire', function () {
@@ -129,133 +127,6 @@ Artisan::command('gei:web-liquidacion-pdf-piloto
 
         return 0;
 })->purpose('Genera un PDF piloto aislado desde JSON intermedio web_* sin recalcular liquidacion.');
-
-Artisan::command('gei:marcar-clientes-validados {--repositorio-id=} {--dry-run}', function (
-    ImportadorPythonService $importadorPython
-) {
-    if (! Schema::hasColumn('clientes', 'web_validada')) {
-        $this->error(
-            'Falta clientes.web_validada. Ejecutá primero sql/2026_07_07_add_web_validada_to_clientes.sql.'
-        );
-
-        return 1;
-    }
-
-    $repositorioId = (int) ($this->option('repositorio-id') ?: config('gei.importador.repositorio_id'));
-    $resultado = $importadorPython->compararCobol($repositorioId);
-    $clientesValidados = $resultado['json']['comparacion_postgresql']['clientes_validados'] ?? [];
-    $clientesValidados = array_values(array_unique(array_map('intval', $clientesValidados)));
-
-    if ($clientesValidados === []) {
-        $this->warn('El comparador no devolvió clientes validados para marcar.');
-
-        return 0;
-    }
-
-    if ($this->option('dry-run')) {
-        $this->info('Clientes que serían marcados: '.count($clientesValidados));
-
-        return 0;
-    }
-
-    $actualizados = 0;
-    foreach (array_chunk($clientesValidados, 500) as $lote) {
-        $actualizados += DB::table('clientes')
-            ->whereIn('codigo_cliente', $lote)
-            ->update(['web_validada' => true]);
-    }
-
-    $this->info("Clientes marcados como web_validada=true: {$actualizados}");
-
-    return 0;
-})->purpose('Marca clientes reconciliados por Actualizar DB sin modificar datos heredados.');
-
-Artisan::command('gei:marcar-clientes-operativos {--repositorio-id=} {--dry-run}', function (
-    ImportadorPythonService $importadorPython
-) {
-    if (! Schema::hasColumn('clientes', 'web_operativo')) {
-        $this->error(
-            'Falta clientes.web_operativo. Ejecutá primero sql/2026_07_07_add_web_operativo_to_clientes.sql.'
-        );
-
-        return 1;
-    }
-
-    $repositorioId = (int) ($this->option('repositorio-id') ?: config('gei.importador.repositorio_id'));
-    $resultado = $importadorPython->compararCobol($repositorioId);
-    $clientesOperativos = $resultado['json']['comparacion_postgresql']['clientes_operativos'] ?? [];
-    $clientesOperativos = array_values(array_unique(array_map('intval', $clientesOperativos)));
-
-    $hoy = now()->toDateString();
-    $clientesConContratoVigente = DB::table('contratos')
-        ->join(
-            'contratos_inmuebles',
-            'contratos_inmuebles.codigo_contrato',
-            '=',
-            'contratos.codigo_contrato'
-        )
-        ->leftJoin(
-            'contratos_inquilinos',
-            'contratos_inquilinos.codigo_contrato',
-            '=',
-            'contratos.codigo_contrato'
-        )
-        ->leftJoin(
-            'inmuebles_propietarios',
-            'inmuebles_propietarios.codigo_inmueble',
-            '=',
-            'contratos_inmuebles.codigo_inmueble'
-        )
-        ->whereDate('contratos.fecha_inicio', '<=', $hoy)
-        ->whereDate('contratos.fecha_fin', '>=', $hoy)
-        ->selectRaw('contratos_inquilinos.codigo_cliente AS codigo_cliente')
-        ->whereNotNull('contratos_inquilinos.codigo_cliente')
-        ->union(
-            DB::table('contratos')
-                ->join(
-                    'contratos_inmuebles',
-                    'contratos_inmuebles.codigo_contrato',
-                    '=',
-                    'contratos.codigo_contrato'
-                )
-                ->join(
-                    'inmuebles_propietarios',
-                    'inmuebles_propietarios.codigo_inmueble',
-                    '=',
-                    'contratos_inmuebles.codigo_inmueble'
-                )
-                ->whereDate('contratos.fecha_inicio', '<=', $hoy)
-                ->whereDate('contratos.fecha_fin', '>=', $hoy)
-                ->selectRaw('inmuebles_propietarios.codigo_cliente AS codigo_cliente')
-        )
-        ->pluck('codigo_cliente')
-        ->map(fn ($codigoCliente) => (int) $codigoCliente)
-        ->all();
-
-    $clientesOperativos = array_values(array_unique([
-        ...$clientesOperativos,
-        ...$clientesConContratoVigente,
-    ]));
-
-    if ($this->option('dry-run')) {
-        $this->info('Clientes que serían marcados como operativos: '.count($clientesOperativos));
-
-        return 0;
-    }
-
-    DB::table('clientes')->update(['web_operativo' => false]);
-
-    $actualizados = 0;
-    foreach (array_chunk($clientesOperativos, 500) as $lote) {
-        $actualizados += DB::table('clientes')
-            ->whereIn('codigo_cliente', $lote)
-            ->update(['web_operativo' => true]);
-    }
-
-    $this->info("Clientes marcados como web_operativo=true: {$actualizados}");
-
-    return 0;
-})->purpose('Marca clientes operativos por contratos vigentes y evidencia de archivos sin modificar datos heredados.');
 
 Artisan::command('gei:validar-kng-gei-postgresql {importacion_id?} {--solo=} {--completo}', function (
     ValidacionKngGeiPostgresqlService $validacion
