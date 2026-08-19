@@ -36,6 +36,13 @@
                         <span class="gei-menu__label">Clientes</span>
                     </a>
                 </li>
+                @can('administrar-unificaciones')
+                    <li>
+                        <a href="{{ route('archivo.unificacion.index') }}" class="gei-menu__link {{ request()->routeIs('archivo.unificacion.*') ? 'is-active' : '' }}">
+                            <span class="gei-menu__label">Unificación</span>
+                        </a>
+                    </li>
+                @endcan
             </ul>
         </details>
     </li>

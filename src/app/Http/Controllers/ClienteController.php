@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Collection;
 use Illuminate\View\View;
 
@@ -111,6 +112,7 @@ class ClienteController extends Controller
         $contratos = collect();
         $inquilinosDePropietario = collect();
         $liquidaciones = collect();
+        $repartos = collect();
 
         if ($clienteSeleccionado) {
             $clienteSeleccionado->load([
@@ -118,7 +120,7 @@ class ClienteController extends Controller
                 'cuentas' => fn ($query) => $query->orderBy('rol')->orderBy('cuenta'),
             ]);
 
-            $inmuebles = $this->inmueblesDelPropietario($clienteSeleccionado->id);
+            $inmuebles = $this->inmueblesDelPropietario($clienteSeleccionado);
 
             $contratos = $this->contratosDelInquilino($clienteSeleccionado->id);
 
@@ -127,6 +129,7 @@ class ClienteController extends Controller
             );
 
             $liquidaciones = $this->liquidacionesDelPropietario($clienteSeleccionado);
+            $repartos = $this->repartosDelPropietario($clienteSeleccionado);
         }
 
         return view('clientes.index', compact(
@@ -138,52 +141,83 @@ class ClienteController extends Controller
             'inmuebles',
             'contratos',
             'inquilinosDePropietario',
-            'liquidaciones'
+            'liquidaciones',
+            'repartos'
         ));
     }
 
-    private function inmueblesDelPropietario(int $clienteId): Collection
+    private function inmueblesDelPropietario(Cliente $cliente): Collection
     {
         return DB::table('inmuebles as i')
-                ->join('inmuebles_propietarios as ip', 'ip.inmueble_id', '=', 'i.id')
-                ->leftJoin('clientes_cuentas as cc', 'cc.id', '=', 'ip.cliente_cuenta_id')
-                ->where('ip.cliente_id', $clienteId)
-                ->select([
-                    'i.id',
-                    'i.domicilio',
-                    'i.domicilio_normalizado',
-                    'i.estado',
-                    'ip.porcentaje',
-                    'ip.activo',
-                    'cc.cuenta',
-                ])
-                ->orderBy('i.domicilio')
-                ->orderBy('cc.cuenta')
-                ->get()
-                ->groupBy(fn (object $fila): string => trim((string) $fila->domicilio_normalizado) !== ''
-                    ? trim((string) $fila->domicilio_normalizado)
-                    : 'ID:'.$fila->id)
-                ->map(function (Collection $filas): object {
-                    $primera = $filas->first();
-                    $porcentajes = $filas->pluck('porcentaje')
-                        ->filter(fn (mixed $valor): bool => $valor !== null)
-                        ->map(fn (mixed $valor): string => rtrim(rtrim(number_format((float) $valor, 6, ',', '.'), '0'), ','))
-                        ->unique()
-                        ->values();
+            ->join('inmuebles_propietarios as ip', 'ip.inmueble_id', '=', 'i.id')
+            ->leftJoin('clientes_cuentas as cc', 'cc.id', '=', 'ip.cliente_cuenta_id')
+            ->where('ip.cliente_id', $cliente->id)
+            ->select([
+                'i.id',
+                'i.domicilio',
+                'i.estado',
+                'ip.activo',
+                'cc.cuenta',
+            ])
+            ->orderBy('i.domicilio')
+            ->orderBy('cc.cuenta')
+            ->get()
+            ->groupBy(fn (object $fila): string => (string) $fila->id)
+            ->map(function (Collection $filas): object {
+                $primera = $filas->first();
 
-                    return (object) [
-                        'id' => $primera->id,
-                        'domicilio' => $primera->domicilio,
-                        'estado' => $filas->contains(fn (object $fila): bool => $fila->estado === 'ACTIVO')
-                            ? 'ACTIVO'
-                            : $primera->estado,
-                        'porcentajes' => $porcentajes->implode(' / '),
-                        'cuentas' => $filas->pluck('cuenta')->filter()->unique()->sort()->values()->implode(' · '),
-                        'relaciones' => $filas->count(),
-                    ];
-                })
-                ->sortBy(fn (object $inmueble): string => mb_strtolower($inmueble->domicilio))
-                ->values();
+                return (object) [
+                    'id' => $primera->id,
+                    'domicilio' => $primera->domicilio,
+                    'estado' => $filas->contains(fn (object $fila): bool => $fila->estado === 'ACTIVO')
+                        ? 'ACTIVO'
+                        : $primera->estado,
+                    'cuentas' => $filas->pluck('cuenta')->filter()->unique()->sort()->values()->implode(' · '),
+                    'relaciones' => $filas->count(),
+                ];
+            })
+            ->sortBy(fn (object $inmueble): string => mb_strtolower($inmueble->domicilio))
+            ->values();
+    }
+
+    private function repartosDelPropietario(Cliente $cliente): Collection
+    {
+        if (! Schema::hasTable('repartos_propietarios')) {
+            return collect();
+        }
+
+        $cuentas = $cliente->cuentas
+            ->where('rol', 'PROPIETARIO')
+            ->pluck('cuenta')
+            ->map(fn (mixed $cuenta): string => preg_replace('/\D+/', '', (string) $cuenta) ?: '')
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+
+        if ($cuentas === []) {
+            return collect();
+        }
+
+        return DB::table('repartos_propietarios as rp')
+            ->leftJoin('clientes as beneficiario_cliente', 'beneficiario_cliente.id', '=', 'rp.cliente_id')
+            ->whereIn('rp.cuenta', $cuentas)
+            ->where('rp.activo', true)
+            ->select([
+                'rp.id',
+                'rp.cuenta',
+                'rp.cuenta_impresa',
+                'rp.propietario',
+                'rp.beneficiario',
+                'rp.porcentaje',
+                'rp.ultimo_periodo',
+                'rp.cliente_id',
+                'beneficiario_cliente.nombre as cliente_nombre',
+            ])
+            ->orderBy('rp.cuenta')
+            ->orderByRaw("TRANSLATE(LOWER(TRIM(rp.beneficiario)), 'áéíóúüñ', 'aeiouun')")
+            ->orderBy('rp.id')
+            ->get();
     }
 
     private function contratosDelInquilino(int $clienteId): Collection

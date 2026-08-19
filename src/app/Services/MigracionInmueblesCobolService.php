@@ -49,6 +49,32 @@ final class MigracionInmueblesCobolService
             $grupos = [];
             $total = count($filas);
 
+            // Detectar dentro del MISMO archivo importado partidas que intentan
+            // identificar más de una entidad (canónica o clave nueva). No elegimos.
+            $identidadesFuentePorPartida = [];
+            $origenesNuevosPorClave = [];
+            foreach ($filas as $datosFuente) {
+                if (
+                    $datosFuente['cuenta_inquilino'] === ''
+                    || $datosFuente['cuenta_propietario'] === ''
+                    || $datosFuente['direccion_normalizada'] === ''
+                    || $datosFuente['clave_inmueble'] === ''
+                ) {
+                    continue;
+                }
+                $idExistenteFuente = $this->resolverInmuebleExistenteId($datosFuente, $estado);
+                $crearSeparadoFuente = $this->tieneResolucionCrearSeparado($datosFuente, $estado);
+                $identidadFuente = $idExistenteFuente === null
+                    ? 'ORIGEN|'.$datosFuente['cuenta_inquilino']
+                    : 'ID|'.$idExistenteFuente;
+                if ($idExistenteFuente === null && ! $crearSeparadoFuente) {
+                    $origenesNuevosPorClave[(string) $datosFuente['clave_inmueble']][(string) $datosFuente['cuenta_inquilino']] = true;
+                }
+                foreach ($datosFuente['partidas'] ?? [] as $partidaFuente) {
+                    $identidadesFuentePorPartida[(string) $partidaFuente][$identidadFuente] = true;
+                }
+            }
+
             foreach ($filas as $indice => $datos) {
                 $resultado['procesados']++;
 
@@ -67,16 +93,132 @@ final class MigracionInmueblesCobolService
                     );
                 } else {
                     $resultado['registros_validos']++;
-                    $clave = $datos['clave_inmueble'];
-                    if (! isset($grupos[$clave])) {
-                        $grupos[$clave] = [
+                    $inmuebleExistenteId = $this->resolverInmuebleExistenteId($datos, $estado);
+                    $crearSeparado = $this->tieneResolucionCrearSeparado($datos, $estado);
+
+                    if (
+                        $inmuebleExistenteId === null
+                        && ! $crearSeparado
+                        && count($origenesNuevosPorClave[(string) $datos['clave_inmueble']] ?? []) > 1
+                    ) {
+                        $resultado['requieren_revision_identidad']++;
+                        $this->registrarConflicto(
+                            ['id' => null, 'clave_migracion' => $datos['clave_inmueble']],
+                            $datos,
+                            'CLAVE_MIGRACION_COMPARTIDA_POR_VARIOS_ORIGENES',
+                            [
+                                'cuentas_inquilino_detectadas' => array_keys(
+                                    $origenesNuevosPorClave[(string) $datos['clave_inmueble']] ?? []
+                                ),
+                                'regla' => 'MISMA_CUENTA_PROPIETARIO_Y_DOMICILIO_NO_AUTORIZA_AGRUPAR_ORIGENES',
+                            ],
+                            $confirmar,
+                            $estado,
+                            $resultado
+                        );
+                        continue;
+                    }
+
+                    if ($inmuebleExistenteId === null && ! $crearSeparado) {
+                        $candidatosClave = $this->candidatosPorClaveMigracion($datos, $estado);
+                        if ($candidatosClave !== []) {
+                            $resultado['requieren_revision_identidad']++;
+                            $this->registrarConflicto(
+                                ['id' => null, 'clave_migracion' => $datos['clave_inmueble']],
+                                $datos,
+                                'CLAVE_MIGRACION_COINCIDENTE_REQUIERE_REVISION',
+                                [
+                                    'inmuebles_candidatos' => $candidatosClave,
+                                    'regla' => 'CUENTA_PROPIETARIO_MAS_DOMICILIO_ES_EVIDENCIA_NO_IDENTIDAD',
+                                ],
+                                $confirmar,
+                                $estado,
+                                $resultado
+                            );
+                            continue;
+                        }
+                    }
+
+                    $partidasAmbiguasFuente = ($inmuebleExistenteId === null && ! $crearSeparado)
+                        ? $this->partidasConMultiplesIdentidadesFuente($datos, $identidadesFuentePorPartida)
+                        : [];
+                    if ($partidasAmbiguasFuente !== []) {
+                        $resultado['requieren_revision_identidad']++;
+                        $this->registrarConflicto(
+                            ['id' => null, 'clave_migracion' => $datos['clave_inmueble']],
+                            $datos,
+                            'PARTIDA_MULTIPLE_IDENTIDAD_EN_ARCHIVO',
+                            [
+                                'partidas_ambiguas' => $partidasAmbiguasFuente,
+                                'identidades_detectadas' => array_map(
+                                    fn (string $partida): array => array_keys($identidadesFuentePorPartida[$partida] ?? []),
+                                    $partidasAmbiguasFuente
+                                ),
+                                'regla' => 'NO_CREAR_NI_REASIGNAR_REQUIERE_REVISION_HUMANA',
+                            ],
+                            $confirmar,
+                            $estado,
+                            $resultado
+                        );
+                        continue;
+                    }
+
+                    // Si es una identidad COBOL nueva, una partida vigente ya asociada a
+                    // otro inmueble es evidencia fuerte, pero NO autoriza una fusión.
+                    // Se detiene el alta de ese posible duplicado y queda para revisión humana.
+                    if ($inmuebleExistenteId === null && ! $crearSeparado) {
+                        $candidatosPartida = $this->candidatosPorPartidas($datos, $estado);
+                        if ($candidatosPartida !== []) {
+                            $resultado['requieren_revision_identidad']++;
+                            $this->registrarConflicto(
+                                ['id' => null, 'clave_migracion' => $datos['clave_inmueble']],
+                                $datos,
+                                count($candidatosPartida) === 1
+                                    ? 'PARTIDA_ASOCIADA_A_OTRO_INMUEBLE'
+                                    : 'PARTIDA_ASOCIADA_A_VARIOS_INMUEBLES',
+                                [
+                                    'inmuebles_candidatos' => $candidatosPartida,
+                                    'partidas_coincidentes' => $this->partidasCoincidentes($datos, $estado),
+                                    'regla' => 'NO_CREAR_AUTOMATICAMENTE_REQUIERE_REVISION_HUMANA',
+                                ],
+                                $confirmar,
+                                $estado,
+                                $resultado
+                            );
+                            continue;
+                        }
+                    }
+
+                    $claveGrupo = $inmuebleExistenteId === null
+                        ? 'ORIGEN|'.$datos['cuenta_inquilino']
+                        : 'ID|'.$inmuebleExistenteId;
+
+                    if (! isset($grupos[$claveGrupo])) {
+                        $grupos[$claveGrupo] = [
+                            'id_inmueble_existente' => $inmuebleExistenteId,
                             'representante' => $datos,
+                            'representante_canonico' => false,
                             'filas' => [],
                             'activo' => false,
                         ];
                     }
-                    $grupos[$clave]['filas'][] = $datos;
-                    $grupos[$clave]['activo'] = $grupos[$clave]['activo']
+
+                    if ($inmuebleExistenteId !== null) {
+                        $existente = $estado['inmuebles_por_id'][$inmuebleExistenteId] ?? null;
+                        if (
+                            $existente !== null
+                            && $datos['clave_inmueble'] === ($existente['clave_migracion'] ?? null)
+                        ) {
+                            // Si entre varias identidades COBOL hay una que coincide con la
+                            // clave canónica conservada, ésa es la única autorizada a refrescar
+                            // los datos maestros del inmueble.
+                            $grupos[$claveGrupo]['representante'] = $datos;
+                            $grupos[$claveGrupo]['representante_canonico'] = true;
+                        }
+                    }
+
+                    $grupos[$claveGrupo]['filas'][] = $datos;
+                    $grupos[$claveGrupo]['activo'] = $grupos[$claveGrupo]['activo']
                         || $datos['estado_origen'] === 'ACTIVO';
                 }
 
@@ -97,7 +239,9 @@ final class MigracionInmueblesCobolService
                     (bool) $grupo['activo'],
                     $confirmar,
                     $estado,
-                    $resultado
+                    $resultado,
+                    $grupo['id_inmueble_existente'],
+                    (bool) $grupo['representante_canonico']
                 );
 
                 foreach ($grupo['filas'] as $datos) {
@@ -110,13 +254,27 @@ final class MigracionInmueblesCobolService
                     );
                 }
 
-                $this->guardarRelacionPropietario(
-                    $inmueble,
-                    $grupo['representante'],
-                    $confirmar,
-                    $estado,
-                    $resultado
-                );
+                // Al resolver varias identidades históricas al mismo inmueble canónico
+                // pueden coexistir distintas cuentas de propietario. Procesamos sólo las
+                // que están ACTIVAS en la fuente actual; una baja histórica no reactiva titularidad.
+                $propietariosActivos = [];
+                foreach ($grupo['filas'] as $datosPropietario) {
+                    if ($datosPropietario['estado_origen'] !== 'ACTIVO') {
+                        continue;
+                    }
+                    $propietariosActivos[$datosPropietario['cuenta_propietario']] = $datosPropietario;
+                }
+                ksort($propietariosActivos, SORT_STRING);
+                foreach ($propietariosActivos as $datosPropietario) {
+                    $this->guardarRelacionPropietario(
+                        $inmueble,
+                        $datosPropietario,
+                        $confirmar,
+                        $estado,
+                        $resultado
+                    );
+                }
+
                 $this->guardarPartidas(
                     $inmueble,
                     $grupo['filas'],
@@ -170,6 +328,7 @@ final class MigracionInmueblesCobolService
             'conflictos_sin_cambios' => 0,
             'conflictos_resueltos' => 0,
             'conflictos_pendientes' => 0,
+            'requieren_revision_identidad' => 0,
             'omitidos' => 0,
         ];
     }
@@ -199,11 +358,18 @@ final class MigracionInmueblesCobolService
     /** @return array<string, mixed> */
     private function cargarEstadoDestino(): array
     {
-        $inmuebles = [];
+        $inmueblesPorId = [];
         $maxInmuebleId = 0;
         foreach (DB::table('inmuebles')->orderBy('id')->cursor() as $fila) {
-            $inmuebles[$fila->clave_migracion] = (array) $fila;
+            $inmueblesPorId[(int) $fila->id] = (array) $fila;
             $maxInmuebleId = max($maxInmuebleId, (int) $fila->id);
+        }
+
+        $inmueblesPorClave = [];
+        foreach ($inmueblesPorId as $fila) {
+            $canonicoId = $this->resolverCanonicoIdDesdeMapa((int) $fila['id'], $inmueblesPorId);
+            $canonico = $inmueblesPorId[$canonicoId] ?? $fila;
+            $inmueblesPorClave[(string) $fila['clave_migracion']][$canonicoId] = $canonico;
         }
 
         $origenes = [];
@@ -257,6 +423,19 @@ final class MigracionInmueblesCobolService
             $partidas[$fila->inmueble_id.'|'.$fila->partida] = $partida;
         }
 
+        $inmueblesPorPartida = [];
+        foreach ($partidas as $clavePartida => $partida) {
+            $id = (int) $partida['inmueble_id'];
+            $canonicoId = $this->resolverCanonicoIdDesdeMapa($id, $inmueblesPorId);
+            $valorPartida = (string) $partida['partida'];
+            $inmueblesPorPartida[$valorPartida][$canonicoId] = true;
+        }
+
+        $resolucionesOrigen = [];
+        foreach (DB::table('inmuebles_resoluciones_origen')->cursor() as $fila) {
+            $resolucionesOrigen[$fila->sistema_origen.'|'.$fila->entidad_origen.'|'.$fila->clave_origen] = (array) $fila;
+        }
+
         $conflictos = [];
         foreach (DB::table('inmuebles_conflictos')->cursor() as $fila) {
             $conflicto = (array) $fila;
@@ -265,12 +444,15 @@ final class MigracionInmueblesCobolService
         }
 
         return [
-            'inmuebles' => $inmuebles,
+            'inmuebles_por_id' => $inmueblesPorId,
+            'inmuebles_por_clave' => $inmueblesPorClave,
             'origenes' => $origenes,
             'cuentas_propietarios' => $cuentasPropietarios,
             'conflictos_clientes' => $conflictosClientes,
             'relaciones' => $relaciones,
             'partidas' => $partidas,
+            'inmuebles_por_partida' => $inmueblesPorPartida,
+            'resoluciones_origen' => $resolucionesOrigen,
             'conflictos' => $conflictos,
             'proximo_inmueble_id' => $maxInmuebleId + 1,
         ];
@@ -287,24 +469,36 @@ final class MigracionInmueblesCobolService
         bool $activo,
         bool $confirmar,
         array &$estado,
-        array &$resultado
+        array &$resultado,
+        ?int $inmuebleExistenteId = null,
+        bool $actualizarDatosMaestros = false
     ): array {
         $clave = $datos['clave_inmueble'];
-        $existente = $estado['inmuebles'][$clave] ?? null;
-        $fila = [
-            'clave_migracion' => $clave,
-            'codigo_origen' => $existente['codigo_origen'] ?? null,
-            'domicilio' => $datos['direccion_normalizada'],
-            'domicilio_normalizado' => $datos['direccion_normalizada'],
-            'destino_codigo' => $datos['destino'],
-            'identificador_cochera' => $datos['identificador_cochera'],
-            'estado' => $activo ? 'ACTIVO' : 'INACTIVO',
-            'observaciones' => $existente['observaciones'] ?? null,
-        ];
+        // Una clave derivada (propietario + domicilio) NO identifica por sí sola.
+        // Sólo reutilizamos inmueble cuando el origen o una decisión humana aportó ID.
+        $existente = $inmuebleExistenteId === null
+            ? null
+            : ($estado['inmuebles_por_id'][$inmuebleExistenteId] ?? null);
+
+        if ($existente !== null && ($existente['id_inmueble_canonico'] ?? null) !== null) {
+            $canonicoId = $this->resolverCanonicoIdDesdeMapa((int) $existente['id'], $estado['inmuebles_por_id']);
+            $existente = $estado['inmuebles_por_id'][$canonicoId] ?? $existente;
+        }
 
         if ($existente === null) {
-            $fila['created_at'] = now();
-            $fila['updated_at'] = now();
+            $fila = [
+                'clave_migracion' => $clave,
+                'id_inmueble_canonico' => null,
+                'codigo_origen' => null,
+                'domicilio' => $datos['direccion_normalizada'],
+                'domicilio_normalizado' => $datos['direccion_normalizada'],
+                'destino_codigo' => $datos['destino'],
+                'identificador_cochera' => $datos['identificador_cochera'],
+                'estado' => $activo ? 'ACTIVO' : 'INACTIVO',
+                'observaciones' => null,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ];
             if ($confirmar) {
                 $fila['id'] = DB::table('inmuebles')->insertGetId($fila);
             } else {
@@ -312,8 +506,19 @@ final class MigracionInmueblesCobolService
             }
             $resultado['inmuebles_creados']++;
         } else {
+            $fila = $existente;
             $fila['id'] = (int) $existente['id'];
-            $fila['created_at'] = $existente['created_at'] ?? now();
+            $fila['estado'] = $activo ? 'ACTIVO' : 'INACTIVO';
+
+            if ($actualizarDatosMaestros || $clave === ($existente['clave_migracion'] ?? null)) {
+                $fila['codigo_origen'] = $existente['codigo_origen'] ?? null;
+                $fila['domicilio'] = $datos['direccion_normalizada'];
+                $fila['domicilio_normalizado'] = $datos['direccion_normalizada'];
+                $fila['destino_codigo'] = $datos['destino'];
+                $fila['identificador_cochera'] = $datos['identificador_cochera'];
+                $fila['observaciones'] = $existente['observaciones'] ?? null;
+            }
+
             $sinCambios = $this->camposIguales($existente, $fila, [
                 'codigo_origen',
                 'domicilio',
@@ -345,9 +550,124 @@ final class MigracionInmueblesCobolService
             }
         }
 
-        $estado['inmuebles'][$clave] = $fila;
+        $estado['inmuebles_por_id'][(int) $fila['id']] = $fila;
+        $estado['inmuebles_por_clave'][(string) $clave][(int) $fila['id']] = $fila;
+        $estado['inmuebles_por_clave'][(string) $fila['clave_migracion']][(int) $fila['id']] = $fila;
 
         return $fila;
+    }
+
+    private function tieneResolucionCrearSeparado(array $datos, array $estado): bool
+    {
+        $clave = self::SISTEMA.'|'.self::ENTIDAD.'|'.$datos['cuenta_inquilino'];
+
+        return ($estado['resoluciones_origen'][$clave]['decision'] ?? null) === 'CREAR_SEPARADO';
+    }
+
+    /** @return list<string> */
+    private function partidasConMultiplesIdentidadesFuente(array $datos, array $identidadesFuentePorPartida): array
+    {
+        $resultado = [];
+        foreach ($datos['partidas'] ?? [] as $partida) {
+            $partida = (string) $partida;
+            if (count($identidadesFuentePorPartida[$partida] ?? []) > 1) {
+                $resultado[] = $partida;
+            }
+        }
+        $resultado = array_values(array_unique($resultado));
+        sort($resultado, SORT_STRING);
+
+        return $resultado;
+    }
+
+    /** @return list<int> */
+    private function candidatosPorClaveMigracion(array $datos, array $estado): array
+    {
+        $ids = array_map(
+            'intval',
+            array_keys($estado['inmuebles_por_clave'][(string) $datos['clave_inmueble']] ?? [])
+        );
+        sort($ids, SORT_NUMERIC);
+
+        return $ids;
+    }
+
+    /** @return list<int> */
+    private function candidatosPorPartidas(array $datos, array $estado): array
+    {
+        $ids = [];
+        foreach ($datos['partidas'] ?? [] as $partida) {
+            foreach (array_keys($estado['inmuebles_por_partida'][(string) $partida] ?? []) as $id) {
+                $ids[(int) $id] = true;
+            }
+        }
+        $resultado = array_map('intval', array_keys($ids));
+        sort($resultado, SORT_NUMERIC);
+
+        return $resultado;
+    }
+
+    /** @return list<string> */
+    private function partidasCoincidentes(array $datos, array $estado): array
+    {
+        $partidas = [];
+        foreach ($datos['partidas'] ?? [] as $partida) {
+            if (isset($estado['inmuebles_por_partida'][(string) $partida])) {
+                $partidas[] = (string) $partida;
+            }
+        }
+        $partidas = array_values(array_unique($partidas));
+        sort($partidas, SORT_STRING);
+
+        return $partidas;
+    }
+
+    /**
+     * Un origen COBOL ya asociado tiene prioridad sobre cualquier similitud o
+     * clave calculada. Si ese inmueble fue unificado, se resuelve al canónico.
+     */
+    private function resolverInmuebleExistenteId(array $datos, array $estado): ?int
+    {
+        $claveOrigen = self::ENTIDAD.'|'.$datos['cuenta_inquilino'];
+        $origen = $estado['origenes'][$claveOrigen] ?? null;
+
+        if ($origen !== null) {
+            return $this->resolverCanonicoIdDesdeMapa(
+                (int) $origen['inmueble_id'],
+                $estado['inmuebles_por_id']
+            );
+        }
+
+        $resolucion = $estado['resoluciones_origen'][self::SISTEMA.'|'.self::ENTIDAD.'|'.$datos['cuenta_inquilino']] ?? null;
+        if (($resolucion['decision'] ?? null) === 'ASOCIAR_EXISTENTE' && ($resolucion['inmueble_id'] ?? null) !== null) {
+            return $this->resolverCanonicoIdDesdeMapa(
+                (int) $resolucion['inmueble_id'],
+                $estado['inmuebles_por_id']
+            );
+        }
+
+        return null;
+    }
+
+    /** @param array<int, array<string, mixed>> $mapa */
+    private function resolverCanonicoIdDesdeMapa(int $id, array $mapa): int
+    {
+        $visitados = [];
+        $actual = $id;
+
+        while (isset($mapa[$actual])) {
+            if (isset($visitados[$actual])) {
+                throw new RuntimeException('Se detectó un ciclo en la canonicalización de inmuebles.');
+            }
+            $visitados[$actual] = true;
+            $siguiente = $mapa[$actual]['id_inmueble_canonico'] ?? null;
+            if ($siguiente === null) {
+                return $actual;
+            }
+            $actual = (int) $siguiente;
+        }
+
+        return $id;
     }
 
     /**
@@ -442,17 +762,64 @@ final class MigracionInmueblesCobolService
         $cuenta = $datos['cuenta_propietario'];
         $candidatos = $estado['cuentas_propietarios'][$cuenta] ?? [];
 
-        if (count($candidatos) !== 1) {
-            $motivo = count($candidatos) > 1
-                ? 'CUENTA_PROPIETARIO_AMBIGUA'
-                : (isset($estado['conflictos_clientes'][$cuenta])
-                    ? 'PROPIETARIO_EN_CONFLICTO'
-                    : 'CUENTA_PROPIETARIO_NO_ENCONTRADA');
+        if ($candidatos === []) {
+            $motivo = isset($estado['conflictos_clientes'][$cuenta])
+                ? 'PROPIETARIO_EN_CONFLICTO'
+                : 'CUENTA_PROPIETARIO_NO_ENCONTRADA';
             $this->registrarConflicto(
                 $inmueble,
                 $datos,
                 $motivo,
-                ['clientes_cuentas_candidatas' => array_column($candidatos, 'id')],
+                ['clientes_cuentas_candidatas' => []],
+                $confirmar,
+                $estado,
+                $resultado
+            );
+
+            return;
+        }
+
+        /*
+         * Una cuenta COBOL puede corresponder a varios propietarios/copropietarios.
+         * INQUILINO sólo aporta la cuenta del propietario; no permite decidir por sí
+         * solo qué clientes integran la titularidad. Si las relaciones ya fueron
+         * reconstruidas por una fuente más precisa, este migrador debe respetarlas.
+         */
+        if (count($candidatos) > 1) {
+            $relacionesExistentes = [];
+            foreach ($candidatos as $candidato) {
+                $claveRelacion = $inmueble['id'].'|'.$candidato['id'];
+                if (isset($estado['relaciones'][$claveRelacion])) {
+                    $relacionesExistentes[] = $estado['relaciones'][$claveRelacion];
+                }
+            }
+
+            if (count($relacionesExistentes) === count($candidatos)) {
+                // La titularidad múltiple ya está resuelta. No modificar porcentaje,
+                // vigencias, origen ni ningún otro dato de esas relaciones.
+                $resultado['relaciones_sin_cambios'] += count($relacionesExistentes);
+                $this->resolverConflictosPropietario(
+                    $inmueble,
+                    $cuenta,
+                    $confirmar,
+                    $estado,
+                    $resultado
+                );
+
+                return;
+            }
+
+            $this->registrarConflicto(
+                $inmueble,
+                $datos,
+                'CUENTA_PROPIETARIO_MULTIPLE_RELACION_INCOMPLETA',
+                [
+                    'clientes_cuentas_candidatas' => array_column($candidatos, 'id'),
+                    'clientes_cuentas_con_relacion' => array_values(array_map(
+                        fn (array $relacion): int => (int) $relacion['cliente_cuenta_id'],
+                        $relacionesExistentes
+                    )),
+                ],
                 $confirmar,
                 $estado,
                 $resultado
@@ -473,11 +840,13 @@ final class MigracionInmueblesCobolService
             'inmueble_id' => (int) $inmueble['id'],
             'cliente_id' => (int) $cuentaCliente['cliente_id'],
             'cliente_cuenta_id' => (int) $cuentaCliente['id'],
-            'porcentaje' => null,
-            'vigencia_desde' => null,
-            'vigencia_hasta' => null,
+            // INQUILINO no contiene este dato. Nunca borrar un porcentaje que ya
+            // haya sido cargado desde liquidaciones o desde una fuente histórica.
+            'porcentaje' => $existente['porcentaje'] ?? null,
+            'vigencia_desde' => $existente['vigencia_desde'] ?? null,
+            'vigencia_hasta' => $existente['vigencia_hasta'] ?? null,
             'activo' => true,
-            'origen' => self::SISTEMA,
+            'origen' => $existente['origen'] ?? self::SISTEMA,
             'datos_origen' => $payload,
         ];
 
@@ -508,9 +877,9 @@ final class MigracionInmueblesCobolService
                         ->where('id', $existente['id'])
                         ->update([
                             'cliente_id' => $fila['cliente_id'],
-                            'porcentaje' => null,
+                            // Deliberadamente no se actualizan porcentaje ni vigencias.
                             'activo' => true,
-                            'origen' => self::SISTEMA,
+                            'origen' => $fila['origen'],
                             'datos_origen' => json_encode($payload, JSON_UNESCAPED_UNICODE),
                             'updated_at' => now(),
                         ]);
@@ -519,7 +888,7 @@ final class MigracionInmueblesCobolService
             }
         }
 
-        $estado['relaciones'][$clave] = $fila;
+        $estado['relaciones'][$clave] = array_merge($existente ?? [], $fila);
         $this->resolverConflictosPropietario(
             $inmueble,
             $cuenta,
@@ -657,16 +1026,30 @@ final class MigracionInmueblesCobolService
         array &$estado,
         array &$resultado
     ): void {
+        // El conflicto queda identificado por la identidad de origen (cuenta
+        // de inquilino), no sólo por la clave derivada del inmueble. Esto evita
+        // colapsar conflictos de dos inmuebles distintos con mismo propietario/domicilio.
         $firma = hash('sha256', implode('|', [
+            $motivo,
+            $datos['clave_inmueble'] ?? '',
+            $datos['cuenta_propietario'] ?? '',
+            $datos['cuenta_inquilino'] ?? '',
+        ]));
+        $firmaAnterior = hash('sha256', implode('|', [
             $motivo,
             $datos['clave_inmueble'] ?? '',
             $datos['cuenta_propietario'] ?? '',
             str_starts_with($motivo, 'CUENTA_INQUILINO')
                 || str_starts_with($motivo, 'DIRECCION_FINCA')
+                || str_starts_with($motivo, 'PARTIDA_')
+                || str_starts_with($motivo, 'CLAVE_MIGRACION_')
                 ? ($datos['cuenta_inquilino'] ?? '')
                 : '',
         ]));
-        $existente = $estado['conflictos'][$firma] ?? null;
+        $firmaExistente = isset($estado['conflictos'][$firma])
+            ? $firma
+            : (isset($estado['conflictos'][$firmaAnterior]) ? $firmaAnterior : null);
+        $existente = $firmaExistente === null ? null : $estado['conflictos'][$firmaExistente];
         $detalleCompleto = array_merge($detalle, [
             'direccion_finca' => $datos['direccion_finca'] ?? null,
             'direccion_normalizada' => $datos['direccion_normalizada'] ?? null,
@@ -694,7 +1077,8 @@ final class MigracionInmueblesCobolService
             }
             $resultado['conflictos_nuevos']++;
         } else {
-            $sinCambios = ($existente['estado'] ?? null) === 'PENDIENTE'
+            $sinCambios = $firmaExistente === $firma
+                && ($existente['estado'] ?? null) === 'PENDIENTE'
                 && $this->camposIguales($existente, $fila, [
                     'inmueble_id',
                     'cuenta_inquilino',
@@ -708,7 +1092,8 @@ final class MigracionInmueblesCobolService
                 $resultado['conflictos_sin_cambios']++;
             } else {
                 if ($confirmar) {
-                    DB::table('inmuebles_conflictos')->where('firma', $firma)->update([
+                    DB::table('inmuebles_conflictos')->where('firma', $firmaExistente ?? $firma)->update([
+                        'firma' => $firma,
                         'inmueble_id' => $fila['inmueble_id'],
                         'cuenta_inquilino' => $fila['cuenta_inquilino'],
                         'cuenta_propietario' => $fila['cuenta_propietario'],
@@ -725,6 +1110,9 @@ final class MigracionInmueblesCobolService
             }
         }
 
+        if ($firmaExistente !== null && $firmaExistente !== $firma) {
+            unset($estado['conflictos'][$firmaExistente]);
+        }
         $estado['conflictos'][$firma] = $fila;
         $this->registrarIncidencia([
             'tipo' => 'CONFLICTO',
@@ -752,10 +1140,12 @@ final class MigracionInmueblesCobolService
         foreach ($estado['conflictos'] as $firma => $conflicto) {
             if (
                 ($conflicto['estado'] ?? null) !== 'PENDIENTE'
+                || (int) ($conflicto['inmueble_id'] ?? 0) !== (int) $inmueble['id']
                 || ($conflicto['clave_inmueble'] ?? null) !== $inmueble['clave_migracion']
                 || ($conflicto['cuenta_propietario'] ?? null) !== $cuenta
                 || ! in_array($conflicto['motivo'] ?? '', [
                     'CUENTA_PROPIETARIO_AMBIGUA',
+                    'CUENTA_PROPIETARIO_MULTIPLE_RELACION_INCOMPLETA',
                     'PROPIETARIO_EN_CONFLICTO',
                     'CUENTA_PROPIETARIO_NO_ENCONTRADA',
                 ], true)

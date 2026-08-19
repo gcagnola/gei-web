@@ -95,6 +95,13 @@
 
                                     return $codigo === 'PROPIETARIO' || $nombre === 'PROPIETARIO';
                                 });
+                                $esInquilino = $clienteSeleccionado->roles->contains(function ($rolCliente) {
+                                    $codigo = strtoupper(trim((string) ($rolCliente->codigo ?? '')));
+                                    $nombre = strtoupper(trim((string) ($rolCliente->nombre ?? '')));
+
+                                    return $codigo === 'INQUILINO' || $nombre === 'INQUILINO';
+                                });
+                                $esSoloInquilino = $esInquilino && $clienteSeleccionado->roles->count() === 1;
                             @endphp
                             <div class="d-flex flex-wrap gap-2 mt-2">
                                 @foreach ($clienteSeleccionado->roles as $rolCliente)
@@ -146,26 +153,67 @@
                     </div>
                 </article>
 
+                @unless ($esSoloInquilino)
                 <article class="gei-card p-4 mb-4">
                     <h3 class="h5">Inmuebles como propietario</h3>
                     <div class="table-responsive">
                         <table class="table table-sm align-middle mb-0">
-                            <thead><tr><th>Domicilio</th><th>Cuentas COBOL</th><th>Porcentaje</th><th>Estado</th></tr></thead>
+                            <thead><tr><th>Domicilio</th><th>Cuentas COBOL</th><th>Estado</th></tr></thead>
                             <tbody>
                                 @forelse ($inmuebles as $inmueble)
                                     <tr>
                                         <td>{{ $inmueble->domicilio }}</td>
                                         <td>{{ $inmueble->cuentas ?: '—' }}</td>
-                                        <td>{{ $inmueble->porcentajes !== '' ? $inmueble->porcentajes.' %' : '—' }}</td>
                                         <td>{{ $inmueble->estado }}</td>
                                     </tr>
                                 @empty
-                                    <tr><td colspan="4" class="text-muted">No tiene inmuebles vinculados.</td></tr>
+                                    <tr><td colspan="3" class="text-muted">No tiene inmuebles vinculados.</td></tr>
                                 @endforelse
                             </tbody>
                         </table>
                     </div>
                 </article>
+
+                <article class="gei-card p-4 mb-4">
+                    <div class="d-flex justify-content-between align-items-start gap-3 mb-2">
+                        <div>
+                            <h3 class="h5 mb-1">Reparto de cobro vigente</h3>
+                            <p class="text-muted small mb-0">
+                                Beneficiarios y porcentajes tomados de la última liquidación procesada.
+                                Este reparto no implica titularidad del inmueble.
+                            </p>
+                        </div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle mb-0">
+                            <thead><tr><th>Cuenta</th><th>Beneficiario</th><th class="text-end">Porcentaje</th><th>Último período</th></tr></thead>
+                            <tbody>
+                                @forelse ($repartos as $reparto)
+                                    @php
+                                        $porcentajeReparto = number_format((float) $reparto->porcentaje, 3, ',', '.');
+                                        if (str_ends_with($porcentajeReparto, ',000')) {
+                                            $porcentajeReparto = substr($porcentajeReparto, 0, -4);
+                                        }
+                                    @endphp
+                                    <tr>
+                                        <td><strong>{{ $reparto->cuenta_impresa ?: $reparto->cuenta }}</strong></td>
+                                        <td>
+                                            {{ $reparto->beneficiario }}
+                                            @if ($reparto->cliente_id)
+                                                <span class="badge text-bg-light ms-1">Cliente vinculado</span>
+                                            @endif
+                                        </td>
+                                        <td class="text-end">{{ $porcentajeReparto }} %</td>
+                                        <td>{{ substr($reparto->ultimo_periodo, 4, 2) }}/{{ substr($reparto->ultimo_periodo, 0, 4) }}</td>
+                                    </tr>
+                                @empty
+                                    <tr><td colspan="4" class="text-muted">Todavía no hay un reparto de cobro sincronizado para sus cuentas.</td></tr>
+                                @endforelse
+                            </tbody>
+                        </table>
+                    </div>
+                </article>
+                @endunless
 
                 <article class="gei-card p-4 mb-4">
                     <h3 class="h5">Contratos como inquilino</h3>
@@ -196,6 +244,7 @@
                     </div>
                 </article>
 
+                @unless ($esSoloInquilino)
                 <article class="gei-card p-4 mb-4">
                     <h3 class="h5">Inquilinos de sus inmuebles</h3>
                     <div class="table-responsive">
@@ -223,7 +272,9 @@
                         </table>
                     </div>
                 </article>
+                @endunless
 
+                @unless ($esSoloInquilino)
                 <article class="gei-card p-4">
                     <h3 class="h5">Últimas liquidaciones de propietario</h3>
                     <div class="table-responsive">
@@ -250,6 +301,7 @@
                         </table>
                     </div>
                 </article>
+                @endunless
             @else
                 <div class="gei-card gei-empty-state gei-empty-state--large">Seleccioná un cliente para consultar sus datos.</div>
             @endif

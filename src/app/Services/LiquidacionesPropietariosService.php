@@ -51,10 +51,13 @@ final class LiquidacionesPropietariosService
 
         try {
             $resultadoImportacion = $this->importar($periodo, $directorio, $numeroInicial, $timeout);
+            $resultadoRepartos = app(SincronizacionRepartosPropietariosService::class)
+                ->sincronizar($periodo, true);
             $resultadoPdf = $this->generarPdf($periodo, $timeout);
             $resultado = [
                 'periodo' => $periodo,
                 ...$resultadoImportacion,
+                'repartos' => $resultadoRepartos,
                 ...$resultadoPdf,
             ];
 
@@ -446,7 +449,13 @@ final class LiquidacionesPropietariosService
 
     private function validarEsquema(): void
     {
-        foreach (['clientes', 'cuentas_corrientes', 'liquidaciones_propietarios', 'liquidaciones_propietarios_items'] as $tabla) {
+        foreach ([
+            'clientes',
+            'cuentas_corrientes',
+            'liquidaciones_propietarios',
+            'liquidaciones_propietarios_items',
+            'repartos_propietarios',
+        ] as $tabla) {
             if (! Schema::hasTable($tabla)) {
                 throw new RuntimeException("Falta la tabla {$tabla}. Ejecutá las migraciones antes de procesar.");
             }

@@ -1,0 +1,75 @@
+UNIFICACION DE INMUEBLES - VERSION 2 CORREGIDA
+===============================================
+
+ESTE PAQUETE REEMPLAZA COMPLETAMENTE AL ANTERIOR.
+
+Principios aplicados:
+- No deduplica automáticamente.
+- Sólo ADMINISTRADOR accede a la herramienta.
+- El inmueble absorbido NO se elimina.
+- Conserva cuentas/orígenes COBOL y partidas reasignándolos al inmueble canónico.
+- cuenta_propietario + domicilio_normalizado (clave_migracion) deja de ser UNIQUE:
+  es evidencia de similitud, NO identidad del inmueble.
+- Una cuenta de inquilino/origen COBOL ya resuelta tiene prioridad.
+- Una decisión humana ASOCIAR_EXISTENTE o CREAR_SEPARADO se recuerda en futuras importaciones.
+- Si una identidad COBOL nueva coincide por clave derivada o partida con inmuebles existentes,
+  NO se crea ni se fusiona automáticamente: genera conflicto para decisión humana.
+- Si dentro del mismo archivo aparecen varios orígenes nuevos con la misma clave derivada o con
+  partidas que apuntan a identidades distintas, se genera conflicto; no se agrupan automáticamente.
+- Cuenta de propietario, domicilio y partida son evidencia. No autorizan una unificación automática.
+- Todo se ejecuta dentro de transacción y comparte el lock de transformación COBOL.
+- Se auditan los cambios y se guardan snapshots para futura reversión.
+
+MIGRACIONES
+-----------
+2026_08_18_180000_create_unificaciones_inmuebles_tables.php
+  - id_inmueble_canonico
+  - unificaciones
+  - unificaciones_cambios
+  - unificaciones_candidatos
+
+2026_08_19_170000_create_inmuebles_resoluciones_origen_table.php
+  - decisiones humanas sobre nuevas identidades COBOL
+
+2026_08_19_171000_make_inmuebles_clave_migracion_non_unique.php
+  - elimina UNIQUE de clave_migracion
+  - deja índice normal
+
+La segunda y tercera migración están separadas para que el paquete sea tolerante si la primera
+migración hubiera sido aplicada previamente por error.
+
+INSTALACION / PRIMERA PRUEBA
+----------------------------
+Desde ~/proyectos/gei-web/src:
+
+1) Hacer backup de código y DB.
+
+2) Extraer el paquete, sobrescribiendo los archivos indicados.
+
+3) Ver las migraciones SIN ejecutar:
+
+   gei-artisan migrate --pretend
+
+4) Si la salida es correcta:
+
+   gei-artisan migrate
+   gei-artisan optimize:clear
+   gei-artisan route:list --name=archivo.unificacion
+
+5) ANTES DE UNIFICAR NADA, simular la migración COBOL:
+
+   gei-artisan gei:migrar-inmuebles-cobol --detalles
+
+La simulación no escribe. Revisar especialmente:
+- inmuebles_creados
+- requieren_revision_identidad
+- conflictos_nuevos
+- conflictos_actualizados
+- conflictos_pendientes
+- partidas_creadas / actualizadas
+
+Con este cambio es NORMAL que aparezcan conflictos nuevos que antes hubieran sido agrupados
+silenciosamente por cuenta_propietario + domicilio o por partida. Esos son precisamente los casos
+que ahora debe decidir el usuario.
+
+NO usar --confirmar hasta revisar esa primera simulación.

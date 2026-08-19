@@ -5,6 +5,7 @@ use App\Http\Controllers\Auth\RecuperarClaveController;
 use App\Http\Controllers\ClienteController;
 use App\Http\Controllers\ImportacionArchivosController;
 use App\Http\Controllers\LiquidacionPropietarioController;
+use App\Http\Controllers\UnificacionInmuebleController;
 use Illuminate\Support\Facades\Route;
 
 Route::middleware('guest')->group(function () {
@@ -63,6 +64,20 @@ Route::middleware('auth')->group(function () {
         ->only(['index', 'show', 'create', 'store', 'edit', 'update']);
     Route::get('/archivo/inmuebles', $modulo('Inmuebles', 'Archivo'))
         ->name('inmuebles.index');
+
+    Route::middleware('can:administrar-unificaciones')->group(function (): void {
+        Route::get('/archivo/unificacion', [UnificacionInmuebleController::class, 'index'])
+            ->name('archivo.unificacion.index');
+        Route::get('/archivo/unificacion/inmuebles/comparar', [UnificacionInmuebleController::class, 'comparar'])
+            ->name('archivo.unificacion.inmuebles.comparar');
+        Route::post('/archivo/unificacion/inmuebles', [UnificacionInmuebleController::class, 'unificar'])
+            ->name('archivo.unificacion.inmuebles.unificar');
+        Route::post('/archivo/unificacion/inmuebles/candidato', [UnificacionInmuebleController::class, 'resolverCandidato'])
+            ->name('archivo.unificacion.inmuebles.candidato');
+        Route::post('/archivo/unificacion/inmuebles/conflictos/{conflicto}/resolver', [UnificacionInmuebleController::class, 'resolverConflicto'])
+            ->whereNumber('conflicto')
+            ->name('archivo.unificacion.inmuebles.conflicto.resolver');
+    });
     Route::get('/archivo/conceptos', $modulo('Conceptos', 'Archivo'))
         ->name('conceptos.index');
     Route::get('/archivo/proveedores', $modulo('Proveedores', 'Archivo'))
