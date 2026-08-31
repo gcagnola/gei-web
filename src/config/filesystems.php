@@ -57,6 +57,13 @@ return [
             'report' => false,
         ],
 
+        'arca_facturas' => [
+            'driver' => 'local',
+            'root' => env('GEI_ARCA_FACTURAS_PATH', '/archivo-kng/facturas'),
+            'throw' => false,
+            'report' => false,
+        ],
+
         's3' => [
             'driver' => 's3',
             'key' => env('AWS_ACCESS_KEY_ID'),

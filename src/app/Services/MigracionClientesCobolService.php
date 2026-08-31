@@ -191,6 +191,8 @@ final class MigracionClientesCobolService
     private function cargarEstadoDestino(): array
     {
         $clientes = [];
+        $clientesTodos = [];
+        $canonicos = [];
         $porCuit = [];
         $porDocumento = [];
         $maxId = 0;
@@ -198,8 +200,31 @@ final class MigracionClientesCobolService
         foreach (DB::table('clientes')->orderBy('id')->cursor() as $fila) {
             $cliente = (array) $fila;
             $id = (int) $fila->id;
-            $clientes[$id] = $cliente;
+            $clientesTodos[$id] = $cliente;
             $maxId = max($maxId, $id);
+        }
+
+        foreach ($clientesTodos as $id => $cliente) {
+            $actual = $id;
+            $vistos = [];
+            while (($clientesTodos[$actual]['id_cliente_canonico'] ?? null) !== null) {
+                if (isset($vistos[$actual])) {
+                    throw new RuntimeException("Se detectó un ciclo de canonicalización de clientes en {$id}.");
+                }
+                $vistos[$actual] = true;
+                $actual = (int) $clientesTodos[$actual]['id_cliente_canonico'];
+                if (! isset($clientesTodos[$actual])) {
+                    throw new RuntimeException("El cliente canónico {$actual} referenciado por {$id} no existe.");
+                }
+            }
+            $canonicos[$id] = $actual;
+        }
+
+        foreach ($clientesTodos as $id => $cliente) {
+            if (($cliente['id_cliente_canonico'] ?? null) !== null) {
+                continue;
+            }
+            $clientes[$id] = $cliente;
             $this->indexarClienteEn($porCuit, $porDocumento, $id, $cliente);
         }
 
@@ -208,10 +233,11 @@ final class MigracionClientesCobolService
         foreach (DB::table('clientes_origenes')->cursor() as $fila) {
             $origen = (array) $fila;
             $origen['datos_origen'] = $this->decodificarJson($fila->datos_origen ?? null);
+            $clienteId = $canonicos[(int) $fila->cliente_id] ?? (int) $fila->cliente_id;
+            $origen['cliente_id'] = $clienteId;
             $clave = $fila->entidad_origen.'|'.$fila->clave_origen;
             $origenes[$clave] = $origen;
-            $estadosOrigen[(int) $fila->cliente_id][$clave] =
-                $fila->estado_origen ?? 'DESCONOCIDO';
+            $estadosOrigen[$clienteId][$clave] = $fila->estado_origen ?? 'DESCONOCIDO';
         }
 
         $conflictos = [];
@@ -219,20 +245,39 @@ final class MigracionClientesCobolService
             $conflicto = (array) $fila;
             $conflicto['datos_origen'] = $this->decodificarJson($fila->datos_origen ?? null);
             $conflicto['detalle'] = $this->decodificarJson($fila->detalle ?? null);
+            if (($conflicto['cliente_resuelto_id'] ?? null) !== null) {
+                $conflicto['cliente_resuelto_id'] = $canonicos[(int) $conflicto['cliente_resuelto_id']]
+                    ?? (int) $conflicto['cliente_resuelto_id'];
+            }
             $conflictos[$fila->entidad_origen.'|'.$fila->clave_origen] = $conflicto;
         }
 
         $relaciones = [];
         foreach (DB::table('clientes_roles')->cursor() as $fila) {
-            $relaciones[$fila->cliente_id.'|'.$fila->rol_id] = true;
+            $clienteId = $canonicos[(int) $fila->cliente_id] ?? (int) $fila->cliente_id;
+            $relaciones[$clienteId.'|'.$fila->rol_id] = true;
         }
 
         $cuentas = [];
         foreach (DB::table('clientes_cuentas')->cursor() as $fila) {
             $cuenta = (array) $fila;
             $cuenta['datos_origen'] = $this->decodificarJson($fila->datos_origen ?? null);
-            $clave = $fila->cliente_id.'|'.$fila->cuenta.'|'.$fila->rol;
+            $clienteId = $canonicos[(int) $fila->cliente_id] ?? (int) $fila->cliente_id;
+            $cuenta['cliente_id'] = $clienteId;
+            $clave = $clienteId.'|'.$fila->cuenta.'|'.$fila->rol;
             $cuentas[$clave] = $cuenta;
+        }
+
+        $resoluciones = [];
+        if (DB::getSchemaBuilder()->hasTable('clientes_resoluciones_origen')) {
+            foreach (DB::table('clientes_resoluciones_origen')->cursor() as $fila) {
+                $resolucion = (array) $fila;
+                if (($resolucion['cliente_id'] ?? null) !== null) {
+                    $resolucion['cliente_id'] = $canonicos[(int) $resolucion['cliente_id']]
+                        ?? (int) $resolucion['cliente_id'];
+                }
+                $resoluciones[$fila->entidad_origen.'|'.$fila->clave_origen] = $resolucion;
+            }
         }
 
         return [
@@ -246,6 +291,8 @@ final class MigracionClientesCobolService
                 ->map(fn ($id) => (int) $id)->all(),
             'relaciones' => $relaciones,
             'cuentas' => $cuentas,
+            'resoluciones' => $resoluciones,
+            'canonicos' => $canonicos,
             'proximo_id' => $maxId + 1,
         ];
     }
@@ -386,7 +433,33 @@ final class MigracionClientesCobolService
             return;
         }
 
-        $seleccion = $this->seleccionarCliente($datos, $estado);
+        $resolucionManual = $estado['resoluciones'][$clave] ?? null;
+        $forzarSeparado = ($resolucionManual['decision'] ?? null) === 'CREAR_SEPARADO';
+
+        if (($resolucionManual['decision'] ?? null) === 'ASOCIAR_EXISTENTE') {
+            $clienteResuelto = (int) ($resolucionManual['cliente_id'] ?? 0);
+            if ($clienteResuelto <= 0 || ! isset($estado['clientes'][$clienteResuelto])) {
+                throw new RuntimeException("La resolución manual {$clave} apunta a un cliente inexistente o absorbido.");
+            }
+            $seleccion = [
+                'valido' => true,
+                'cliente_id' => $clienteResuelto,
+                'motivo' => '',
+                'candidatos' => [$clienteResuelto],
+                'detalle' => ['resolucion_manual' => 'ASOCIAR_EXISTENTE'],
+            ];
+        } elseif ($forzarSeparado) {
+            $seleccion = [
+                'valido' => true,
+                'cliente_id' => null,
+                'motivo' => '',
+                'candidatos' => [],
+                'detalle' => ['resolucion_manual' => 'CREAR_SEPARADO'],
+            ];
+        } else {
+            $seleccion = $this->seleccionarCliente($datos, $estado);
+        }
+
         if (! $seleccion['valido']) {
             $this->guardarConflicto(
                 $entidad,
@@ -414,6 +487,17 @@ final class MigracionClientesCobolService
             $estado['clientes'][$clienteId] = $fila;
             $this->indexarCliente($estado, $clienteId, $fila);
             $resultado['clientes_creados']++;
+
+            if ($forzarSeparado && $resolucionManual !== null) {
+                $estado['resoluciones'][$clave]['cliente_id'] = $clienteId;
+                if ($confirmar) {
+                    DB::table('clientes_resoluciones_origen')
+                        ->where('sistema_origen', self::SISTEMA)
+                        ->where('entidad_origen', $entidad)
+                        ->where('clave_origen', $datos['cuenta'])
+                        ->update(['cliente_id' => $clienteId, 'updated_at' => now()]);
+                }
+            }
         } else {
             $resultado['clientes_unificados']++;
             $this->completarVaciosCliente(

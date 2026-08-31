@@ -48,4 +48,20 @@ return [
         'timeout' => (int) env('GEI_LIQUIDACIONES_TIMEOUT', 1800),
         'lock_store' => env('GEI_LIQUIDACIONES_LOCK_STORE', 'file'),
     ],
+
+    'impuestos_garantizados' => [
+        'python' => env(
+            'GEI_IMPUESTOS_GARANTIZADOS_PYTHON',
+            env('GEI_LIQUIDACIONES_PYTHON', '/opt/gei-python/bin/python')
+        ),
+        'script' => env(
+            'GEI_IMPUESTOS_GARANTIZADOS_SCRIPT',
+            base_path('python/impuestos_garantizados/generar.py')
+        ),
+        'encoding' => env('GEI_IMPUESTOS_GARANTIZADOS_ENCODING', 'cp1252'),
+        'timeout' => (int) env(
+            'GEI_IMPUESTOS_GARANTIZADOS_TIMEOUT',
+            env('GEI_LIQUIDACIONES_TIMEOUT', 1800)
+        ),
+    ],
 ];

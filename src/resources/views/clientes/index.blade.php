@@ -4,6 +4,18 @@
 @section('page-title', 'Clientes')
 
 @section('content')
+    @php
+        $formatearCuentaCobol = static function ($cuenta): string {
+            $original = trim((string) $cuenta);
+            $digitos = preg_replace('/\D+/', '', $original) ?? '';
+
+            if (strlen($digitos) === 11) {
+                return substr($digitos, 0, 4).'/'.substr($digitos, 4, 5).'/'.substr($digitos, 9, 2);
+            }
+
+            return $original !== '' ? $original : '—';
+        };
+    @endphp
     @if (session('estado'))
         <div class="alert alert-success" role="alert">{{ session('estado') }}</div>
     @endif
@@ -15,7 +27,10 @@
                     <h1>Clientes</h1>
                     <p>{{ $clientes->total() }} registros encontrados</p>
                 </div>
-                <a href="{{ route('clientes.create') }}" class="btn gei-button gei-button--primary">+ Nuevo</a>
+                <div class="d-flex flex-wrap gap-2">
+                    <a href="{{ route('clientes.comprobantes-arca.index') }}" class="btn btn-outline-primary">Comprobantes ARCA</a>
+                    <a href="{{ route('clientes.create') }}" class="btn gei-button gei-button--primary">+ Nuevo</a>
+                </div>
             </div>
 
             <form method="GET" action="{{ route('clientes.index') }}" class="p-3 border-bottom">
@@ -69,7 +84,7 @@
                             @endforelse
                         </div>
                         <div class="small text-muted mt-1">
-                            {{ $cliente->cuentas->pluck('cuenta')->implode(' · ') ?: 'Sin cuenta COBOL' }}
+                            {{ $cliente->cuentas->pluck('cuenta')->map($formatearCuentaCobol)->implode(' · ') ?: 'Sin cuenta COBOL' }}
                         </div>
                     </a>
                 @empty
@@ -142,7 +157,7 @@
                                 @forelse ($clienteSeleccionado->cuentas as $cuenta)
                                     <tr>
                                         <td>{{ ucfirst(strtolower($cuenta->rol)) }}</td>
-                                        <td><strong>{{ $cuenta->cuenta }}</strong></td>
+                                        <td><strong>{{ $formatearCuentaCobol($cuenta->cuenta) }}</strong></td>
                                         <td>{{ $cuenta->activo === null ? 'Sin informar' : ($cuenta->activo ? 'Activa' : 'Inactiva') }}</td>
                                     </tr>
                                 @empty
@@ -163,7 +178,7 @@
                                 @forelse ($inmuebles as $inmueble)
                                     <tr>
                                         <td>{{ $inmueble->domicilio }}</td>
-                                        <td>{{ $inmueble->cuentas ?: '—' }}</td>
+                                        <td>{{ collect(explode(' · ', (string) $inmueble->cuentas))->filter()->map($formatearCuentaCobol)->implode(' · ') ?: '—' }}</td>
                                         <td>{{ $inmueble->estado }}</td>
                                     </tr>
                                 @empty
@@ -196,7 +211,7 @@
                                         }
                                     @endphp
                                     <tr>
-                                        <td><strong>{{ $reparto->cuenta_impresa ?: $reparto->cuenta }}</strong></td>
+                                        <td><strong>{{ $formatearCuentaCobol($reparto->cuenta_impresa ?: $reparto->cuenta) }}</strong></td>
                                         <td>
                                             {{ $reparto->beneficiario }}
                                             @if ($reparto->cliente_id)
@@ -219,12 +234,11 @@
                     <h3 class="h5">Contratos como inquilino</h3>
                     <div class="table-responsive">
                         <table class="table table-sm align-middle mb-0">
-                            <thead><tr><th>Contrato</th><th>Cuenta</th><th>Inmueble alquilado</th><th>Propietario</th><th>Desde</th><th>Hasta</th><th>Estado</th></tr></thead>
+                            <thead><tr><th>Cuenta</th><th>Inmueble alquilado</th><th>Propietario</th><th>Desde</th><th>Hasta</th><th>Estado</th></tr></thead>
                             <tbody>
                                 @forelse ($contratos as $contrato)
                                     <tr>
-                                        <td>{{ $contrato->codigo_origen }}</td>
-                                        <td>{{ $contrato->cuenta_inquilino }}</td>
+                                        <td>{{ $formatearCuentaCobol($contrato->cuenta_inquilino) }}</td>
                                         <td>{{ $contrato->inmuebles ?: '—' }}</td>
                                         <td>
                                             {{ $contrato->propietarios ?: '—' }}
@@ -237,7 +251,7 @@
                                         <td>{{ $contrato->estado }}</td>
                                     </tr>
                                 @empty
-                                    <tr><td colspan="7" class="text-muted">No tiene contratos vinculados.</td></tr>
+                                    <tr><td colspan="6" class="text-muted">No tiene contratos vinculados.</td></tr>
                                 @endforelse
                             </tbody>
                         </table>
@@ -259,7 +273,7 @@
                                             </a>
                                         </td>
                                         <td>{{ $vinculo->inquilino_cuit ?: '—' }}</td>
-                                        <td>{{ $vinculo->cuenta_inquilino }}</td>
+                                        <td>{{ $formatearCuentaCobol($vinculo->cuenta_inquilino) }}</td>
                                         <td>{{ $vinculo->inmueble_domicilio }}</td>
                                         <td>{{ $vinculo->fecha_inicio ? \Carbon\Carbon::parse($vinculo->fecha_inicio)->format('d/m/Y') : '—' }}</td>
                                         <td>{{ $vinculo->fecha_fin ? \Carbon\Carbon::parse($vinculo->fecha_fin)->format('d/m/Y') : '—' }}</td>
@@ -274,34 +288,123 @@
                 </article>
                 @endunless
 
-                @unless ($esSoloInquilino)
                 <article class="gei-card p-4">
-                    <h3 class="h5">Últimas liquidaciones de propietario</h3>
+                    <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-2">
+                        <div>
+                            <h3 class="h5 mb-1">Últimos documentos</h3>
+                            <p class="text-muted small mb-0">
+                                Liquidaciones, impuestos garantizados y comprobantes ARCA asociados a las cuentas del cliente.
+                            </p>
+                        </div>
+                    </div>
+
                     <div class="table-responsive">
                         <table class="table table-sm align-middle mb-0">
-                            <thead><tr><th>Período</th><th>Número</th><th>Cuenta</th><th>Comprobante</th><th class="text-end">Total</th><th></th></tr></thead>
+                            <thead>
+                                <tr>
+                                    <th>Período</th>
+                                    <th>Cuenta</th>
+                                    <th>Documentos</th>
+                                </tr>
+                            </thead>
                             <tbody>
-                                @forelse ($liquidaciones as $liquidacion)
+                                @forelse ($documentos as $documentoPeriodo)
+                                    @php
+                                        $cantidadLiquidaciones = $documentoPeriodo->liquidaciones->count();
+                                        $comprobantesArca = $documentoPeriodo->comprobantes_arca ?? collect();
+                                        $cantidadArca = $comprobantesArca->count();
+                                    @endphp
                                     <tr>
-                                        <td>{{ substr($liquidacion->periodo, 4, 2) }}/{{ substr($liquidacion->periodo, 0, 4) }}</td>
-                                        <td>{{ $liquidacion->numero_interno }}</td>
-                                        <td>{{ $liquidacion->cuenta_impresa }}</td>
-                                        <td>{{ $liquidacion->comprobante }}</td>
-                                        <td class="text-end">$ {{ number_format((float) $liquidacion->total_final, 2, ',', '.') }}</td>
-                                        <td class="text-end">
-                                            @if ($liquidacion->pdf_ruta)
-                                                <a href="{{ route('propietarios.liquidaciones.ver', $liquidacion->id) }}" target="_blank" rel="noopener" class="btn btn-sm btn-outline-secondary">Ver PDF</a>
-                                            @endif
+                                        <td class="text-nowrap">
+                                            {{ substr($documentoPeriodo->periodo, 4, 2) }}/{{ substr($documentoPeriodo->periodo, 0, 4) }}
+                                        </td>
+                                        <td>
+                                            @foreach ($documentoPeriodo->cuentas as $cuentaDocumento)
+                                                <div class="text-nowrap">{{ $formatearCuentaCobol($cuentaDocumento) }}</div>
+                                            @endforeach
+                                        </td>
+                                        <td>
+                                            <div class="d-flex flex-wrap gap-1 align-items-start">
+                                                @foreach ($documentoPeriodo->liquidaciones as $liquidacion)
+                                                    @if ($liquidacion->pdf_disponible ?? false)
+                                                        <a
+                                                            href="{{ route('propietarios.liquidaciones.ver', $liquidacion->id) }}"
+                                                            target="_blank"
+                                                            rel="noopener"
+                                                            class="btn btn-sm btn-outline-primary"
+                                                            title="Liquidación {{ $formatearCuentaCobol($liquidacion->cuenta_impresa ?: $liquidacion->cuenta) }}"
+                                                        >
+                                                            Liquidación{{ $cantidadLiquidaciones > 1 ? ' '.$liquidacion->numero_interno : '' }}
+                                                        </a>
+                                                    @endif
+
+                                                    @if ($liquidacion->impuestos_pdf_disponible ?? false)
+                                                        <a
+                                                            href="{{ route('propietarios.liquidaciones.impuestos.ver', $liquidacion->id) }}"
+                                                            target="_blank"
+                                                            rel="noopener"
+                                                            class="btn btn-sm btn-outline-primary"
+                                                            title="Impuestos garantizados {{ $formatearCuentaCobol($liquidacion->cuenta_impresa ?: $liquidacion->cuenta) }}"
+                                                        >
+                                                            Imp. garantizados{{ $cantidadLiquidaciones > 1 ? ' '.$liquidacion->numero_interno : '' }}
+                                                        </a>
+                                                    @endif
+                                                @endforeach
+
+                                                @if ($cantidadArca === 1)
+                                                    @php $comprobanteArca = $comprobantesArca->first(); @endphp
+                                                    <a
+                                                        href="{{ route('comprobantes-arca.ver', ['periodo' => $documentoPeriodo->periodo, 'archivo' => $comprobanteArca->nombre_archivo]) }}"
+                                                        target="_blank"
+                                                        rel="noopener"
+                                                        class="btn btn-sm btn-outline-primary"
+                                                        title="{{ $comprobanteArca->nombre_archivo }}"
+                                                    >
+                                                        {{ pathinfo($comprobanteArca->nombre_archivo, PATHINFO_FILENAME) }}
+                                                    </a>
+                                                @elseif ($cantidadArca > 1)
+                                                    <div class="dropdown">
+                                                        <button
+                                                            type="button"
+                                                            class="btn btn-sm btn-outline-primary dropdown-toggle"
+                                                            data-bs-toggle="dropdown"
+                                                            aria-expanded="false"
+                                                        >
+                                                            ARCA ({{ $cantidadArca }})
+                                                        </button>
+                                                        <ul class="dropdown-menu dropdown-menu-end" style="min-width: 330px;">
+                                                            @foreach ($comprobantesArca as $comprobanteArca)
+                                                                <li>
+                                                                    <a
+                                                                        class="dropdown-item"
+                                                                        href="{{ route('comprobantes-arca.ver', ['periodo' => $documentoPeriodo->periodo, 'archivo' => $comprobanteArca->nombre_archivo]) }}"
+                                                                        target="_blank"
+                                                                        rel="noopener"
+                                                                    >
+                                                                        {{ pathinfo($comprobanteArca->nombre_archivo, PATHINFO_FILENAME) }}
+                                                                        <small class="d-block text-muted">
+                                                                            Cuenta {{ $formatearCuentaCobol($comprobanteArca->cuenta_cobol) }}
+                                                                        </small>
+                                                                    </a>
+                                                                </li>
+                                                            @endforeach
+                                                        </ul>
+                                                    </div>
+                                                @endif
+                                            </div>
                                         </td>
                                     </tr>
                                 @empty
-                                    <tr><td colspan="6" class="text-muted">No tiene liquidaciones vinculadas.</td></tr>
+                                    <tr>
+                                        <td colspan="3" class="text-muted">
+                                            No tiene documentos vinculados en los últimos períodos disponibles.
+                                        </td>
+                                    </tr>
                                 @endforelse
                             </tbody>
                         </table>
                     </div>
                 </article>
-                @endunless
             @else
                 <div class="gei-card gei-empty-state gei-empty-state--large">Seleccioná un cliente para consultar sus datos.</div>
             @endif

@@ -6,23 +6,38 @@ use App\Http\Requests\StoreClienteRequest;
 use App\Http\Requests\UpdateClienteRequest;
 use App\Models\Cliente;
 use App\Models\Role;
+use App\Services\ComprobantesArcaService;
+use App\Services\ImpuestosGarantizadosPdfService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Collection;
 use Illuminate\View\View;
 
 class ClienteController extends Controller
 {
+    public function __construct(
+        private readonly ImpuestosGarantizadosPdfService $impuestosGarantizados,
+        private readonly ComprobantesArcaService $comprobantesArca,
+    ) {
+    }
+
     public function index(Request $request): View
     {
         return $this->vistaListado($request);
     }
 
-    public function show(Request $request, Cliente $cliente): View
+    public function show(Request $request, Cliente $cliente): View|RedirectResponse
     {
+        if ($cliente->id_cliente_canonico !== null) {
+            return redirect()
+                ->route('clientes.show', ['cliente' => $cliente->id_cliente_canonico])
+                ->with('estado', "El cliente #{$cliente->id} fue unificado. Se muestra el cliente canónico #{$cliente->id_cliente_canonico}.");
+        }
+
         return $this->vistaListado($request, $cliente);
     }
 
@@ -45,8 +60,14 @@ class ClienteController extends Controller
             ->with('estado', 'El cliente fue creado correctamente.');
     }
 
-    public function edit(Cliente $cliente): View
+    public function edit(Cliente $cliente): View|RedirectResponse
     {
+        if ($cliente->id_cliente_canonico !== null) {
+            return redirect()
+                ->route('clientes.edit', $cliente->id_cliente_canonico)
+                ->with('estado', "El cliente #{$cliente->id} fue unificado. Se edita el cliente canónico #{$cliente->id_cliente_canonico}.");
+        }
+
         $cliente->load('roles:id');
 
         return view('clientes.edit', [
@@ -57,6 +78,12 @@ class ClienteController extends Controller
 
     public function update(UpdateClienteRequest $request, Cliente $cliente): RedirectResponse
     {
+        if ($cliente->id_cliente_canonico !== null) {
+            return redirect()
+                ->route('clientes.edit', $cliente->id_cliente_canonico)
+                ->withErrors(['cliente' => 'No se puede modificar un cliente absorbido. Modifique el cliente canónico.']);
+        }
+
         DB::transaction(function () use ($request, $cliente): void {
             $cliente->update($request->datosCliente());
             $cliente->roles()->sync($request->rolesIds());
@@ -81,6 +108,7 @@ class ClienteController extends Controller
         }
 
         $clientes = Cliente::query()
+            ->whereNull('id_cliente_canonico')
             ->with([
                 'roles:id,codigo,nombre',
                 'cuentas' => fn ($query) => $query
@@ -112,6 +140,7 @@ class ClienteController extends Controller
         $contratos = collect();
         $inquilinosDePropietario = collect();
         $liquidaciones = collect();
+        $documentos = collect();
         $repartos = collect();
 
         if ($clienteSeleccionado) {
@@ -129,6 +158,7 @@ class ClienteController extends Controller
             );
 
             $liquidaciones = $this->liquidacionesDelPropietario($clienteSeleccionado);
+            $documentos = $this->documentosDelCliente($clienteSeleccionado, $liquidaciones);
             $repartos = $this->repartosDelPropietario($clienteSeleccionado);
         }
 
@@ -142,6 +172,7 @@ class ClienteController extends Controller
             'contratos',
             'inquilinosDePropietario',
             'liquidaciones',
+            'documentos',
             'repartos'
         ));
     }
@@ -307,7 +338,7 @@ class ClienteController extends Controller
             ->values()
             ->all();
 
-        return DB::table('liquidaciones_propietarios')
+        $liquidaciones = DB::table('liquidaciones_propietarios')
             ->where(function ($query) use ($cliente, $cuit, $cuentas): void {
                 $query->where('cliente_id', $cliente->id);
 
@@ -326,6 +357,7 @@ class ClienteController extends Controller
                 'id',
                 'periodo',
                 'fecha',
+                'cuenta',
                 'cuenta_impresa',
                 'comprobante',
                 'numero_interno',
@@ -337,6 +369,125 @@ class ClienteController extends Controller
             ->orderByDesc('numero_interno')
             ->limit(24)
             ->get();
+
+        foreach ($liquidaciones as $liquidacion) {
+            $liquidacion->pdf_disponible = $liquidacion->estado === 'PDF_GENERADO'
+                && ! empty($liquidacion->pdf_ruta)
+                && Storage::disk('liquidaciones')->exists((string) $liquidacion->pdf_ruta);
+
+            $cuentaVisible = (string) ($liquidacion->cuenta_impresa ?: $liquidacion->cuenta);
+            $rutaImpuestos = $this->impuestosGarantizados->rutaPdfParaLiquidacion(
+                (string) $liquidacion->periodo,
+                $liquidacion->pdf_ruta ? (string) $liquidacion->pdf_ruta : null,
+                $cuentaVisible,
+            );
+            $liquidacion->impuestos_pdf_disponible = $rutaImpuestos !== null
+                && Storage::disk('liquidaciones')->exists($rutaImpuestos);
+        }
+
+        return $liquidaciones;
+    }
+
+    /**
+     * Reúne, por período, todos los documentos operativos del cliente:
+     * liquidaciones, impuestos garantizados y comprobantes ARCA.
+     *
+     * Los comprobantes ARCA se buscan por TODAS las cuentas vinculadas al cliente,
+     * independientemente de si son cuentas de propietario o inquilino.
+     *
+     * @param Collection<int, object> $liquidaciones
+     * @return Collection<int, object>
+     */
+    private function documentosDelCliente(Cliente $cliente, Collection $liquidaciones): Collection
+    {
+        $porPeriodo = [];
+
+        $obtenerPeriodo = static function (array &$porPeriodo, string $periodo): object {
+            if (! isset($porPeriodo[$periodo])) {
+                $porPeriodo[$periodo] = (object) [
+                    'periodo' => $periodo,
+                    'cuentas' => collect(),
+                    'liquidaciones' => collect(),
+                    'comprobantes_arca' => collect(),
+                ];
+            }
+
+            return $porPeriodo[$periodo];
+        };
+
+        // Primero incorporamos las liquidaciones e impuestos de propietario.
+        foreach ($liquidaciones as $liquidacion) {
+            $periodo = trim((string) $liquidacion->periodo);
+            if ($periodo === '') {
+                continue;
+            }
+
+            $fila = $obtenerPeriodo($porPeriodo, $periodo);
+            $cuenta = $this->comprobantesArca->normalizarCuenta(
+                (string) ($liquidacion->cuenta_impresa ?: $liquidacion->cuenta)
+            );
+
+            if ($cuenta !== '') {
+                $fila->cuentas->put($cuenta, $cuenta);
+            }
+
+            $fila->liquidaciones->put((int) $liquidacion->id, $liquidacion);
+        }
+
+        // ARCA se busca por todas las cuentas del cliente. Limitamos a los
+        // últimos 12 períodos físicos para mantener ágil la ficha de cliente.
+        $cuentas = $cliente->cuentas
+            ->pluck('cuenta')
+            ->map(fn (mixed $cuenta): string => $this->comprobantesArca->normalizarCuenta((string) $cuenta))
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+
+        if ($cuentas !== []) {
+            foreach ($this->comprobantesArca->periodosDisponibles()->take(12) as $periodo) {
+                $grupos = $this->comprobantesArca->porCuentasYPeriodo($cuentas, (string) $periodo);
+
+                if ($grupos->isEmpty()) {
+                    continue;
+                }
+
+                $fila = $obtenerPeriodo($porPeriodo, (string) $periodo);
+
+                foreach ($grupos as $cuenta => $comprobantes) {
+                    $cuentaNormalizada = $this->comprobantesArca->normalizarCuenta((string) $cuenta);
+
+                    if ($cuentaNormalizada !== '') {
+                        $fila->cuentas->put($cuentaNormalizada, $cuentaNormalizada);
+                    }
+
+                    foreach ($comprobantes as $comprobante) {
+                        $fila->comprobantes_arca->put(
+                            (string) $comprobante->nombre_archivo,
+                            $comprobante
+                        );
+                    }
+                }
+            }
+        }
+
+        return collect($porPeriodo)
+            ->map(function (object $fila): object {
+                $fila->cuentas = $fila->cuentas->values();
+                $fila->liquidaciones = $fila->liquidaciones->values();
+                $fila->comprobantes_arca = $fila->comprobantes_arca
+                    ->values()
+                    ->sortByDesc(
+                        fn (object $item): string =>
+                            $item->tipo_codigo.'-'.$item->punto_venta.'-'.$item->numero_comprobante
+                    )
+                    ->values();
+
+                return $fila;
+            })
+            ->sortByDesc(fn (object $fila): string => $fila->periodo)
+            ->take(24)
+            ->values();
     }
 
     private function aplicarBusqueda(Builder $query, string $busqueda): void

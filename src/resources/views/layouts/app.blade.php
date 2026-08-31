@@ -388,6 +388,77 @@
             color: var(--gei-muted);
         }
 
+
+        .gei-process-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 2000;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            background: rgba(28, 24, 30, .58);
+            backdrop-filter: blur(2px);
+        }
+
+        .gei-process-overlay.is-visible {
+            display: flex;
+        }
+
+        .gei-process-dialog {
+            width: min(520px, 100%);
+            padding: 28px;
+            border: 1px solid rgba(255, 255, 255, .35);
+            border-radius: 16px;
+            background: #fff;
+            box-shadow: 0 24px 70px rgba(24, 17, 26, .28);
+            text-align: center;
+        }
+
+        .gei-process-spinner {
+            width: 54px;
+            height: 54px;
+            margin: 0 auto 18px;
+            border: 5px solid var(--gei-primary-soft);
+            border-top-color: var(--gei-primary);
+            border-radius: 50%;
+            animation: gei-process-spin .85s linear infinite;
+        }
+
+        .gei-process-title {
+            margin: 0 0 8px;
+            color: var(--gei-primary-dark);
+            font-size: 1.2rem;
+            font-weight: 750;
+        }
+
+        .gei-process-message {
+            margin: 0;
+            color: var(--gei-muted);
+            line-height: 1.45;
+        }
+
+        .gei-process-time {
+            margin-top: 18px;
+            padding: 12px 14px;
+            border-radius: 10px;
+            background: var(--gei-primary-soft);
+            color: var(--gei-primary-dark);
+            font-variant-numeric: tabular-nums;
+            font-size: 1.05rem;
+            font-weight: 700;
+        }
+
+        .gei-process-note {
+            margin-top: 12px;
+            color: var(--gei-muted);
+            font-size: .85rem;
+        }
+
+        @keyframes gei-process-spin {
+            to { transform: rotate(360deg); }
+        }
+
         @media (max-width: 991.98px) {
             .gei-menu-toggle {
                 display: grid;
@@ -524,6 +595,27 @@
         </main>
     </div>
 
+
+    <div
+        class="gei-process-overlay"
+        id="geiProcessOverlay"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="geiProcessTitle"
+        aria-describedby="geiProcessMessage"
+        aria-hidden="true"
+    >
+        <div class="gei-process-dialog">
+            <div class="gei-process-spinner" aria-hidden="true"></div>
+            <h2 class="gei-process-title" id="geiProcessTitle">Procesando</h2>
+            <p class="gei-process-message" id="geiProcessMessage">La operación está en ejecución.</p>
+            <div class="gei-process-time">
+                Tiempo transcurrido: <span id="geiProcessElapsed">00:00:00</span>
+            </div>
+            <div class="gei-process-note">No cierre ni recargue esta ventana hasta que finalice el proceso.</div>
+        </div>
+    </div>
+
     <script>
         (() => {
             const body = document.body;
@@ -580,6 +672,76 @@
                     closeMenu();
                 }
             });
+        })();
+    </script>
+
+
+    <script>
+        (() => {
+            const overlay = document.getElementById('geiProcessOverlay');
+            const title = document.getElementById('geiProcessTitle');
+            const message = document.getElementById('geiProcessMessage');
+            const elapsed = document.getElementById('geiProcessElapsed');
+            let timer = null;
+            let startedAt = null;
+
+            const formatElapsed = (totalSeconds) => {
+                const seconds = Math.max(0, Math.floor(totalSeconds));
+                const h = String(Math.floor(seconds / 3600)).padStart(2, '0');
+                const m = String(Math.floor((seconds % 3600) / 60)).padStart(2, '0');
+                const s = String(seconds % 60).padStart(2, '0');
+                return `${h}:${m}:${s}`;
+            };
+
+            const updateElapsed = () => {
+                if (!startedAt || !elapsed) return;
+                elapsed.textContent = formatElapsed((Date.now() - startedAt) / 1000);
+            };
+
+            const abrir = (titulo = 'Procesando', mensaje = 'La operación está en ejecución.') => {
+                if (!overlay) return;
+                title.textContent = titulo;
+                message.textContent = mensaje;
+                startedAt = Date.now();
+                updateElapsed();
+                if (timer) clearInterval(timer);
+                timer = window.setInterval(updateElapsed, 1000);
+                overlay.classList.add('is-visible');
+                overlay.setAttribute('aria-hidden', 'false');
+                document.body.setAttribute('aria-busy', 'true');
+            };
+
+            const cerrar = () => {
+                if (timer) clearInterval(timer);
+                timer = null;
+                startedAt = null;
+                if (elapsed) elapsed.textContent = '00:00:00';
+                overlay?.classList.remove('is-visible');
+                overlay?.setAttribute('aria-hidden', 'true');
+                document.body.removeAttribute('aria-busy');
+            };
+
+            window.GeIProceso = { abrir, cerrar };
+
+            document.addEventListener('submit', (event) => {
+                const form = event.target instanceof HTMLFormElement ? event.target : null;
+                if (!form?.matches('[data-gei-process]')) return;
+
+                // El listener está en document (fase bubble): los onsubmit y
+                // confirm del formulario ya se ejecutaron. Si cancelaron, no abrir.
+                if (event.defaultPrevented) return;
+
+                abrir(
+                    form.dataset.geiProcessTitle || 'Procesando',
+                    form.dataset.geiProcessMessage || 'La operación está en ejecución.'
+                );
+
+                form.querySelectorAll('button[type="submit"], input[type="submit"]').forEach((control) => {
+                    control.disabled = true;
+                });
+            });
+
+            window.addEventListener('pageshow', cerrar);
         })();
     </script>
 

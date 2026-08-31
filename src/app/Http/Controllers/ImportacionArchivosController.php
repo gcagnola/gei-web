@@ -9,6 +9,7 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\View\View;
@@ -179,23 +180,46 @@ class ImportacionArchivosController extends Controller
                 );
             }
 
+            $rutasGuardadas = [];
+
             foreach ($cobol as $entrada) {
-                Storage::put(
-                    "liquidaciones/periodos/{$periodo}/cobol/{$entrada['nombre']}",
-                    file_get_contents($entrada['ruta'])
-                );
+                $rutaDestino = "liquidaciones/periodos/{$periodo}/cobol/{$entrada['nombre']}";
+                $this->guardarArchivoVerificado($entrada['ruta'], $rutaDestino);
+                $rutasGuardadas[] = $rutaDestino;
             }
 
             foreach ($liquidaciones as $entrada) {
-                Storage::put(
-                    "liquidaciones/periodos/{$periodo}/liquidaciones/{$entrada['nombre']}",
-                    file_get_contents($entrada['ruta'])
-                );
+                $rutaDestino = "liquidaciones/periodos/{$periodo}/liquidaciones/{$entrada['nombre']}";
+                $this->guardarArchivoVerificado($entrada['ruta'], $rutaDestino);
+                $rutasGuardadas[] = $rutaDestino;
             }
+
+            foreach ($rutasGuardadas as $rutaGuardada) {
+                if (! Storage::exists($rutaGuardada)) {
+                    throw new \RuntimeException(
+                        "La importación no pudo verificarse: falta {$rutaGuardada}."
+                    );
+                }
+            }
+
+            Log::info('Importación de archivos GeI completada', [
+                'periodo' => $periodo,
+                'cobol' => count($cobol),
+                'liquidaciones' => count($liquidaciones),
+                'rutas' => $rutasGuardadas,
+            ]);
 
             $mensaje = 'Período '.$this->etiquetaPeriodo($periodo).': '
                 .count($cobol).' COBOL y '
-                .count($liquidaciones).' de liquidaciones importados.';
+                .count($liquidaciones).' de liquidaciones importados y verificados.';
+        } catch (\Throwable $exception) {
+            report($exception);
+
+            return $this->respuestaError(
+                $request,
+                'archivos',
+                'La importación falló y no puede darse por completada: '.$exception->getMessage()
+            );
         } finally {
             Storage::deleteDirectory($temporal);
         }
@@ -377,8 +401,18 @@ class ImportacionArchivosController extends Controller
             }
 
             $rutaTemporal = "{$temporal}/".Str::uuid()->toString().'-'.$clasificacion['nombre'];
-            Storage::put($rutaTemporal, stream_get_contents($stream));
+            $contenido = stream_get_contents($stream);
             fclose($stream);
+
+            if ($contenido === false || ! Storage::put($rutaTemporal, $contenido) || ! Storage::exists($rutaTemporal)) {
+                $zip->close();
+
+                return [
+                    'entradas' => [],
+                    'rechazados' => [],
+                    'error' => "No se pudo guardar temporalmente {$nombreOriginal} extraído del ZIP.",
+                ];
+            }
 
             $entradas[] = [
                 'nombre_original' => $nombreOriginal,
@@ -410,6 +444,34 @@ class ImportacionArchivosController extends Controller
 
         return str_starts_with($normalizado, '__MACOSX/')
             || str_starts_with($base, '.');
+    }
+
+    private function guardarArchivoVerificado(string $rutaOrigen, string $rutaDestino): void
+    {
+        $contenido = @file_get_contents($rutaOrigen);
+
+        if ($contenido === false) {
+            throw new \RuntimeException("No se pudo leer el archivo temporal {$rutaOrigen}.");
+        }
+
+        if (! Storage::put($rutaDestino, $contenido)) {
+            throw new \RuntimeException("Storage::put devolvió false para {$rutaDestino}.");
+        }
+
+        if (! Storage::exists($rutaDestino)) {
+            throw new \RuntimeException("El archivo no existe luego de guardarlo: {$rutaDestino}.");
+        }
+
+        $tamanoEsperado = strlen($contenido);
+        $tamanoGuardado = Storage::size($rutaDestino);
+
+        if ($tamanoGuardado !== $tamanoEsperado) {
+            Storage::delete($rutaDestino);
+
+            throw new \RuntimeException(
+                "El archivo {$rutaDestino} quedó incompleto: {$tamanoGuardado} bytes de {$tamanoEsperado}."
+            );
+        }
     }
 
     private function respuestaError(

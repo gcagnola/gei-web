@@ -17,7 +17,6 @@
     <li>
         <details
             class="gei-menu__group {{ $archivoActivo ? 'is-active' : '' }}"
-            @if ($archivoActivo) open @endif
         >
             <summary class="gei-menu__summary">
                 <span class="gei-menu__icon" aria-hidden="true">▣</span>
@@ -50,7 +49,6 @@
     <li>
         <details
             class="gei-menu__group {{ $propietariosActivo ? 'is-active' : '' }}"
-            @if ($propietariosActivo) open @endif
         >
             <summary class="gei-menu__summary">
                 <span class="gei-menu__icon" aria-hidden="true">⌂</span>

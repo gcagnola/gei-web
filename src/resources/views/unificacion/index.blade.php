@@ -26,7 +26,7 @@
 
     <ul class="nav nav-tabs mb-3">
         <li class="nav-item"><span class="nav-link active">Inmuebles</span></li>
-        <li class="nav-item"><span class="nav-link disabled">Clientes / Propietarios — próxima etapa</span></li>
+        <li class="nav-item"><a class="nav-link" href="{{ route('archivo.unificacion.clientes.index') }}">Clientes / Propietarios</a></li>
     </ul>
 
     {{-- Vistas operativas: el usuario trabaja sobre un universo acotado y comprensible. --}}
@@ -238,48 +238,83 @@
         </div>
     @endif
 
-    @if ($texto !== '' && $candidatosBusqueda->isNotEmpty())
+    @if ($texto !== '' && $gruposCandidatosBusqueda->isNotEmpty())
         <div class="card mb-4 border-warning">
             <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
                 <span class="fw-semibold">Similitudes encontradas en esta búsqueda</span>
-                <small class="text-muted">Sólo sugerencias: tolera puntuación, P/PISO, OF/OFICINA y ceros a la izquierda</small>
+                <small class="text-muted">Agrupadas por lectura comparable. Son sugerencias; elegís explícitamente qué queda y qué se absorbe.</small>
             </div>
-            <div class="card-body p-0">
-                <div class="table-responsive">
-                    <table class="table table-sm table-hover align-middle mb-0">
-                        <thead><tr><th>Confianza</th><th>Inmueble A</th><th>Inmueble B</th><th>Lectura comparable</th><th>Evidencia</th><th class="text-end">Acciones</th></tr></thead>
-                        <tbody>
-                            @foreach ($candidatosBusqueda as $candidato)
-                                <tr>
-                                    <td>
-                                        <span class="badge {{ $candidato->confianza === 'ALTA' ? 'text-bg-danger' : 'text-bg-warning' }}">{{ $candidato->confianza }}</span>
-                                        @if ($candidato->estado_decision === 'CONFLICTIVO') <span class="badge text-bg-danger">CONFLICTIVO</span> @endif
-                                    </td>
-                                    <td><strong>#{{ $candidato->id_a }}</strong> <span class="badge text-bg-secondary">{{ $candidato->estado_a }}</span><br>{{ $candidato->domicilio_a }}</td>
-                                    <td><strong>#{{ $candidato->id_b }}</strong> <span class="badge text-bg-secondary">{{ $candidato->estado_b }}</span><br>{{ $candidato->domicilio_b }}</td>
-                                    <td><code>{{ $candidato->domicilio_comparable }}</code></td>
-                                    <td>
-                                        {{ $candidato->motivo }}
-                                        @if ($candidato->partidas_compartidas) <div><small><strong>Partida:</strong> {{ $candidato->partidas_compartidas }}</small></div> @endif
-                                        @if ($candidato->cuentas_compartidas) <div><small><strong>Cuenta propietario compartida:</strong> {{ $candidato->cuentas_compartidas }}</small></div> @endif
-                                    </td>
-                                    <td class="text-end text-nowrap">
-                                        <a class="btn btn-sm btn-outline-primary" href="{{ route('archivo.unificacion.inmuebles.comparar', ['principal' => $candidato->id_a, 'secundario' => $candidato->id_b]) }}">Comparar</a>
-                                        <form method="POST" action="{{ route('archivo.unificacion.inmuebles.candidato') }}" class="d-inline">
-                                            @csrf
-                                            <input type="hidden" name="id_a" value="{{ $candidato->id_a }}"><input type="hidden" name="id_b" value="{{ $candidato->id_b }}"><input type="hidden" name="decision" value="MANTENER_SEPARADOS">
-                                            <button class="btn btn-sm btn-outline-secondary" type="submit">Son distintos</button>
-                                        </form>
-                                        <form method="POST" action="{{ route('archivo.unificacion.inmuebles.candidato') }}" class="d-inline">
-                                            @csrf
-                                            <input type="hidden" name="id_a" value="{{ $candidato->id_a }}"><input type="hidden" name="id_b" value="{{ $candidato->id_b }}"><input type="hidden" name="decision" value="CONFLICTIVO">
-                                            <button class="btn btn-sm btn-outline-danger" type="submit">Conflictivo</button>
-                                        </form>
-                                    </td>
-                                </tr>
-                            @endforeach
-                        </tbody>
-                    </table>
+            <div class="card-body">
+                <div class="row g-3">
+                    @foreach ($gruposCandidatosBusqueda as $grupo)
+                        <div class="col-12">
+                            <div class="border rounded p-3 {{ $grupo->tiene_conflictivo ? 'border-danger' : 'border-warning' }}">
+                                <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-2">
+                                    <div>
+                                        <span class="badge {{ $grupo->confianza === 'ALTA' ? 'text-bg-danger' : 'text-bg-warning' }}">{{ $grupo->confianza }}</span>
+                                        @if ($grupo->tiene_conflictivo)
+                                            <span class="badge text-bg-danger">CONFLICTIVO</span>
+                                        @endif
+                                        <strong class="ms-1">{{ $grupo->domicilio_comparable }}</strong>
+                                    </div>
+                                    <small class="text-muted">{{ $grupo->items->count() }} registros candidatos</small>
+                                </div>
+
+                                <div class="table-responsive mb-2">
+                                    <table class="table table-sm align-middle mb-0">
+                                        <thead>
+                                            <tr><th>ID</th><th>Domicilio original</th><th>Estado</th></tr>
+                                        </thead>
+                                        <tbody>
+                                            @foreach ($grupo->items as $item)
+                                                <tr>
+                                                    <td class="fw-semibold">#{{ $item->id }}</td>
+                                                    <td>{{ $item->domicilio }}</td>
+                                                    <td><span class="badge text-bg-secondary">{{ $item->estado }}</span></td>
+                                                </tr>
+                                            @endforeach
+                                        </tbody>
+                                    </table>
+                                </div>
+
+                                <div class="small mb-3">
+                                    @if ($grupo->cuentas_compartidas)
+                                        <div><strong>Cuenta propietario compartida:</strong> {{ $grupo->cuentas_compartidas }}</div>
+                                    @endif
+                                    @if ($grupo->partidas_compartidas)
+                                        <div><strong>Partida compartida:</strong> {{ $grupo->partidas_compartidas }}</div>
+                                    @endif
+                                    @if ($grupo->motivos)
+                                        <div class="text-muted">{{ $grupo->motivos }}</div>
+                                    @endif
+                                </div>
+
+                                <form method="GET" action="{{ route('archivo.unificacion.inmuebles.comparar') }}" class="row g-2 align-items-end">
+                                    <div class="col-md-5">
+                                        <label class="form-label">Inmueble que queda</label>
+                                        <select class="form-select" name="principal" required>
+                                            <option value="">Seleccionar...</option>
+                                            @foreach ($grupo->items as $item)
+                                                <option value="{{ $item->id }}">#{{ $item->id }} — {{ $item->domicilio }}</option>
+                                            @endforeach
+                                        </select>
+                                    </div>
+                                    <div class="col-md-5">
+                                        <label class="form-label">Inmueble a absorber</label>
+                                        <select class="form-select" name="secundario" required>
+                                            <option value="">Seleccionar...</option>
+                                            @foreach ($grupo->items as $item)
+                                                <option value="{{ $item->id }}">#{{ $item->id }} — {{ $item->domicilio }}</option>
+                                            @endforeach
+                                        </select>
+                                    </div>
+                                    <div class="col-md-2 d-grid">
+                                        <button class="btn btn-outline-primary" type="submit">Comparar</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    @endforeach
                 </div>
             </div>
         </div>
@@ -409,7 +444,7 @@
                                 <td>#{{ $unificacion->id_registro_principal }} — {{ $unificacion->principal_domicilio }}</td>
                                 <td>#{{ $unificacion->id_registro_absorbido }} — {{ $unificacion->absorbido_domicilio }}</td>
                                 <td>{{ $unificacion->usuario_nombre ?: '—' }}</td>
-                                <td>{{ $unificacion->created_at }}</td>
+                                <td>{{ $unificacion->created_at ? \Illuminate\Support\Carbon::parse($unificacion->created_at)->format('d/m/Y H:i') : '—' }}</td>
                                 <td><span class="badge text-bg-secondary">{{ $unificacion->estado }}</span></td>
                             </tr>
                         @empty

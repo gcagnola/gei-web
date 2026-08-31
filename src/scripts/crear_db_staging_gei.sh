@@ -2,7 +2,7 @@
 set -euo pipefail
 trap 'estado=$?; echo "ERROR en la línea $LINENO (código $estado)." >&2; exit "$estado"' ERR
 
-SCRIPT_VERSION="2026-07-29.3"
+SCRIPT_VERSION="2026-08-24.1"
 echo "crear_db_staging_gei.sh versión ${SCRIPT_VERSION}"
 echo "Migración a staging por período de Laravel."
 echo "pliqloc: se conservan las hojas adicionales (fecha + tipo + nro_liquidacion)."
@@ -127,8 +127,55 @@ fi
 echo "Período: $PERIODO"
 echo "Origen:  $DIRECTORIO_PERIODO"
 
+# El período del lote se valida contra PLIQLOC, que representa la
+# liquidación mensual. CTACTEPRO e INQCTACTE pueden contener fechas futuras
+# y por eso su fecha máxima no identifica el período del lote.
+export PLIQLOC_SF PLIQLOC_ST
+PERIODO_PLIQLOC="$(
+python3 <<'PY'
+import os
+import re
+from datetime import datetime
+from pathlib import Path
+
+periodos = set()
+
+for env_name in ("PLIQLOC_SF", "PLIQLOC_ST"):
+    path = Path(os.environ[env_name])
+    for raw in path.read_bytes().splitlines():
+        text = raw.decode("cp1252", errors="ignore")
+        match = re.match(r"^(\d{2}/\d{2}/\d{4})", text)
+        if match is None:
+            continue
+        try:
+            fecha = datetime.strptime(match.group(1), "%d/%m/%Y").date()
+        except ValueError:
+            continue
+        periodos.add(fecha.strftime("%Y%m"))
+
+if not periodos:
+    raise SystemExit("No se encontró una fecha válida en PLIQLOC para detectar el período.")
+
+if len(periodos) != 1:
+    raise SystemExit(
+        "PLIQLOC contiene más de un período: " + ", ".join(sorted(periodos))
+    )
+
+print(next(iter(periodos)))
+PY
+)"
+
+echo "Período detectado en PLIQLOC: $PERIODO_PLIQLOC"
+if [[ "$PERIODO_PLIQLOC" != "$PERIODO" && "$GEI_PERMITIR_PERIODO_DISTINTO" != "1" ]]; then
+    echo "El período de la carpeta ($PERIODO) no coincide con PLIQLOC ($PERIODO_PLIQLOC)." >&2
+    echo "Revisá la carga. Sólo para una excepción controlada usá GEI_PERMITIR_PERIODO_DISTINTO=1." >&2
+    exit 1
+fi
+
+# Diagnóstico informativo de fechas máximas COBOL. No interviene en la
+# validación del período porque las cuentas corrientes pueden tener fechas
+# posteriores al mes liquidado.
 export PROPIETAR CTACTEPRO INQCTACTE
-PERIODO_COBOL="$(
 python3 <<'PY'
 import os
 from datetime import datetime
@@ -140,7 +187,6 @@ specs = (
     ("PROPIETAR.TXT", Path(os.environ["PROPIETAR"]), 159),
 )
 
-latest_all = None
 for name, path, offset in specs:
     latest = None
     for raw in path.read_bytes().splitlines():
@@ -154,22 +200,13 @@ for name, path, offset in specs:
         if not 2000 <= parsed.year <= 2100:
             continue
         latest = parsed if latest is None or parsed > latest else latest
-        latest_all = parsed if latest_all is None or parsed > latest_all else latest_all
-    print(f"{name}: {latest.isoformat() if latest else 'sin fecha válida'}",
-          file=os.sys.stderr)
 
-if latest_all is None:
-    raise SystemExit("No se encontró una fecha válida para detectar el período COBOL.")
-print(latest_all.strftime("%Y%m"))
+    print(
+        f"Diagnóstico {name}: fecha máxima "
+        f"{latest.isoformat() if latest else 'sin fecha válida'}",
+        file=os.sys.stderr,
+    )
 PY
-)"
-
-echo "Período detectado en COBOL: $PERIODO_COBOL"
-if [[ "$PERIODO_COBOL" != "$PERIODO" && "$GEI_PERMITIR_PERIODO_DISTINTO" != "1" ]]; then
-    echo "El período de la carpeta ($PERIODO) no coincide con el detectado en COBOL ($PERIODO_COBOL)." >&2
-    echo "Revisá la carga. Sólo para una excepción controlada usá GEI_PERMITIR_PERIODO_DISTINTO=1." >&2
-    exit 1
-fi
 
 if psql -d postgres -Atq --set=ON_ERROR_STOP=1 \
     -c 'SELECT datname FROM pg_database' | grep -Fxq -- "$GEI_DB"; then

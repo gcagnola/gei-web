@@ -13,6 +13,7 @@ services:
     volumes:
       - ./src:/var/www/html
       - ../gei-liquidaciones-python:/opt/gei-liquidaciones-python:ro
+      - ../../dockers/samba-server/archivos/KNG/Facturas:/archivo-kng/facturas:ro
       - ./docker/php/php.ini:/usr/local/etc/php/conf.d/gei.ini:ro
     networks:
       - gei-network

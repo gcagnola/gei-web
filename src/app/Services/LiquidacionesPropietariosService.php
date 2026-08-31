@@ -22,7 +22,186 @@ final class LiquidacionesPropietariosService
         'liquidb.st.txt',
         'pliqloc.sf.txt',
         'pliqloc.st.txt',
+        'dailoc.SF.txt',
     ];
+
+    /** @return array<string, mixed> */
+    public function analizar(string $periodo, ?int $numeroInicial = null): array
+    {
+        $this->validarPeriodo($periodo);
+        $this->validarEsquema();
+        $directorio = $this->directorioPeriodo($periodo);
+        $this->validarArchivos($directorio);
+
+        $timeout = (int) config('gei.liquidaciones_propietarios.timeout', 1800);
+        $lock = Cache::store((string) config('gei.liquidaciones_propietarios.lock_store', 'file'))
+            ->lock('gei:liquidaciones-propietarios', $timeout + 60);
+
+        if (! $lock->get()) {
+            throw new RuntimeException('Ya hay un período de propietarios en proceso.');
+        }
+
+        $temporal = storage_path(
+            "app/private/liquidaciones/tmp/analisis_propietarios_{$periodo}_".uniqid('', true).'.jsonl'
+        );
+        File::ensureDirectoryExists(dirname($temporal));
+
+        try {
+            $process = new Process([
+                $this->python(),
+                $this->script(),
+                'extraer',
+                '--directorio',
+                $directorio,
+                '--periodo',
+                $periodo,
+                '--salida',
+                $temporal,
+            ], base_path());
+            $process->setTimeout($timeout);
+            $process->run();
+
+            if (! $process->isSuccessful()) {
+                throw new RuntimeException(
+                    $this->errorProceso($process, 'No se pudieron interpretar las liquidaciones.')
+                );
+            }
+
+            $archivo = fopen($temporal, 'rb');
+            if ($archivo === false) {
+                throw new RuntimeException("No se pudo leer el temporal {$temporal}.");
+            }
+
+            $resultado = [
+                'periodo' => $periodo,
+                'lote_hash' => $this->hashLote($directorio),
+                'detectadas' => 0,
+                'insertadas' => 0,
+                'actualizadas' => 0,
+                'omitidas' => 0,
+                'cuentas_propietario_no_resueltas' => 0,
+                'clientes_no_resueltos' => 0,
+                'control_pliqloc_estados' => [],
+                'muestra_no_resueltas' => [],
+            ];
+
+            try {
+                while (($linea = fgets($archivo)) !== false) {
+                    if (trim($linea) === '') {
+                        continue;
+                    }
+
+                    $data = json_decode($linea, true, 512, JSON_THROW_ON_ERROR);
+                    $resultado['detectadas']++;
+
+                    $control = is_array($data['control_pliqloc'] ?? null)
+                        ? $data['control_pliqloc']
+                        : [];
+                    $estadoControl = trim((string) ($control['estado'] ?? 'SIN_PLIQLOC')) ?: 'SIN_PLIQLOC';
+                    $resultado['control_pliqloc_estados'][$estadoControl] =
+                        (int) ($resultado['control_pliqloc_estados'][$estadoControl] ?? 0) + 1;
+
+                    $cuenta = (string) ($data['cuenta_normalizada'] ?? '');
+                    $relacion = $this->resolverCuenta($cuenta);
+
+                    if ($relacion['cuenta_corriente_id'] === null) {
+                        $resultado['cuentas_propietario_no_resueltas']++;
+                    }
+                    if ($relacion['cliente_id'] === null) {
+                        $resultado['clientes_no_resueltos']++;
+                    }
+                    if (
+                        ($relacion['cuenta_corriente_id'] === null || $relacion['cliente_id'] === null)
+                        && count($resultado['muestra_no_resueltas']) < 20
+                    ) {
+                        $resultado['muestra_no_resueltas'][] = [
+                            'cuenta' => $cuenta,
+                            'propietario' => (string) ($data['propietario'] ?? ''),
+                            'comprobante' => (string) ($data['comprobante'] ?? ''),
+                            'cuenta_corriente_id' => $relacion['cuenta_corriente_id'],
+                            'cliente_id' => $relacion['cliente_id'],
+                        ];
+                    }
+
+                    $existente = DB::table('liquidaciones_propietarios')
+                        ->where('clave_origen', $data['clave_origen'])
+                        ->first();
+                    $contenidoHash = hash(
+                        'sha256',
+                        json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+                    );
+
+                    if ($existente === null) {
+                        $resultado['insertadas']++;
+                        continue;
+                    }
+
+                    $mismaRelacion =
+                        (int) ($existente->cliente_id ?? 0) === (int) ($relacion['cliente_id'] ?? 0)
+                        && (int) ($existente->cuenta_corriente_id ?? 0) === (int) ($relacion['cuenta_corriente_id'] ?? 0);
+
+                    if (
+                        hash_equals((string) $existente->contenido_hash, $contenidoHash)
+                        && $mismaRelacion
+                    ) {
+                        $resultado['omitidas']++;
+                    } else {
+                        $resultado['actualizadas']++;
+                    }
+                }
+            } finally {
+                fclose($archivo);
+            }
+
+            ksort($resultado['control_pliqloc_estados']);
+
+            $resultadoImpuestos = app(ImpuestosGarantizadosPdfService::class)
+                ->analizar($periodo);
+
+            return [
+                ...$resultado,
+                ...$this->proyectarNumeracion(
+                    $periodo,
+                    $numeroInicial,
+                    (int) $resultado['insertadas']
+                ),
+                'pdf_existentes' => (int) DB::table('liquidaciones_propietarios')
+                    ->where('periodo', $periodo)
+                    ->where('estado', 'PDF_GENERADO')
+                    ->count(),
+                'impuestos_garantizados' => $resultadoImpuestos,
+            ];
+        } catch (JsonException $error) {
+            throw new RuntimeException('El motor devolvió una liquidación JSON inválida.', 0, $error);
+        } finally {
+            File::delete($temporal);
+            $lock->release();
+        }
+    }
+
+    public function loteHashPeriodo(string $periodo): string
+    {
+        $this->validarPeriodo($periodo);
+        $directorio = $this->directorioPeriodo($periodo);
+        $this->validarArchivos($directorio);
+
+        return $this->hashLote($directorio);
+    }
+
+    public function numeroInicialSugerido(string $periodo): int
+    {
+        $this->validarPeriodo($periodo);
+
+        $primera = DB::table('liquidaciones_propietarios')
+            ->where('periodo', $periodo)
+            ->min('numero_interno');
+
+        if ($primera !== null) {
+            return (int) $primera;
+        }
+
+        return (int) config('gei.liquidaciones_propietarios.numero_inicial', 25194);
+    }
 
     /** @return array<string, mixed> */
     public function procesar(string $periodo, ?int $numeroInicial = null): array
@@ -50,15 +229,39 @@ final class LiquidacionesPropietariosService
         ]);
 
         try {
+            // Validar DAILOC antes de tocar liquidaciones o repartos. Si los
+            // totales no cierran, el proceso se detiene sin comenzar a aplicar.
+            $analisisImpuestos = app(ImpuestosGarantizadosPdfService::class)
+                ->analizar($periodo);
+            if (! ($analisisImpuestos['validacion_ok'] ?? false)) {
+                throw new RuntimeException(sprintf(
+                    'DAILOC tiene %d diferencia(s) de validación y %d error(es). Revisá el detalle antes de procesar.',
+                    (int) ($analisisImpuestos['validaciones_con_diferencia'] ?? 0),
+                    (int) ($analisisImpuestos['errores'] ?? 0),
+                ));
+            }
+
             $resultadoImportacion = $this->importar($periodo, $directorio, $numeroInicial, $timeout);
             $resultadoRepartos = app(SincronizacionRepartosPropietariosService::class)
                 ->sincronizar($periodo, true);
             $resultadoPdf = $this->generarPdf($periodo, $timeout);
+            $resultadoImpuestos = app(ImpuestosGarantizadosPdfService::class)
+                ->generar($periodo);
+
+            // La actividad se calcula únicamente después de haber procesado con
+            // éxito liquidaciones + DAILOC. Si ARCA no está disponible, el
+            // servicio deja clientes.activo intacto y lo informa en el resultado.
+            $resultadoActividad = app(SincronizacionActividadClientesService::class)
+                ->sincronizar($periodo);
+
             $resultado = [
                 'periodo' => $periodo,
                 ...$resultadoImportacion,
                 'repartos' => $resultadoRepartos,
                 ...$resultadoPdf,
+                'impuestos_garantizados' => $resultadoImpuestos,
+                'pdf_impuestos_garantizados_generados' => (int) ($resultadoImpuestos['pdf_generados'] ?? 0),
+                'actividad_clientes' => $resultadoActividad,
             ];
 
             DB::table('liquidaciones_propietarios_procesos')
@@ -378,6 +581,53 @@ final class LiquidacionesPropietariosService
         if ($filas !== []) {
             DB::table('liquidaciones_propietarios_items')->insert($filas);
         }
+    }
+
+    /** @return array<string, int|bool|null> */
+    private function proyectarNumeracion(
+        string $periodo,
+        ?int $numeroInicial,
+        int $insertadas
+    ): array {
+        $existentes = (int) DB::table('liquidaciones_propietarios')
+            ->where('periodo', $periodo)
+            ->count();
+        $primeroActual = DB::table('liquidaciones_propietarios')
+            ->where('periodo', $periodo)
+            ->min('numero_interno');
+        $ultimoActual = DB::table('liquidaciones_propietarios')
+            ->where('periodo', $periodo)
+            ->max('numero_interno');
+
+        if ($existentes > 0) {
+            $primero = $numeroInicial ?? (int) $primeroActual;
+            if ($primero < 1) {
+                throw new RuntimeException('El primer número interno debe ser mayor que cero.');
+            }
+            $renumeraria = $numeroInicial !== null && $numeroInicial !== (int) $primeroActual;
+            $proximo = $renumeraria
+                ? $primero + $existentes
+                : (int) $ultimoActual + 1;
+        } else {
+            $primero = $numeroInicial ?? (int) config('gei.liquidaciones_propietarios.numero_inicial', 0);
+            if ($primero < 1) {
+                throw new RuntimeException('Indicá el primer número interno para iniciar la numeración de PDF.');
+            }
+            $renumeraria = false;
+            $proximo = $primero;
+        }
+
+        $final = $insertadas > 0
+            ? $proximo + $insertadas - 1
+            : ($existentes > 0 ? ($renumeraria ? $primero + $existentes - 1 : (int) $ultimoActual) : null);
+
+        return [
+            'liquidaciones_existentes_periodo' => $existentes,
+            'numero_inicial_periodo' => $primero,
+            'proximo_numero_nuevas' => $proximo,
+            'numero_final_estimado' => $final,
+            'renumeraria_periodo' => $renumeraria,
+        ];
     }
 
     private function siguienteNumero(string $periodo, ?int $numeroInicial): int

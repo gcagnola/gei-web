@@ -48,3 +48,6 @@ venv/
 # SQL del proyecto versionado
 !src/sql/
 !src/sql/**/*.sql
+
+# Backups con timestamp
+*.bak-*

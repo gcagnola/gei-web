@@ -17,6 +17,9 @@ final class MigracionInmueblesCobolService
     /** @var null|Closure(array<string, mixed>):void */
     private ?Closure $incidencia = null;
 
+    /** @var null|Closure(array<string, mixed>):void */
+    private ?Closure $auditoriaActualizacion = null;
+
     public function __construct(
         private readonly InmuebleCobolNormalizer $normalizer,
     ) {
@@ -31,9 +34,11 @@ final class MigracionInmueblesCobolService
         bool $confirmar = false,
         ?int $limite = null,
         ?Closure $avance = null,
-        ?Closure $incidencia = null
+        ?Closure $incidencia = null,
+        ?Closure $auditoriaActualizacion = null
     ): array {
         $this->incidencia = $incidencia;
+        $this->auditoriaActualizacion = $auditoriaActualizacion;
         $origen = $this->conexionExploracion();
         $this->validarOrigen($origen);
         $filas = $this->ultimosInquilinos($origen, $limite);
@@ -298,6 +303,7 @@ final class MigracionInmueblesCobolService
             }
         } finally {
             $this->incidencia = null;
+            $this->auditoriaActualizacion = null;
         }
 
         return $resultado;
@@ -492,8 +498,12 @@ final class MigracionInmueblesCobolService
                 'codigo_origen' => null,
                 'domicilio' => $datos['direccion_normalizada'],
                 'domicilio_normalizado' => $datos['direccion_normalizada'],
-                'destino_codigo' => $datos['destino'],
-                'identificador_cochera' => $datos['identificador_cochera'],
+                // DESTINO e IDENTIFICADOR DE COCHERA provienen del registro/contrato
+                // del inquilino. No son identidad ni dato maestro estable del inmueble.
+                // Se conservan en inmuebles_origenes.datos_origen y DESTINO además
+                // se migra a contratos.destino_codigo.
+                'destino_codigo' => null,
+                'identificador_cochera' => null,
                 'estado' => $activo ? 'ACTIVO' : 'INACTIVO',
                 'observaciones' => null,
                 'created_at' => now(),
@@ -514,8 +524,11 @@ final class MigracionInmueblesCobolService
                 $fila['codigo_origen'] = $existente['codigo_origen'] ?? null;
                 $fila['domicilio'] = $datos['direccion_normalizada'];
                 $fila['domicilio_normalizado'] = $datos['direccion_normalizada'];
-                $fila['destino_codigo'] = $datos['destino'];
-                $fila['identificador_cochera'] = $datos['identificador_cochera'];
+                // No sobrescribir estos campos desde INQUILINO: pueden variar entre
+                // contratos/orígenes históricos del mismo inmueble. Se preserva el
+                // valor legado existente hasta normalizar definitivamente ese dato.
+                $fila['destino_codigo'] = $existente['destino_codigo'] ?? null;
+                $fila['identificador_cochera'] = $existente['identificador_cochera'] ?? null;
                 $fila['observaciones'] = $existente['observaciones'] ?? null;
             }
 
@@ -533,6 +546,41 @@ final class MigracionInmueblesCobolService
                 $fila['updated_at'] = $existente['updated_at'] ?? now();
                 $resultado['inmuebles_sin_cambios']++;
             } else {
+                if ($this->auditoriaActualizacion !== null) {
+                    $camposAuditados = [
+                        'codigo_origen',
+                        'domicilio',
+                        'domicilio_normalizado',
+                        'destino_codigo',
+                        'identificador_cochera',
+                        'estado',
+                        'observaciones',
+                    ];
+                    $cambios = [];
+                    foreach ($camposAuditados as $campoAuditado) {
+                        $antes = $existente[$campoAuditado] ?? null;
+                        $despues = $fila[$campoAuditado] ?? null;
+                        if ($antes != $despues) {
+                            $cambios[$campoAuditado] = [
+                                'antes' => $antes,
+                                'despues' => $despues,
+                            ];
+                        }
+                    }
+
+                    ($this->auditoriaActualizacion)([
+                        'inmueble_id' => (int) $fila['id'],
+                        'cuenta_inquilino' => (string) ($datos['cuenta_inquilino'] ?? ''),
+                        'cuenta_propietario' => (string) ($datos['cuenta_propietario'] ?? ''),
+                        'direccion_fuente' => (string) ($datos['direccion_finca'] ?? ''),
+                        'clave_migracion_fuente' => (string) ($datos['clave_inmueble'] ?? ''),
+                        'clave_migracion_actual' => (string) ($existente['clave_migracion'] ?? ''),
+                        'actualiza_datos_maestros' => $actualizarDatosMaestros
+                            || $clave === ($existente['clave_migracion'] ?? null),
+                        'cambios' => $cambios,
+                    ]);
+                }
+
                 $fila['updated_at'] = now();
                 if ($confirmar) {
                     DB::table('inmuebles')->where('id', $fila['id'])->update([

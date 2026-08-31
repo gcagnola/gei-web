@@ -21,18 +21,18 @@
         <p>Archivos COBOL y liquidaciones conservados juntos en cada período.</p>
     </header>
 
-    <section class="gei-card p-4 mb-4">
+    <section class="gei-card p-3 mb-3">
         <form
             method="POST"
             action="{{ route('archivo.importar.store') }}"
             enctype="multipart/form-data"
-            class="row g-3 align-items-end"
+            class="row g-2 align-items-end"
             data-import-form
         >
             @csrf
 
-            <div class="col-lg-5">
-                <label for="archivos" class="form-label fw-semibold">Archivos</label>
+            <div class="col-12 col-lg-5">
+                <label for="archivos" class="form-label fw-semibold mb-1">Archivos</label>
                 <input
                     type="file"
                     id="archivos"
@@ -44,10 +44,10 @@
                 >
             </div>
 
-            <div class="col-sm-4 col-lg-2">
-                <label for="periodo_mes" class="form-label fw-semibold">Mes</label>
+            <div class="col-6 col-lg-2">
+                <label for="periodo_mes" class="form-label fw-semibold mb-1">Mes</label>
                 <select id="periodo_mes" name="periodo_mes" class="form-select">
-                    <option value="">Detectar desde los archivos</option>
+                    <option value="">Detectar</option>
                     @foreach ($meses as $numero => $nombre)
                         <option value="{{ $numero }}" @selected((int) old('periodo_mes') === $numero)>
                             {{ $nombre }}
@@ -56,8 +56,8 @@
                 </select>
             </div>
 
-            <div class="col-sm-4 col-lg-2">
-                <label for="periodo_anio" class="form-label fw-semibold">Año</label>
+            <div class="col-6 col-lg-2">
+                <label for="periodo_anio" class="form-label fw-semibold mb-1">Año</label>
                 <input
                     type="number"
                     id="periodo_anio"
@@ -66,20 +66,20 @@
                     max="2100"
                     value="{{ old('periodo_anio') }}"
                     class="form-control"
-                    placeholder="{{ now()->year }}"
+                    placeholder="Ej. {{ now()->year }}"
                 >
             </div>
 
-            <div class="col-sm-4 col-lg-3 d-grid">
+            <div class="col-12 col-lg-3 d-grid">
                 <button type="submit" class="btn gei-button gei-button--primary" data-import-submit>
                     Subir archivos
                 </button>
             </div>
         </form>
 
-        <p class="small text-muted mb-0 mt-3">
-            El período se aplica a todos los archivos de la carga. En COBOL se obtiene de la última
-            fecha válida de CTACTEPRO, INQCTACTE o PROPIETAR. INQUILINO no permite detectarlo por sí solo.
+        <p class="small text-muted mb-0 mt-2">
+            Si no indicás mes y año, el período se detecta desde PLIQLOC.
+            Si elegís un mes manualmente, ingresá también el año.
         </p>
     </section>
 
@@ -235,6 +235,16 @@
                                 @endif
                             </button>
                         </form>
+
+                        @if (($estadoMigracion['estado'] ?? null) === 'OK')
+                            <a
+                                href="{{ route('archivo.importar.actualizar-gei', $periodo['periodo']) }}"
+                                class="btn btn-sm btn-outline-success"
+                            >
+                                Actualizar GeI-Web
+                            </a>
+                        @endif
+
                     </div>
                 </div>
 
@@ -346,6 +356,11 @@
                     <div class="small text-muted mt-2" data-import-progress-detail>
                         Esperando inicio de carga.
                     </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">
+                        Cerrar
+                    </button>
                 </div>
             </div>
         </div>

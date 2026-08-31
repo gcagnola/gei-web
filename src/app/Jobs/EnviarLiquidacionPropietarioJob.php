@@ -4,6 +4,8 @@ namespace App\Jobs;
 
 use App\Mail\LiquidacionPropietarioMail;
 use App\Models\LiquidacionPropietarioEnvio;
+use App\Services\ImpuestosGarantizadosPdfService;
+use App\Services\ComprobantesArcaService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -34,7 +36,10 @@ class EnviarLiquidacionPropietarioJob implements ShouldQueue
         $this->onQueue('liquidaciones-emails');
     }
 
-    public function handle(): void
+    public function handle(
+        ImpuestosGarantizadosPdfService $impuestosGarantizados,
+        ComprobantesArcaService $comprobantesArca,
+    ): void
     {
         $envio = LiquidacionPropietarioEnvio::query()
             ->with(['liquidacion.cliente'])
@@ -63,20 +68,95 @@ class EnviarLiquidacionPropietarioJob implements ShouldQueue
                 throw new RuntimeException('El email de destino no es válido.');
             }
 
-            if (! $liquidacion->pdf_ruta) {
-                throw new RuntimeException('La liquidación no tiene un PDF asociado.');
+            $documentos = strtoupper(trim((string) ($envio->documentos ?? 'LIQUIDACION')));
+            if (! in_array($documentos, ['LIQUIDACION', 'IMPUESTOS', 'AMBOS', 'ARCA', 'TODOS'], true)) {
+                $documentos = 'LIQUIDACION';
             }
 
-            if (! Storage::disk('liquidaciones')->exists($liquidacion->pdf_ruta)) {
-                throw new RuntimeException('El archivo PDF no existe en el almacenamiento.');
+            $adjuntos = [];
+
+            if (in_array($documentos, ['LIQUIDACION', 'AMBOS', 'TODOS'], true)) {
+                if (! $liquidacion->pdf_ruta) {
+                    throw new RuntimeException('La liquidación no tiene un PDF asociado.');
+                }
+
+                if (! Storage::disk('liquidaciones')->exists($liquidacion->pdf_ruta)) {
+                    throw new RuntimeException('El archivo PDF de la liquidación no existe en el almacenamiento.');
+                }
+
+                $adjuntos[] = [
+                    'disk' => 'liquidaciones',
+                    'ruta' => $liquidacion->pdf_ruta,
+                    'nombre' => basename($liquidacion->pdf_ruta),
+                ];
+            }
+
+            if (in_array($documentos, ['IMPUESTOS', 'AMBOS', 'TODOS'], true)) {
+                $rutaImpuestos = $impuestosGarantizados->rutaPdfParaLiquidacion(
+                    (string) $liquidacion->periodo,
+                    $liquidacion->pdf_ruta,
+                    (string) ($liquidacion->cuenta_impresa ?: $liquidacion->cuenta),
+                );
+
+                if ($rutaImpuestos === null) {
+                    throw new RuntimeException('No se pudo determinar el PDF de impuestos garantizados.');
+                }
+
+                if (! Storage::disk('liquidaciones')->exists($rutaImpuestos)) {
+                    throw new RuntimeException('El archivo PDF de impuestos garantizados no existe en el almacenamiento.');
+                }
+
+                $adjuntos[] = [
+                    'disk' => 'liquidaciones',
+                    'ruta' => $rutaImpuestos,
+                    'nombre' => basename($rutaImpuestos),
+                ];
+            }
+
+            if (in_array($documentos, ['ARCA', 'TODOS'], true)) {
+                $cuenta = (string) ($liquidacion->cuenta_impresa ?: $liquidacion->cuenta);
+                $comprobantes = $comprobantesArca->paraCuentaPeriodo(
+                    $cuenta,
+                    (string) $liquidacion->periodo,
+                );
+
+                if ($comprobantes->isEmpty()) {
+                    throw new RuntimeException('No hay comprobantes ARCA para esta cuenta y período.');
+                }
+
+                foreach ($comprobantes as $comprobante) {
+                    $rutaArca = (string) ($comprobante->ruta_relativa ?? '');
+                    $nombreArca = (string) ($comprobante->nombre_archivo ?? '');
+
+                    if (
+                        $rutaArca === ''
+                        || $nombreArca === ''
+                        || ! Storage::disk('arca_facturas')->exists($rutaArca)
+                        || (int) Storage::disk('arca_facturas')->size($rutaArca) <= 0
+                    ) {
+                        throw new RuntimeException(
+                            'No se puede leer el comprobante ARCA '.($nombreArca !== '' ? $nombreArca : $rutaArca).'.'
+                        );
+                    }
+
+                    $adjuntos[] = [
+                        'disk' => 'arca_facturas',
+                        'ruta' => $rutaArca,
+                        'nombre' => $nombreArca,
+                    ];
+                }
+            }
+
+            if ($adjuntos === []) {
+                throw new RuntimeException('No hay documentos disponibles para adjuntar al email.');
             }
 
             Mail::to($envio->email_destino)->send(
                 new LiquidacionPropietarioMail(
                     cliente: $cliente,
                     liquidacion: $liquidacion,
-                    rutaRelativa: $liquidacion->pdf_ruta,
-                    nombreArchivo: basename($liquidacion->pdf_ruta)
+                    adjuntos: $adjuntos,
+                    documentosEnvio: $documentos,
                 )
             );
 

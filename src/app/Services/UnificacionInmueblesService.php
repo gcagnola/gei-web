@@ -480,6 +480,98 @@ final class UnificacionInmueblesService
     }
 
     /**
+     * Agrupa visualmente los candidatos de una búsqueda por la lectura comparable
+     * del domicilio. Es sólo presentación: las decisiones y unificaciones siguen
+     * operando entre dos IDs elegidos explícitamente por el usuario.
+     */
+    public function agruparCandidatosBusqueda(Collection $candidatos): Collection
+    {
+        if ($candidatos->isEmpty()) {
+            return collect();
+        }
+
+        $rangos = ['ALTA' => 0, 'MEDIA' => 1, 'BAJA' => 2];
+        $grupos = [];
+
+        foreach ($candidatos as $candidato) {
+            $clave = trim((string) ($candidato->domicilio_comparable ?? ''));
+            if ($clave === '') {
+                $clave = 'PAR|'.min((int) $candidato->id_a, (int) $candidato->id_b)
+                    .'|'.max((int) $candidato->id_a, (int) $candidato->id_b);
+            }
+
+            if (! isset($grupos[$clave])) {
+                $grupos[$clave] = [
+                    'domicilio_comparable' => (string) ($candidato->domicilio_comparable ?? ''),
+                    'confianza' => (string) $candidato->confianza,
+                    'items' => [],
+                    'cuentas' => [],
+                    'partidas' => [],
+                    'motivos' => [],
+                    'tiene_conflictivo' => false,
+                ];
+            }
+
+            if (($rangos[$candidato->confianza] ?? 9) < ($rangos[$grupos[$clave]['confianza']] ?? 9)) {
+                $grupos[$clave]['confianza'] = (string) $candidato->confianza;
+            }
+
+            foreach ([
+                [(int) $candidato->id_a, (string) $candidato->domicilio_a, (string) $candidato->estado_a],
+                [(int) $candidato->id_b, (string) $candidato->domicilio_b, (string) $candidato->estado_b],
+            ] as [$id, $domicilio, $estado]) {
+                $grupos[$clave]['items'][$id] = (object) [
+                    'id' => $id,
+                    'domicilio' => $domicilio,
+                    'estado' => $estado,
+                ];
+            }
+
+            foreach (array_filter(array_map('trim', explode(',', (string) $candidato->cuentas_compartidas))) as $cuenta) {
+                $grupos[$clave]['cuentas'][$cuenta] = true;
+            }
+            foreach (array_filter(array_map('trim', explode(',', (string) $candidato->partidas_compartidas))) as $partida) {
+                $grupos[$clave]['partidas'][$partida] = true;
+            }
+            if (trim((string) $candidato->motivo) !== '') {
+                $grupos[$clave]['motivos'][trim((string) $candidato->motivo)] = true;
+            }
+            $grupos[$clave]['tiene_conflictivo'] = $grupos[$clave]['tiene_conflictivo']
+                || $candidato->estado_decision === 'CONFLICTIVO';
+        }
+
+        $resultado = collect();
+        foreach ($grupos as $grupo) {
+            $items = array_values($grupo['items']);
+            usort($items, fn ($a, $b): int => $a->id <=> $b->id);
+
+            if (count($items) < 2) {
+                continue;
+            }
+
+            $cuentas = array_keys($grupo['cuentas']);
+            $partidas = array_keys($grupo['partidas']);
+            sort($cuentas, SORT_STRING);
+            sort($partidas, SORT_STRING);
+
+            $resultado->push((object) [
+                'domicilio_comparable' => $grupo['domicilio_comparable'],
+                'confianza' => $grupo['confianza'],
+                'items' => collect($items),
+                'cuentas_compartidas' => implode(', ', $cuentas),
+                'partidas_compartidas' => implode(', ', $partidas),
+                'motivos' => implode(' ', array_keys($grupo['motivos'])),
+                'tiene_conflictivo' => (bool) $grupo['tiene_conflictivo'],
+            ]);
+        }
+
+        return $resultado->sortBy(function ($grupo) use ($rangos): string {
+            $rango = $rangos[$grupo->confianza] ?? 9;
+            return sprintf('%d|%s', $rango, mb_strtolower((string) $grupo->domicilio_comparable));
+        })->values();
+    }
+
+    /**
      * Candidatos activos/canónicos. Se sugieren por domicilio exacto normalizado
      * y/o partida vigente compartida. Nunca se unifican automáticamente.
      */

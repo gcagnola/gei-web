@@ -31,6 +31,7 @@ class Cliente extends Model
     {
         return [
             'activo' => 'boolean',
+            'id_cliente_canonico' => 'integer',
         ];
     }
 

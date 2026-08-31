@@ -46,15 +46,18 @@ final class UnificacionInmuebleController extends Controller
         $coleccionResultados = $resultados->getCollection();
         $idsVisibles = $coleccionResultados->pluck('id')->map(fn ($id): int => (int) $id)->all();
 
+        $candidatosBusqueda = $texto !== ''
+            ? $this->service->candidatosBusqueda($coleccionResultados)
+            : collect();
+
         return view('unificacion.index', [
             'texto' => $texto,
             'vista' => $vista,
             'filtroInactivos' => $filtroInactivos,
             'resumen' => $resumen,
             'resultados' => $resultados,
-            'candidatosBusqueda' => $texto !== ''
-                ? $this->service->candidatosBusqueda($coleccionResultados)
-                : collect(),
+            'candidatosBusqueda' => $candidatosBusqueda,
+            'gruposCandidatosBusqueda' => $this->service->agruparCandidatosBusqueda($candidatosBusqueda),
             'candidatosActivos' => $vista === 'activos_revision' ? $candidatosActivos : collect(),
             'conflictosVisibles' => in_array($vista, ['activos_revision', 'inactivos'], true)
                 ? $this->service->conflictosPendientesPorInmuebles($idsVisibles)

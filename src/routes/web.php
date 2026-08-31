@@ -3,9 +3,13 @@
 use App\Http\Controllers\Auth\LoginController;
 use App\Http\Controllers\Auth\RecuperarClaveController;
 use App\Http\Controllers\ClienteController;
+use App\Http\Controllers\ClienteComprobanteArcaController;
+use App\Http\Controllers\ComprobanteArcaController;
 use App\Http\Controllers\ImportacionArchivosController;
+use App\Http\Controllers\MigracionGeiWebController;
 use App\Http\Controllers\LiquidacionPropietarioController;
 use App\Http\Controllers\UnificacionInmuebleController;
+use App\Http\Controllers\UnificacionClienteController;
 use Illuminate\Support\Facades\Route;
 
 Route::middleware('guest')->group(function () {
@@ -59,6 +63,53 @@ Route::middleware('auth')->group(function () {
         ->where('periodo', '(19|20)[0-9]{2}(0[1-9]|1[0-2])')
         ->name('archivo.importar.migrar');
 
+    Route::get(
+        '/archivo/importar/{periodo}/actualizar-gei',
+        [MigracionGeiWebController::class, 'show']
+    )
+        ->where('periodo', '(19|20)[0-9]{2}(0[1-9]|1[0-2])')
+        ->name('archivo.importar.actualizar-gei');
+
+    Route::post(
+        '/archivo/importar/{periodo}/actualizar-gei/analizar',
+        [MigracionGeiWebController::class, 'analizar']
+    )
+        ->where('periodo', '(19|20)[0-9]{2}(0[1-9]|1[0-2])')
+        ->name('archivo.importar.actualizar-gei.analizar');
+
+    Route::post(
+        '/archivo/importar/{periodo}/actualizar-gei/aplicar',
+        [MigracionGeiWebController::class, 'aplicar']
+    )
+        ->where('periodo', '(19|20)[0-9]{2}(0[1-9]|1[0-2])')
+        ->name('archivo.importar.actualizar-gei.aplicar');
+
+
+    Route::post(
+        '/archivo/importar/{periodo}/actualizar-gei/liquidaciones-propietarios/analizar',
+        [MigracionGeiWebController::class, 'analizarLiquidaciones']
+    )
+        ->where('periodo', '(19|20)[0-9]{2}(0[1-9]|1[0-2])')
+        ->name('archivo.importar.actualizar-gei.liquidaciones.analizar');
+
+    Route::post(
+        '/archivo/importar/{periodo}/actualizar-gei/liquidaciones-propietarios/aplicar',
+        [MigracionGeiWebController::class, 'aplicarLiquidaciones']
+    )
+        ->where('periodo', '(19|20)[0-9]{2}(0[1-9]|1[0-2])')
+        ->name('archivo.importar.actualizar-gei.liquidaciones.aplicar');
+
+
+
+
+    Route::get('/archivo/clientes/comprobantes-arca', [ClienteComprobanteArcaController::class, 'index'])
+        ->name('clientes.comprobantes-arca.index');
+    Route::post('/archivo/clientes/comprobantes-arca/enviar-emails', [ClienteComprobanteArcaController::class, 'enviarEmails'])
+        ->name('clientes.comprobantes-arca.enviar-emails');
+    Route::post('/archivo/clientes/{cliente}/comprobantes-arca/enviar-email', [ClienteComprobanteArcaController::class, 'enviarEmail'])
+        ->whereNumber('cliente')
+        ->name('clientes.comprobantes-arca.enviar-email');
+
     Route::resource('/archivo/clientes', ClienteController::class)
         ->parameters(['clientes' => 'cliente'])
         ->only(['index', 'show', 'create', 'store', 'edit', 'update']);
@@ -77,6 +128,21 @@ Route::middleware('auth')->group(function () {
         Route::post('/archivo/unificacion/inmuebles/conflictos/{conflicto}/resolver', [UnificacionInmuebleController::class, 'resolverConflicto'])
             ->whereNumber('conflicto')
             ->name('archivo.unificacion.inmuebles.conflicto.resolver');
+
+        Route::get('/archivo/unificacion/clientes', [UnificacionClienteController::class, 'index'])
+            ->name('archivo.unificacion.clientes.index');
+        Route::get('/archivo/unificacion/clientes/comparar', [UnificacionClienteController::class, 'comparar'])
+            ->name('archivo.unificacion.clientes.comparar');
+        Route::post('/archivo/unificacion/clientes', [UnificacionClienteController::class, 'unificar'])
+            ->name('archivo.unificacion.clientes.unificar');
+        Route::post('/archivo/unificacion/clientes/candidato', [UnificacionClienteController::class, 'resolverCandidato'])
+            ->name('archivo.unificacion.clientes.candidato');
+        Route::get('/archivo/unificacion/clientes/conflictos/{conflicto}', [UnificacionClienteController::class, 'revisarConflicto'])
+            ->whereNumber('conflicto')
+            ->name('archivo.unificacion.clientes.conflicto.revisar');
+        Route::post('/archivo/unificacion/clientes/conflictos/{conflicto}/resolver', [UnificacionClienteController::class, 'resolverConflicto'])
+            ->whereNumber('conflicto')
+            ->name('archivo.unificacion.clientes.conflicto.resolver');
     });
     Route::get('/archivo/conceptos', $modulo('Conceptos', 'Archivo'))
         ->name('conceptos.index');
@@ -87,6 +153,10 @@ Route::middleware('auth')->group(function () {
 
     Route::get('/propietarios/liquidaciones', [LiquidacionPropietarioController::class, 'index'])
         ->name('propietarios.liquidaciones.index');
+    Route::get('/comprobantes-arca/{periodo}/{archivo}/ver', [ComprobanteArcaController::class, 'ver'])
+        ->where('periodo', '(19|20)\d{2}(0[1-9]|1[0-2])')
+        ->where('archivo', '[A-Za-z0-9._-]+')
+        ->name('comprobantes-arca.ver');
     Route::get('/propietarios/liquidaciones/generar', [LiquidacionPropietarioController::class, 'index'])
         ->name('propietarios.liquidaciones.generar');
     Route::post('/propietarios/liquidaciones/generar', [LiquidacionPropietarioController::class, 'procesar'])
@@ -102,6 +172,12 @@ Route::middleware('auth')->group(function () {
     Route::get('/propietarios/liquidaciones/{liquidacion}/descargar', [LiquidacionPropietarioController::class, 'descargar'])
         ->whereNumber('liquidacion')
         ->name('propietarios.liquidaciones.descargar');
+    Route::get('/propietarios/liquidaciones/{liquidacion}/impuestos/ver', [LiquidacionPropietarioController::class, 'verImpuestos'])
+        ->whereNumber('liquidacion')
+        ->name('propietarios.liquidaciones.impuestos.ver');
+    Route::get('/propietarios/liquidaciones/{liquidacion}/impuestos/descargar', [LiquidacionPropietarioController::class, 'descargarImpuestos'])
+        ->whereNumber('liquidacion')
+        ->name('propietarios.liquidaciones.impuestos.descargar');
     Route::get('/propietarios/saldos', $modulo('Consulta de saldos de Propietarios', 'Propietarios'))
         ->name('propietarios.saldos');
 
