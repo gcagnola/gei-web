@@ -8,11 +8,11 @@ return [
         ),
         'path' => env(
             'GEI_IMPORTADOR_PATH',
-            '/opt/gei-liquidaciones-python'
+            base_path('python')
         ),
         'base_dir' => env(
             'GEI_IMPORTADOR_BASE_DIR',
-            env('GEI_IMPORTADOR_PATH', '/opt/gei-liquidaciones-python')
+            storage_path('app/private/liquidaciones')
         ),
         'repositorio_id' => (int) env('GEI_IMPORTADOR_REPOSITORIO_ID', 123),
         'cobol_storage_path' => env(

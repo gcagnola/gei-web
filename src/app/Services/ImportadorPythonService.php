@@ -93,7 +93,7 @@ class ImportadorPythonService
             [
                 'GEI_LARAVEL_LIQUIDACIONES_DIR' => dirname($cobolStoragePath),
                 'GEI_IMPORTADOR_BASE_DIR' => $baseDir,
-                'PYTHONPATH' => $path.'/src',
+                'PYTHONPATH' => $path,
                 'PYTHONDONTWRITEBYTECODE' => '1',
                 'PGHOST' => (string) config('database.connections.pgsql.host'),
                 'PGPORT' => (string) config('database.connections.pgsql.port'),
