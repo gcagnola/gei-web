@@ -804,7 +804,27 @@ final class UnificacionClientesService
                 ->orWhereRaw("COALESCE(c.numero_documento, '') ILIKE ? ESCAPE '!'", [$como])
                 ->orWhereRaw("COALESCE(c.email, '') ILIKE ? ESCAPE '!'", [$como])
                 ->orWhereExists(function ($sub) use ($como): void {
-                    $sub->selectRaw('1')->from('clientes_cuentas as cb')->whereColumn('cb.cliente_id', 'c.id')->whereRaw("cb.cuenta ILIKE ? ESCAPE '!'", [$como]);
+                    $sub->selectRaw('1')
+                        ->from('clientes_cuentas as cb')
+                        ->whereColumn('cb.cliente_id', 'c.id')
+                        ->whereRaw("cb.cuenta ILIKE ? ESCAPE '!'", [$como]);
+                })
+                ->orWhereExists(function ($sub) use ($como): void {
+                    // En la vista de revisión COBOL la cuenta que originó el
+                    // conflicto puede todavía no existir en clientes_cuentas.
+                    // Permitimos buscarla directamente por clave_origen, pero
+                    // sólo cuando el conflicto pendiente está vinculado a este
+                    // cliente como resuelto o candidato.
+                    $sub->selectRaw('1')
+                        ->from('clientes_conflictos as cfb')
+                        ->where('cfb.estado', 'PENDIENTE')
+                        ->whereRaw("cfb.clave_origen ILIKE ? ESCAPE '!'", [$como])
+                        ->where(function ($rel): void {
+                            $rel->whereColumn('cfb.cliente_resuelto_id', 'c.id')
+                                ->orWhereRaw(
+                                    "COALESCE(cfb.clientes_candidatos, '[]'::jsonb) @> jsonb_build_array(c.id)"
+                                );
+                        });
                 });
         });
     }

@@ -396,12 +396,17 @@ final class SincronizacionActividadClientesService
 
         $activados = 0;
         $desactivados = 0;
+        $origenesEstadoActualizados = 0;
+        $conflictosEstadoActualizados = 0;
 
         DB::transaction(function () use (
             $clientesActivos,
             $clientesPasivos,
+            $cuentasActivasSet,
             &$activados,
-            &$desactivados
+            &$desactivados,
+            &$origenesEstadoActualizados,
+            &$conflictosEstadoActualizados
         ): void {
             // Evita dos sincronizaciones de actividad simultáneas aun si se
             // invocaran desde circuitos web distintos.
@@ -437,12 +442,64 @@ final class SincronizacionActividadClientesService
                         'updated_at' => $ahora,
                     ]);
             }
+
+            // estado_origen representa la actividad de la cuenta COBOL concreta,
+            // no la identidad ni el estado global del cliente canónico.
+            //
+            // Sólo corregimos DESCONOCIDO. Los ACTIVO/BAJA ya clasificados se
+            // preservan y los conflictos de identidad continúan PENDIENTE/RESUELTO
+            // sin alteración.
+            foreach (
+                DB::table('clientes_origenes')
+                    ->where('sistema_origen', 'COBOL')
+                    ->whereIn('entidad_origen', ['PROPIETAR', 'INQUILINO'])
+                    ->where('estado_origen', 'DESCONOCIDO')
+                    ->orderBy('id')
+                    ->cursor(['id', 'clave_origen']) as $origen
+            ) {
+                $cuenta = $this->normalizarCuenta((string) $origen->clave_origen);
+                $nuevoEstado = $cuenta !== '' && isset($cuentasActivasSet[$cuenta])
+                    ? 'ACTIVO'
+                    : 'BAJA';
+
+                $origenesEstadoActualizados += DB::table('clientes_origenes')
+                    ->where('id', $origen->id)
+                    ->where('estado_origen', 'DESCONOCIDO')
+                    ->update([
+                        'estado_origen' => $nuevoEstado,
+                        'updated_at' => $ahora,
+                    ]);
+            }
+
+            foreach (
+                DB::table('clientes_conflictos')
+                    ->where('sistema_origen', 'COBOL')
+                    ->whereIn('entidad_origen', ['PROPIETAR', 'INQUILINO'])
+                    ->where('estado_origen', 'DESCONOCIDO')
+                    ->orderBy('id')
+                    ->cursor(['id', 'clave_origen']) as $conflicto
+            ) {
+                $cuenta = $this->normalizarCuenta((string) $conflicto->clave_origen);
+                $nuevoEstado = $cuenta !== '' && isset($cuentasActivasSet[$cuenta])
+                    ? 'ACTIVO'
+                    : 'BAJA';
+
+                $conflictosEstadoActualizados += DB::table('clientes_conflictos')
+                    ->where('id', $conflicto->id)
+                    ->where('estado_origen', 'DESCONOCIDO')
+                    ->update([
+                        'estado_origen' => $nuevoEstado,
+                        'updated_at' => $ahora,
+                    ]);
+            }
         }, 3);
 
         $resultado['aplicada'] = true;
         $resultado['simulacion'] = false;
         $resultado['clientes_activados_cambio'] = $activados;
         $resultado['clientes_desactivados_cambio'] = $desactivados;
+        $resultado['clientes_origenes_estado_actualizados'] = $origenesEstadoActualizados;
+        $resultado['clientes_conflictos_estado_actualizados'] = $conflictosEstadoActualizados;
 
         return $resultado;
     }
@@ -471,6 +528,7 @@ final class SincronizacionActividadClientesService
         foreach ([
             'clientes',
             'clientes_cuentas',
+            'clientes_origenes',
             'liquidaciones_propietarios',
             'clientes_conflictos',
             'clientes_resoluciones_origen',
@@ -483,6 +541,20 @@ final class SincronizacionActividadClientesService
         foreach (['activo', 'id_cliente_canonico'] as $columna) {
             if (! Schema::hasColumn('clientes', $columna)) {
                 throw new RuntimeException("Falta clientes.{$columna} para sincronizar actividad.");
+            }
+        }
+
+        foreach (['sistema_origen', 'entidad_origen', 'clave_origen', 'estado_origen'] as $columna) {
+            if (! Schema::hasColumn('clientes_origenes', $columna)) {
+                throw new RuntimeException(
+                    "Falta clientes_origenes.{$columna} para sincronizar actividad."
+                );
+            }
+
+            if (! Schema::hasColumn('clientes_conflictos', $columna)) {
+                throw new RuntimeException(
+                    "Falta clientes_conflictos.{$columna} para sincronizar actividad."
+                );
             }
         }
     }
