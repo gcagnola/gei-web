@@ -64,4 +64,11 @@ return [
             env('GEI_LIQUIDACIONES_TIMEOUT', 1800)
         ),
     ],
+
+    'admin' => [
+        'nombre_usuario' => env('GEI_ADMIN_USUARIO'),
+        'nombre' => env('GEI_ADMIN_NOMBRE'),
+        'email' => env('GEI_ADMIN_EMAIL'),
+        'password' => env('GEI_ADMIN_PASSWORD'),
+    ],
 ];
