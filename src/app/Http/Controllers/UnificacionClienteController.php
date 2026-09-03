@@ -35,8 +35,15 @@ final class UnificacionClienteController extends Controller
 
         $resumen = $this->service->resumenClasificacion($idsRevision);
         $resultados = $this->service->listarClasificados($texto, $vista, $filtroInactivos, $idsRevision);
+        $coleccionResultados = $resultados->getCollection();
+        $idsVisibles = $coleccionResultados
+            ->pluck('id')
+            ->map(fn ($id): int => (int) $id)
+            ->values()
+            ->all();
+
         $candidatosBusqueda = $texto !== ''
-            ? $this->service->candidatosBusqueda($resultados->getCollection())
+            ? $this->service->candidatosBusqueda($coleccionResultados)
             : collect();
 
         return view('unificacion.clientes.index', [
@@ -47,7 +54,16 @@ final class UnificacionClienteController extends Controller
             'resultados' => $resultados,
             'candidatosBusqueda' => $candidatosBusqueda,
             'candidatosActivos' => $vista === 'activos_revision' ? $candidatos : collect(),
-            'conflictosPendientes' => $vista === 'activos_revision' ? $this->service->conflictosPendientes() : collect(),
+            'conflictosVisibles' => $vista === 'activos_revision'
+                ? $this->service->conflictosPendientesPorClientes($idsVisibles)
+                : collect(),
+            'conflictosSinCliente' => $vista === 'activos_revision'
+                ? $this->service->conflictosPendientesSinCliente()
+                : collect(),
+            'conflictosSinClienteTotal' => $vista === 'activos_revision'
+                ? $this->service->conflictosPendientesSinClienteTotal()
+                : 0,
+            'revisionesCobolResueltas' => $this->service->revisionesCobolResueltas(),
             'ultimasUnificaciones' => $this->service->ultimasUnificaciones(),
         ]);
     }

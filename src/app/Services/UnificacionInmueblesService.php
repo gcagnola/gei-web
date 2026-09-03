@@ -284,9 +284,16 @@ final class UnificacionInmueblesService
             return collect();
         }
 
+        // Mantener exactamente el mismo orden de inmuebles recibido desde
+        // el listado paginado. Dentro de cada inmueble, mostrar primero la
+        // detección más reciente.
+        $ordenIds = implode(',', $ids);
+
         return $this->consultaConflictosPendientes()
             ->whereIn('ic.inmueble_id', $ids)
+            ->orderByRaw("array_position(ARRAY[{$ordenIds}]::bigint[], ic.inmueble_id::bigint)")
             ->orderByDesc('ic.ultima_deteccion_at')
+            ->orderBy('ic.id')
             ->get();
     }
 

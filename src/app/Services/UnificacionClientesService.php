@@ -7,9 +7,16 @@ use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 
 final class UnificacionClientesService
 {
+    public function __construct(
+        private readonly ComprobantesArcaService $comprobantesArca,
+        private readonly ImpuestosGarantizadosPdfService $impuestosGarantizados,
+    ) {
+    }
+
     private const TIPO = 'CLIENTE';
 
     private const FKS_ESPERADAS = [
@@ -54,15 +61,23 @@ final class UnificacionClientesService
         $texto = trim($texto);
         $idsRevision = array_values(array_unique(array_map('intval', $idsRevision)));
 
-        $consulta = $this->consultaBaseListado();
+        // En las vistas de activos sólo importan revisiones cuyo ORIGEN COBOL
+        // está operativamente ACTIVO. Un conflicto histórico de una cuenta BAJA
+        // no debe sacar al cliente de "Activos OK" ni aparecer como revisión activa.
+        $estadoConflictoListado = in_array($vista, ['activos_ok', 'activos_revision'], true)
+            ? 'ACTIVO'
+            : null;
+
+        $consulta = $this->consultaBaseListado($estadoConflictoListado);
         $activoSql = $this->sqlClienteActivo();
         $conflictoSql = $this->sqlClienteConConflicto();
+        $conflictoActivoSql = $this->sqlClienteConConflicto('ACTIVO');
 
         if ($vista === 'activos_revision') {
-            // Esta vista representa exclusivamente identidades COBOL pendientes de revisión.
-            // Los posibles duplicados de clientes son otro concepto y no se mezclan aquí.
+            // Esta vista representa exclusivamente identidades COBOL ACTIVAS
+            // pendientes de revisión.
             $consulta->whereRaw("({$activoSql})")
-                ->whereRaw("({$conflictoSql})");
+                ->whereRaw("({$conflictoActivoSql})");
         } elseif ($vista === 'inactivos') {
             $consulta->whereRaw("NOT ({$activoSql})");
             if ($filtroInactivos === 'con_conflicto') {
@@ -72,7 +87,7 @@ final class UnificacionClientesService
             }
         } else {
             $consulta->whereRaw("({$activoSql})")
-                ->whereRaw("NOT ({$conflictoSql})");
+                ->whereRaw("NOT ({$conflictoActivoSql})");
         }
 
         $this->aplicarBusqueda($consulta, $texto);
@@ -89,14 +104,16 @@ final class UnificacionClientesService
         $idsRevision = array_values(array_unique(array_map('intval', $idsRevision)));
         $activoSql = $this->sqlClienteActivo();
         $conflictoSql = $this->sqlClienteConConflicto();
+        $conflictoActivoSql = $this->sqlClienteConConflicto('ACTIVO');
 
         $base = fn () => DB::table('clientes as c')->whereNull('c.id_cliente_canonico');
 
         $activos = $base()->whereRaw("({$activoSql})")->count();
-        // Una revisión COBOL pendiente no significa que el cliente sea un duplicado.
+        // Sólo una revisión cuyo origen COBOL está ACTIVO pertenece al contador
+        // "Activos con revisión COBOL".
         $activosRevision = $base()
             ->whereRaw("({$activoSql})")
-            ->whereRaw("({$conflictoSql})")
+            ->whereRaw("({$conflictoActivoSql})")
             ->count();
         $inactivos = $base()->whereRaw("NOT ({$activoSql})")->count();
         $inactivosConConflicto = $base()
@@ -606,7 +623,23 @@ final class UnificacionClientesService
                 'liquidaciones_count' => $detalle['liquidaciones_count'],
                 'inmuebles_count' => $detalle['inmuebles']->count(),
                 'contratos_count' => $detalle['contratos']->count(),
+
+                // La pantalla de revisión compara origen COBOL y cliente
+                // lado a lado. Además de los conteos necesita las relaciones
+                // concretas para mostrar domicilios, contratos y evidencia.
+                'inmuebles' => $detalle['inmuebles'],
+                'contratos' => $detalle['contratos'],
+                'liquidaciones' => $detalle['liquidaciones'],
+                'origenes' => $detalle['origenes'],
+
                 'coincidencias' => $this->compararOrigenConCliente($datosOrigen, $cliente),
+                'documentos' => $this->documentacionComparacion(
+                    $detalle['cuentas']->pluck('cuenta'),
+                    $detalle['roles']->contains(
+                        fn ($rol): bool => strtoupper(trim((string) ($rol->codigo ?? ''))) === 'PROPIETARIO'
+                    ),
+                    $canonicoId
+                ),
             ];
         })->filter()->values();
 
@@ -614,6 +647,7 @@ final class UnificacionClientesService
         if ($idsCandidatos->isNotEmpty()) {
             $otrosConflictos = DB::table('clientes_conflictos')
                 ->where('estado', 'PENDIENTE')
+                ->where('estado_origen', 'ACTIVO')
                 ->where('id', '<>', $conflictoId)
                 ->where(function ($q) use ($idsCandidatos): void {
                     foreach ($idsCandidatos as $id) {
@@ -634,8 +668,213 @@ final class UnificacionClientesService
             'datosOrigen' => $datosOrigen,
             'detalleConflicto' => $detalleConflicto,
             'candidatos' => $candidatos,
+            'documentosOrigen' => $this->documentacionComparacion(
+                collect([(string) $conflicto->clave_origen]),
+                strtoupper(trim((string) $conflicto->entidad_origen)) === 'PROPIETAR'
+            ),
             'otrosConflictos' => $otrosConflictos,
         ];
+    }
+
+    /**
+     * Documentación operativa para decidir una revisión COBOL.
+     *
+     * La evidencia se separa por período Y por cuenta COBOL. De ese modo no se
+     * mezclan comprobantes ARCA de distintas cuentas de un mismo cliente.
+     * Además se muestran los inmuebles relacionados con cada cuenta.
+     *
+     * @param Collection<int, mixed> $cuentas
+     * @return Collection<int, object>
+     */
+    private function documentacionComparacion(
+        Collection $cuentas,
+        bool $incluirDocumentosPropietario,
+        ?int $clienteId = null
+    ): Collection {
+        $cuentas = $cuentas
+            ->map(fn ($cuenta): string => $this->normalizarCuentaDocumento((string) $cuenta))
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($cuentas->isEmpty()) {
+            return collect();
+        }
+
+        $filas = collect();
+
+        $obtenerFila = function (string $periodo, string $cuenta) use (&$filas): object {
+            $cuenta = $this->normalizarCuentaDocumento($cuenta);
+            $clave = $periodo.'|'.$cuenta;
+
+            if (! $filas->has($clave)) {
+                $filas->put($clave, (object) [
+                    'periodo' => $periodo,
+                    'cuenta' => $cuenta,
+                    'inmuebles' => $this->inmueblesParaCuenta($cuenta),
+                    'liquidaciones' => collect(),
+                    'comprobantes_arca' => collect(),
+                ]);
+            }
+
+            return $filas->get($clave);
+        };
+
+        if ($incluirDocumentosPropietario) {
+            $liquidaciones = DB::table('liquidaciones_propietarios')
+                ->where(function ($q) use ($cuentas, $clienteId): void {
+                    if ($clienteId !== null) {
+                        $q->where('cliente_id', $clienteId);
+                        if ($cuentas->isNotEmpty()) {
+                            $q->orWhereIn('cuenta', $cuentas->all());
+                        }
+                    } else {
+                        $q->whereIn('cuenta', $cuentas->all());
+                    }
+                })
+                ->orderByDesc('periodo')
+                ->orderByDesc('id')
+                ->limit(30)
+                ->get([
+                    'id',
+                    'periodo',
+                    'numero_interno',
+                    'cuenta',
+                    'cuenta_impresa',
+                    'propietario',
+                    'estado',
+                    'pdf_ruta',
+                ]);
+
+            foreach ($liquidaciones as $liquidacion) {
+                $periodo = trim((string) ($liquidacion->periodo ?? ''));
+                if ($periodo === '') {
+                    continue;
+                }
+
+                $cuentaVisible = $this->normalizarCuentaDocumento(
+                    (string) (($liquidacion->cuenta_impresa ?? null) ?: ($liquidacion->cuenta ?? ''))
+                );
+                if ($cuentaVisible === '') {
+                    continue;
+                }
+
+                $liquidacion->pdf_disponible = ($liquidacion->estado ?? null) === 'PDF_GENERADO'
+                    && ! empty($liquidacion->pdf_ruta)
+                    && Storage::disk('liquidaciones')->exists((string) $liquidacion->pdf_ruta);
+
+                $rutaImpuestos = $this->impuestosGarantizados->rutaPdfParaLiquidacion(
+                    $periodo,
+                    ! empty($liquidacion->pdf_ruta) ? (string) $liquidacion->pdf_ruta : null,
+                    $cuentaVisible
+                );
+
+                $liquidacion->impuestos_pdf_disponible = $rutaImpuestos !== null
+                    && Storage::disk('liquidaciones')->exists($rutaImpuestos);
+
+                $fila = $obtenerFila($periodo, $cuentaVisible);
+                $fila->liquidaciones->put((int) $liquidacion->id, $liquidacion);
+            }
+        }
+
+        $periodosArca = $this->comprobantesArca->periodosDisponibles()
+            ->map(fn ($periodo): string => trim((string) $periodo))
+            ->filter()
+            ->take(3);
+
+        $periodos = $periodosArca
+            ->merge($filas->pluck('periodo'))
+            ->filter()
+            ->unique()
+            ->sortDesc()
+            ->take(3)
+            ->values();
+
+        foreach ($periodos as $periodo) {
+            foreach ($cuentas as $cuenta) {
+                $comprobantes = $this->comprobantesArca
+                    ->paraCuentaPeriodo((string) $cuenta, (string) $periodo);
+
+                foreach ($comprobantes as $comprobante) {
+                    $cuentaComprobante = $this->normalizarCuentaDocumento(
+                        (string) ($comprobante->cuenta_cobol ?? $cuenta)
+                    );
+                    $fila = $obtenerFila((string) $periodo, $cuentaComprobante);
+                    $clave = (string) ($comprobante->nombre_archivo ?? spl_object_id($comprobante));
+                    $fila->comprobantes_arca->put($clave, $comprobante);
+                }
+            }
+        }
+
+        return $filas
+            ->filter(fn (object $fila): bool =>
+                $fila->liquidaciones->isNotEmpty()
+                || $fila->comprobantes_arca->isNotEmpty()
+            )
+            ->sortBy([
+                fn (object $a, object $b): int => strcmp($b->periodo, $a->periodo),
+                fn (object $a, object $b): int => strcmp($a->cuenta, $b->cuenta),
+            ])
+            ->map(function (object $fila): object {
+                $fila->liquidaciones = $fila->liquidaciones->values();
+                $fila->comprobantes_arca = $fila->comprobantes_arca->values();
+
+                return $fila;
+            })
+            ->values();
+    }
+
+    /**
+     * Inmuebles relacionados con una cuenta COBOL, sea como propietario o
+     * como inquilino de un contrato. Se deduplican por inmueble.
+     *
+     * @return Collection<int, object>
+     */
+    private function inmueblesParaCuenta(string $cuenta): Collection
+    {
+        $cuenta = $this->normalizarCuentaDocumento($cuenta);
+        if ($cuenta === '') {
+            return collect();
+        }
+
+        $propietario = DB::table('clientes_cuentas as cc')
+            ->join('inmuebles_propietarios as ip', 'ip.cliente_cuenta_id', '=', 'cc.id')
+            ->join('inmuebles as i', 'i.id', '=', 'ip.inmueble_id')
+            ->where('cc.cuenta', $cuenta)
+            ->select([
+                'i.id',
+                'i.domicilio',
+                DB::raw("'PROPIETARIO' AS relacion"),
+                'ip.activo as relacion_activa',
+            ])
+            ->get();
+
+        $inquilino = DB::table('clientes_cuentas as cc')
+            ->join('contratos_inquilinos as ci', 'ci.cliente_cuenta_id', '=', 'cc.id')
+            ->join('contratos as c', 'c.id', '=', 'ci.contrato_id')
+            ->join('contratos_inmuebles as cim', 'cim.contrato_id', '=', 'c.id')
+            ->join('inmuebles as i', 'i.id', '=', 'cim.inmueble_id')
+            ->where('cc.cuenta', $cuenta)
+            ->select([
+                'i.id',
+                'i.domicilio',
+                DB::raw("'INQUILINO' AS relacion"),
+                'ci.activo as relacion_activa',
+            ])
+            ->get();
+
+        return $propietario
+            ->concat($inquilino)
+            ->sortByDesc(fn ($fila): int => (int) ($fila->relacion_activa ?? false))
+            ->unique(fn ($fila): string => (string) $fila->relacion.'|'.(string) $fila->id)
+            ->values();
+    }
+
+    private function normalizarCuentaDocumento(string $cuenta): string
+    {
+        $digitos = preg_replace('/\D+/', '', trim($cuenta)) ?? '';
+
+        return $digitos !== '' ? $digitos : trim($cuenta);
     }
 
     private function compararOrigenConCliente(array $origen, object $cliente): array
@@ -738,12 +977,134 @@ final class UnificacionClientesService
         });
     }
 
-    public function conflictosPendientes(): Collection
+    /**
+     * Revisiones COBOL pendientes relacionadas con los clientes visibles,
+     * conservando exactamente el orden del listado principal.
+     */
+    public function conflictosPendientesPorClientes(array $idsClientes): Collection
+    {
+        $idsClientes = array_values(array_unique(array_map('intval', $idsClientes)));
+        if ($idsClientes === []) {
+            return collect();
+        }
+
+        $orden = array_flip($idsClientes);
+
+        $conflictos = DB::table('clientes_conflictos as cf')
+            ->where('cf.estado', 'PENDIENTE')
+            ->where('cf.estado_origen', 'ACTIVO')
+            ->where(function ($q) use ($idsClientes): void {
+                $q->whereIn('cf.cliente_resuelto_id', $idsClientes);
+
+                foreach ($idsClientes as $id) {
+                    $q->orWhereRaw(
+                        "COALESCE(cf.clientes_candidatos, '[]'::jsonb) @> CAST(? AS jsonb)",
+                        [json_encode([$id], JSON_THROW_ON_ERROR)]
+                    );
+                }
+            })
+            ->select('cf.*')
+            ->get();
+
+        $nombres = DB::table('clientes')
+            ->whereIn('id', $idsClientes)
+            ->pluck('nombre', 'id');
+
+        return $conflictos
+            ->map(function ($cf) use ($idsClientes, $orden, $nombres) {
+                $clienteVisibleId = null;
+
+                if (
+                    $cf->cliente_resuelto_id !== null
+                    && in_array((int) $cf->cliente_resuelto_id, $idsClientes, true)
+                ) {
+                    $clienteVisibleId = (int) $cf->cliente_resuelto_id;
+                } else {
+                    $candidatos = array_map(
+                        'intval',
+                        $this->jsonAArray($cf->clientes_candidatos ?? null)
+                    );
+
+                    foreach ($idsClientes as $id) {
+                        if (in_array($id, $candidatos, true)) {
+                            $clienteVisibleId = $id;
+                            break;
+                        }
+                    }
+                }
+
+                $cf->cliente_visible_id = $clienteVisibleId;
+                $cf->cliente_visible_orden = $clienteVisibleId !== null
+                    ? ($orden[$clienteVisibleId] ?? PHP_INT_MAX)
+                    : PHP_INT_MAX;
+                $cf->cliente_visible_nombre = $clienteVisibleId !== null
+                    ? ($nombres[$clienteVisibleId] ?? null)
+                    : null;
+
+                return $cf;
+            })
+            ->sort(function ($a, $b): int {
+                $cmp = $a->cliente_visible_orden <=> $b->cliente_visible_orden;
+                if ($cmp !== 0) {
+                    return $cmp;
+                }
+
+                $cmpFecha = strcmp(
+                    (string) ($b->ultima_deteccion_at ?? ''),
+                    (string) ($a->ultima_deteccion_at ?? '')
+                );
+
+                return $cmpFecha !== 0
+                    ? $cmpFecha
+                    : ((int) $a->id <=> (int) $b->id);
+            })
+            ->values();
+    }
+
+    public function conflictosPendientesSinCliente(): Collection
     {
         return DB::table('clientes_conflictos as cf')
             ->where('cf.estado', 'PENDIENTE')
+            ->where('cf.estado_origen', 'ACTIVO')
+            ->whereNull('cf.cliente_resuelto_id')
+            ->whereRaw("jsonb_array_length(COALESCE(cf.clientes_candidatos, '[]'::jsonb)) = 0")
             ->select('cf.*')
             ->orderByDesc('cf.ultima_deteccion_at')
+            ->limit(100)
+            ->get();
+    }
+
+    public function conflictosPendientesSinClienteTotal(): int
+    {
+        return DB::table('clientes_conflictos as cf')
+            ->where('cf.estado', 'PENDIENTE')
+            ->where('cf.estado_origen', 'ACTIVO')
+            ->whereNull('cf.cliente_resuelto_id')
+            ->whereRaw("jsonb_array_length(COALESCE(cf.clientes_candidatos, '[]'::jsonb)) = 0")
+            ->count();
+    }
+
+    public function revisionesCobolResueltas(): Collection
+    {
+        return DB::table('clientes_resoluciones_origen as cro')
+            ->leftJoin('clientes as c', 'c.id', '=', 'cro.cliente_id')
+            ->leftJoin('usuarios as u', 'u.id', '=', 'cro.usuario_id')
+            ->select([
+                'cro.id_cliente_resolucion_origen as id',
+                'cro.sistema_origen',
+                'cro.entidad_origen',
+                'cro.clave_origen',
+                'cro.decision',
+                'cro.cliente_id',
+                'cro.usuario_id',
+                'cro.detalle_json',
+                'cro.created_at',
+                'cro.updated_at',
+                'c.nombre as cliente_nombre',
+                'u.nombre as usuario_nombre',
+            ])
+            ->orderByDesc('cro.updated_at')
+            ->orderByDesc('cro.id_cliente_resolucion_origen')
             ->limit(200)
             ->get();
     }
@@ -759,25 +1120,40 @@ final class UnificacionClientesService
             ->orderByDesc('u.id_unificacion')->limit(100)->get();
     }
 
-    private function consultaBaseListado()
+    private function consultaBaseListado(?string $estadoOrigenConflicto = null)
     {
         return DB::table('clientes as c')
             ->whereNull('c.id_cliente_canonico')
             ->select(['c.id', 'c.nombre', 'c.tipo_persona', 'c.tipo_documento', 'c.numero_documento', 'c.cuit', 'c.email', 'c.activo'])
             ->selectRaw("({$this->sqlClienteActivo()}) AS operativo_activo")
-            ->selectRaw("({$this->sqlClienteConConflicto()}) AS conflicto_pendiente")
-            ->selectSub(function ($q) {
+            ->selectRaw("({$this->sqlClienteConConflicto($estadoOrigenConflicto)}) AS conflicto_pendiente")
+            ->selectSub(function ($q) use ($estadoOrigenConflicto) {
                 $q->from('clientes_conflictos as cfr')
-                    ->where('cfr.estado', 'PENDIENTE')
-                    ->whereRaw("(cfr.cliente_resuelto_id = c.id OR COALESCE(cfr.clientes_candidatos, '[]'::jsonb) @> jsonb_build_array(c.id))")
+                    ->where('cfr.estado', 'PENDIENTE');
+                if ($estadoOrigenConflicto !== null) {
+                    $q->where('cfr.estado_origen', $estadoOrigenConflicto);
+                }
+                $q->whereRaw("(cfr.cliente_resuelto_id = c.id OR COALESCE(cfr.clientes_candidatos, '[]'::jsonb) @> jsonb_build_array(c.id))")
                     ->selectRaw('COUNT(*)');
             }, 'revisiones_cobol_count')
-            ->selectSub(function ($q) {
+            ->selectSub(function ($q) use ($estadoOrigenConflicto) {
                 $q->from('clientes_conflictos as cfr')
-                    ->where('cfr.estado', 'PENDIENTE')
-                    ->whereRaw("(cfr.cliente_resuelto_id = c.id OR COALESCE(cfr.clientes_candidatos, '[]'::jsonb) @> jsonb_build_array(c.id))")
+                    ->where('cfr.estado', 'PENDIENTE');
+                if ($estadoOrigenConflicto !== null) {
+                    $q->where('cfr.estado_origen', $estadoOrigenConflicto);
+                }
+                $q->whereRaw("(cfr.cliente_resuelto_id = c.id OR COALESCE(cfr.clientes_candidatos, '[]'::jsonb) @> jsonb_build_array(c.id))")
                     ->selectRaw('MIN(cfr.id)');
             }, 'revision_cobol_id')
+            ->selectSub(function ($q) use ($estadoOrigenConflicto) {
+                $q->from('clientes_conflictos as cfr')
+                    ->where('cfr.estado', 'PENDIENTE');
+                if ($estadoOrigenConflicto !== null) {
+                    $q->where('cfr.estado_origen', $estadoOrigenConflicto);
+                }
+                $q->whereRaw("(cfr.cliente_resuelto_id = c.id OR COALESCE(cfr.clientes_candidatos, '[]'::jsonb) @> jsonb_build_array(c.id))")
+                    ->selectRaw("string_agg(DISTINCT cfr.clave_origen, ', ' ORDER BY cfr.clave_origen)");
+            }, 'cuentas_revision_cobol')
             ->selectSub(function ($q) {
                 $q->from('clientes_roles as cr')->join('roles as r', 'r.id', '=', 'cr.rol_id')->whereColumn('cr.cliente_id', 'c.id')->selectRaw("string_agg(DISTINCT r.codigo, ', ' ORDER BY r.codigo)");
             }, 'roles')
@@ -831,32 +1207,72 @@ final class UnificacionClientesService
 
     private function sqlClienteActivo(): string
     {
+        /*
+         * Regla de precedencia de actividad:
+         *
+         * 1. Si el cliente tiene al menos un origen COBOL, manda el estado
+         *    operativo de esos orígenes:
+         *      - algún origen ACTIVO => cliente operativo ACTIVO;
+         *      - tiene orígenes pero ninguno ACTIVO (por ejemplo todos BAJA)
+         *        => cliente operativo INACTIVO.
+         *
+         * 2. Sólo cuando el cliente no tiene ningún origen COBOL se recurre
+         *    al estado propio de clientes.activo o a actividad moderna
+         *    (liquidaciones de los últimos dos períodos disponibles).
+         *
+         * Esto evita que un clientes.activo=true histórico mantenga en
+         * "Activos" una cuenta que COBOL ya dio de BAJA.
+         */
         return "(
-            c.activo IS TRUE
-            OR EXISTS (
-                SELECT 1
-                FROM clientes_origenes coa
-                WHERE coa.cliente_id = c.id
-                  AND coa.estado_origen = 'ACTIVO'
-            )
-            OR EXISTS (
-                SELECT 1
-                FROM liquidaciones_propietarios lpa
-                WHERE lpa.cliente_id = c.id
-                  AND lpa.periodo IN (
-                      SELECT DISTINCT lp2.periodo
-                      FROM liquidaciones_propietarios lp2
-                      WHERE lp2.periodo IS NOT NULL
-                      ORDER BY lp2.periodo DESC
-                      LIMIT 2
-                  )
-            )
+            CASE
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM clientes_origenes co_any
+                    WHERE co_any.cliente_id = c.id
+                      AND co_any.sistema_origen = 'COBOL'
+                )
+                THEN EXISTS (
+                    SELECT 1
+                    FROM clientes_origenes co_act
+                    WHERE co_act.cliente_id = c.id
+                      AND co_act.sistema_origen = 'COBOL'
+                      AND co_act.estado_origen = 'ACTIVO'
+                )
+                ELSE (
+                    c.activo IS TRUE
+                    OR EXISTS (
+                        SELECT 1
+                        FROM liquidaciones_propietarios lpa
+                        WHERE lpa.cliente_id = c.id
+                          AND lpa.periodo IN (
+                              SELECT DISTINCT lp2.periodo
+                              FROM liquidaciones_propietarios lp2
+                              WHERE lp2.periodo IS NOT NULL
+                              ORDER BY lp2.periodo DESC
+                              LIMIT 2
+                          )
+                    )
+                )
+            END
         )";
     }
 
-    private function sqlClienteConConflicto(): string
+    private function sqlClienteConConflicto(?string $estadoOrigen = null): string
     {
-        return "EXISTS (SELECT 1 FROM clientes_conflictos cfc WHERE cfc.estado = 'PENDIENTE' AND (cfc.cliente_resuelto_id = c.id OR COALESCE(cfc.clientes_candidatos, '[]'::jsonb) @> jsonb_build_array(c.id)))";
+        $filtroEstadoOrigen = $estadoOrigen === null
+            ? ''
+            : " AND cfc.estado_origen = '".str_replace("'", "''", $estadoOrigen)."'";
+
+        return "EXISTS (
+            SELECT 1
+            FROM clientes_conflictos cfc
+            WHERE cfc.estado = 'PENDIENTE'
+              {$filtroEstadoOrigen}
+              AND (
+                  cfc.cliente_resuelto_id = c.id
+                  OR COALESCE(cfc.clientes_candidatos, '[]'::jsonb) @> jsonb_build_array(c.id)
+              )
+        )";
     }
 
     private function cargarCliente(int $id): array

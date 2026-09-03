@@ -129,6 +129,7 @@
             'inactivos' => 'Inmuebles inactivos',
             default => 'Activos OK',
         };
+        $permitirSeleccionComparacion = $vista !== 'activos_ok';
     @endphp
 
     <div class="card mb-3">
@@ -145,8 +146,10 @@
                     <table class="table table-sm table-hover align-middle mb-0">
                         <thead>
                             <tr>
-                                <th style="width: 65px;">Queda</th>
-                                <th style="width: 70px;">Absorbe</th>
+                                @if ($permitirSeleccionComparacion)
+                                    <th style="width: 65px;">Queda</th>
+                                    <th style="width: 70px;">Absorbe</th>
+                                @endif
                                 <th>ID</th>
                                 <th>Domicilio</th>
                                 <th>Propietario</th>
@@ -165,8 +168,10 @@
                                     );
                                 @endphp
                                 <tr>
-                                    <td><input class="form-check-input" type="radio" name="principal" value="{{ $inmueble->id }}" required></td>
-                                    <td><input class="form-check-input" type="radio" name="secundario" value="{{ $inmueble->id }}" required></td>
+                                    @if ($permitirSeleccionComparacion)
+                                        <td><input class="form-check-input" type="radio" name="principal" value="{{ $inmueble->id }}" required></td>
+                                        <td><input class="form-check-input" type="radio" name="secundario" value="{{ $inmueble->id }}" required></td>
+                                    @endif
                                     <td class="fw-semibold">{{ $inmueble->id }}</td>
                                     <td style="min-width: 220px;">
                                         <div>{{ $inmueble->domicilio }}</div>
@@ -202,13 +207,13 @@
                                 </tr>
                             @empty
                                 <tr>
-                                    <td colspan="10" class="text-center text-muted py-4">No hay inmuebles para los filtros indicados.</td>
+                                    <td colspan="{{ $permitirSeleccionComparacion ? 10 : 8 }}" class="text-center text-muted py-4">No hay inmuebles para los filtros indicados.</td>
                                 </tr>
                             @endforelse
                         </tbody>
                     </table>
                 </div>
-                @if ($resultados->count() > 0)
+                @if ($resultados->count() > 0 && $permitirSeleccionComparacion)
                     <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 p-3 border-top">
                         <small class="text-muted">Podés comparar dos registros de esta lista o usar “Comparación directa por ID”.</small>
                         <button class="btn btn-outline-primary" type="submit">Comparar seleccionados</button>
@@ -358,7 +363,7 @@
 
     @if ($conflictosVisibles->isNotEmpty())
         <div class="card mb-4 border-danger">
-            <div class="card-header fw-semibold">Detalle de conflictos de los inmuebles mostrados</div>
+            <div class="card-header fw-semibold">Detalle de conflictos de los inmuebles mostrados — mismo orden que el listado</div>
             <div class="card-body p-0">
                 <div class="table-responsive">
                     <table class="table table-sm table-hover align-middle mb-0">
@@ -412,9 +417,12 @@
     @if ($vista === 'activos_revision' && $resumen['conflictos_sin_inmueble'] > 0)
         <details class="card mb-4">
             <summary class="card-header fw-semibold" style="cursor:pointer;">
-                Conflictos de importación todavía sin inmueble asociado ({{ $resumen['conflictos_sin_inmueble'] }})
+                Conflictos COBOL todavía sin inmueble asociado ({{ $resumen['conflictos_sin_inmueble'] }})
             </summary>
             <div class="card-body p-0">
+                <div class="px-3 py-2 small text-muted border-bottom">
+                    Estos conflictos todavía no pertenecen a ningún inmueble de GeI-Web; por eso no forman parte del orden del listado superior.
+                </div>
                 <div class="table-responsive">
                     <table class="table table-sm table-hover align-middle mb-0">
                         <thead><tr><th>ID</th><th>Cuenta inquilino</th><th>Cuenta propietario</th><th>Motivo</th><th>Última detección</th></tr></thead>

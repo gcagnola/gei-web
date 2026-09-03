@@ -7,7 +7,7 @@
 <div class="container-fluid py-3 pb-5">
     <div class="mb-3">
         <h1 class="h3 mb-1">Unificación</h1>
-        <p class="text-muted mb-0">Clientes / Propietarios. La decisión final siempre es manual.</p>
+        <p class="text-muted mb-0">Clientes. La decisión final siempre es manual.</p>
     </div>
 
     @if (session('estado')) <div class="alert alert-success">{{ session('estado') }}</div> @endif
@@ -17,7 +17,7 @@
 
     <ul class="nav nav-tabs mb-3">
         <li class="nav-item"><a class="nav-link" href="{{ route('archivo.unificacion.index') }}">Inmuebles</a></li>
-        <li class="nav-item"><span class="nav-link active">Clientes / Propietarios</span></li>
+        <li class="nav-item"><span class="nav-link active">Clientes</span></li>
     </ul>
 
     <div class="card mb-3"><div class="card-body py-2">
@@ -69,11 +69,11 @@
     <div class="card mb-3">
         <div class="card-header d-flex justify-content-between"><strong>{{ $titulo }}</strong><small class="text-muted">{{ number_format($resultados->total(), 0, ',', '.') }} resultado(s)</small></div>
         <div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0">
-            <thead><tr>@if ($vista !== 'activos_revision')<th>Queda</th><th>Absorbe</th>@endif<th>ID</th><th>Nombre</th><th>CUIT / Documento</th><th>Roles</th><th>Cuentas COBOL</th><th>Estado</th>@if ($vista === 'activos_revision')<th>Acción</th>@endif</tr></thead>
+            <thead><tr>@if ($vista === 'inactivos')<th>Queda</th><th>Absorbe</th>@endif<th>ID</th><th>Nombre</th><th>CUIT / Documento</th><th>Roles</th><th>{{ $vista === 'activos_revision' ? 'Cuentas del cliente' : 'Cuentas COBOL' }}</th>@if ($vista === 'activos_revision')<th>Cuenta(s) COBOL a revisar</th>@endif<th>Estado</th>@if ($vista === 'activos_revision')<th>Acción</th>@endif</tr></thead>
             <tbody>
             @forelse ($resultados as $fila)
                 <tr>
-                    @if ($vista !== 'activos_revision')
+                    @if ($vista === 'inactivos')
                         <td><input class="form-check-input js-principal" type="radio" name="principal_visual" value="{{ $fila->id }}"></td>
                         <td><input class="form-check-input js-secundario" type="radio" name="secundario_visual" value="{{ $fila->id }}"></td>
                     @endif
@@ -85,6 +85,16 @@
                     </td>
                     <td>{{ $fila->roles ?: '—' }}</td>
                     <td>{{ $fila->cuentas ?: '—' }}</td>
+                    @if ($vista === 'activos_revision')
+                        <td>
+                            @foreach (array_filter(array_map('trim', explode(',', (string) ($fila->cuentas_revision_cobol ?? '')))) as $cuentaRevision)
+                                <div><strong>{{ $cuentaRevision }}</strong></div>
+                            @endforeach
+                            @if (empty(trim((string) ($fila->cuentas_revision_cobol ?? ''))))
+                                <span class="text-muted">—</span>
+                            @endif
+                        </td>
+                    @endif
                     <td>
                         <span class="badge {{ $fila->operativo_activo ? 'text-bg-success' : 'text-bg-secondary' }}">{{ $fila->operativo_activo ? 'ACTIVO' : 'INACTIVO' }}</span>
                         @if ($fila->conflicto_pendiente)<span class="badge text-bg-danger">REVISIÓN COBOL</span>@else<span class="badge text-bg-success">OK</span>@endif
@@ -95,7 +105,7 @@
                                 <a class="btn btn-sm btn-primary" href="{{ route('archivo.unificacion.clientes.conflicto.revisar', $fila->revision_cobol_id) }}">
                                     Revisar
                                     @if ((int) $fila->revisiones_cobol_count > 1)
-                                        <span class="badge text-bg-light ms-1">{{ $fila->revisiones_cobol_count }}</span>
+                                        <span class="badge text-bg-light ms-1">{{ $fila->revisiones_cobol_count }} revisiones</span>
                                     @endif
                                 </a>
                             @else
@@ -105,13 +115,13 @@
                     @endif
                 </tr>
             @empty
-                <tr><td colspan="{{ $vista === 'activos_revision' ? 7 : 8 }}" class="text-center text-muted py-4">Sin registros.</td></tr>
+                <tr><td colspan="{{ $vista === 'activos_revision' ? 9 : ($vista === 'inactivos' ? 8 : 6) }}" class="text-center text-muted py-4">Sin registros.</td></tr>
             @endforelse
             </tbody>
         </table></div>
         <div class="card-footer d-flex justify-content-between align-items-center gap-3">
             <div>{{ $resultados->onEachSide(1)->links() }}</div>
-            @if ($vista !== 'activos_revision')
+            @if ($vista === 'inactivos')
                 <button id="comparar-seleccionados" type="button" class="btn btn-outline-primary">Comparar seleccionados</button>
             @else
                 <span class="small text-muted">La revisión se resuelve sobre el origen COBOL, no comparando estas filas entre sí.</span>
@@ -141,20 +151,52 @@
         </div>
     @endif
 
-    @if ($vista === 'activos_revision' && $conflictosPendientes->isNotEmpty())
-        <details class="card mb-3">
-            <summary class="card-header fw-semibold">Todas las revisiones COBOL pendientes — {{ $conflictosPendientes->count() }}</summary>
+    @if ($vista === 'activos_revision' && $conflictosVisibles->isNotEmpty())
+        <div class="card mb-3 border-danger">
+            <div class="card-header fw-semibold">Detalle de revisiones COBOL de los clientes mostrados</div>
             <div class="table-responsive">
                 <table class="table table-sm align-middle mb-0">
-                    <thead><tr><th>#</th><th>Origen</th><th>Cuenta</th><th>Motivo</th><th>Candidatos</th><th>Última detección</th><th>Acción</th></tr></thead>
+                    <thead><tr><th>#</th><th>Cliente</th><th>Origen</th><th>Cuenta COBOL</th><th>Actividad</th><th>Motivo</th><th>Última detección</th><th>Acción</th></tr></thead>
                     <tbody>
-                    @foreach ($conflictosPendientes as $cf)
+                    @foreach ($conflictosVisibles as $cf)
+                        <tr>
+                            <td>{{ $cf->id }}</td>
+                            <td><strong>#{{ $cf->cliente_visible_id }}</strong> — {{ $cf->cliente_visible_nombre ?: '—' }}</td>
+                            <td>{{ $cf->entidad_origen }}</td>
+                            <td><strong>{{ $cf->clave_origen }}</strong></td>
+                            <td><span class="badge {{ $cf->estado_origen === 'ACTIVO' ? 'text-bg-success' : 'text-bg-secondary' }}">{{ $cf->estado_origen ?: '—' }}</span></td>
+                            <td>{{ $cf->motivo }}</td>
+                            <td>{{ $cf->ultima_deteccion_at ? \Carbon\Carbon::parse($cf->ultima_deteccion_at)->format('d/m/Y H:i') : '—' }}</td>
+                            <td><a class="btn btn-sm btn-outline-primary" href="{{ route('archivo.unificacion.clientes.conflicto.revisar', $cf->id) }}">Revisar</a></td>
+                        </tr>
+                    @endforeach
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    @endif
+
+    @if ($vista === 'activos_revision' && $conflictosSinCliente->isNotEmpty())
+        <details class="card mb-3">
+            <summary class="card-header fw-semibold">
+                Revisiones COBOL todavía sin cliente asociado ({{ $conflictosSinClienteTotal }})
+            </summary>
+            <div class="card-body py-2">
+                <div class="small text-muted mb-2">
+                    Estas identidades COBOL todavía no pudieron vincularse a un cliente canónico o candidato visible.
+                </div>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-sm align-middle mb-0">
+                    <thead><tr><th>#</th><th>Origen</th><th>Cuenta COBOL</th><th>Actividad</th><th>Motivo</th><th>Última detección</th><th>Acción</th></tr></thead>
+                    <tbody>
+                    @foreach ($conflictosSinCliente as $cf)
                         <tr>
                             <td>{{ $cf->id }}</td>
                             <td>{{ $cf->entidad_origen }}</td>
-                            <td>{{ $cf->clave_origen }}</td>
+                            <td><strong>{{ $cf->clave_origen }}</strong></td>
+                            <td><span class="badge {{ $cf->estado_origen === 'ACTIVO' ? 'text-bg-success' : 'text-bg-secondary' }}">{{ $cf->estado_origen ?: '—' }}</span></td>
                             <td>{{ $cf->motivo }}</td>
-                            <td>{{ is_string($cf->clientes_candidatos) ? $cf->clientes_candidatos : json_encode($cf->clientes_candidatos) }}</td>
                             <td>{{ $cf->ultima_deteccion_at ? \Carbon\Carbon::parse($cf->ultima_deteccion_at)->format('d/m/Y H:i') : '—' }}</td>
                             <td><a class="btn btn-sm btn-outline-primary" href="{{ route('archivo.unificacion.clientes.conflicto.revisar', $cf->id) }}">Revisar</a></td>
                         </tr>
@@ -164,6 +206,52 @@
             </div>
         </details>
     @endif
+
+    <details class="card mb-3" open>
+        <summary class="card-header fw-semibold">Historial de revisiones COBOL resueltas — {{ $revisionesCobolResueltas->count() }}</summary>
+        <div class="table-responsive">
+            <table class="table table-sm align-middle mb-0">
+                <thead>
+                    <tr>
+                        <th>Fecha</th>
+                        <th>Origen</th>
+                        <th>Cuenta COBOL</th>
+                        <th>Decisión</th>
+                        <th>Cliente asociado</th>
+                        <th>Usuario</th>
+                    </tr>
+                </thead>
+                <tbody>
+                @forelse ($revisionesCobolResueltas as $r)
+                    <tr>
+                        <td class="text-nowrap">{{ $r->updated_at ? \Carbon\Carbon::parse($r->updated_at)->format('d/m/Y H:i') : '—' }}</td>
+                        <td>{{ $r->entidad_origen }}</td>
+                        <td><strong>{{ $r->clave_origen }}</strong></td>
+                        <td>
+                            @if ($r->decision === 'ASOCIAR_EXISTENTE')
+                                <span class="badge text-bg-primary">ASOCIAR EXISTENTE</span>
+                            @elseif ($r->decision === 'CREAR_SEPARADO')
+                                <span class="badge text-bg-secondary">MANTENER SEPARADO</span>
+                            @else
+                                <span class="badge text-bg-light border">{{ $r->decision }}</span>
+                            @endif
+                        </td>
+                        <td>
+                            @if ($r->cliente_id)
+                                <strong>#{{ $r->cliente_id }}</strong>{{ $r->cliente_nombre ? ' — '.$r->cliente_nombre : '' }}
+                            @else
+                                <span class="text-muted">Persona separada</span>
+                            @endif
+                        </td>
+                        <td>{{ $r->usuario_nombre ?: ($r->usuario_id ? '#'.$r->usuario_id : '—') }}</td>
+                    </tr>
+                @empty
+                    <tr><td colspan="6" class="text-center text-muted">Todavía no hay revisiones COBOL resueltas.</td></tr>
+                @endforelse
+                </tbody>
+            </table>
+        </div>
+    </details>
 
     <details class="card mb-3"><summary class="card-header fw-semibold">Historial de unificaciones — {{ $ultimasUnificaciones->count() }} cliente(s) absorbido(s)</summary>
         <div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Auditoría</th><th>Principal</th><th>Absorbido</th><th>Usuario</th><th>Fecha</th><th>Estado</th></tr></thead><tbody>
