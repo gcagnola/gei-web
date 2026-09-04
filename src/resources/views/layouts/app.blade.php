@@ -1,9 +1,15 @@
+@php
+    $geiEntorno = mb_strtoupper(trim((string) env('GEI_ENTORNO', '')));
+    $geiEsTest = $geiEntorno === 'TEST';
+    $geiEsDesarrollo = ! $geiEsTest && app()->environment(['local', 'development', 'testing']);
+@endphp
+
 <!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="theme-color" content="#6f1d7a">
+    <meta name="theme-color" content="{{ $geiEsTest ? '#3f6f86' : ($geiEsDesarrollo ? '#555b63' : '#6f1d7a') }}">
 
     <title>@yield('title', 'Inicio') | Guastavino e Imbert</title>
 
@@ -20,14 +26,34 @@
 
     <style>
         :root {
-            --gei-primary: #962aa8;
-            --gei-primary-dark: #70217e;
-            --gei-primary-soft: #f7edf9;
-            --gei-accent: #aa54b8;
-            --gei-bg: #f5f5f7;
-            --gei-border: #dedede;
-            --gei-text: #394041;
-            --gei-muted: #747a7c;
+            @if ($geiEsTest)
+                --gei-primary: #3f6f86;
+                --gei-primary-dark: #2f5567;
+                --gei-primary-soft: #e7f0f4;
+                --gei-accent: #5c879a;
+                --gei-bg: #f3f7f9;
+                --gei-border: #c8d6dd;
+                --gei-text: #334047;
+                --gei-muted: #687981;
+            @elseif ($geiEsDesarrollo)
+                --gei-primary: #666b73;
+                --gei-primary-dark: #454a52;
+                --gei-primary-soft: #eceef1;
+                --gei-accent: #7b8088;
+                --gei-bg: #f1f2f4;
+                --gei-border: #cfd3d8;
+                --gei-text: #34383d;
+                --gei-muted: #6d737a;
+            @else
+                --gei-primary: #962aa8;
+                --gei-primary-dark: #70217e;
+                --gei-primary-soft: #f7edf9;
+                --gei-accent: #aa54b8;
+                --gei-bg: #f5f5f7;
+                --gei-border: #dedede;
+                --gei-text: #394041;
+                --gei-muted: #747a7c;
+            @endif
         }
 
         body.gei-app-body {
@@ -459,6 +485,232 @@
             to { transform: rotate(360deg); }
         }
 
+        .gei-environment-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            margin-left: 10px;
+            padding: 5px 10px;
+            border: 1px solid #858b93;
+            border-radius: 999px;
+            color: #363b42;
+            background: #dfe2e6;
+            font-size: .72rem;
+            font-weight: 800;
+            letter-spacing: .06em;
+            line-height: 1;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+
+        .gei-environment-badge::before {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #666b73;
+            content: '';
+            box-shadow: 0 0 0 3px rgba(102, 107, 115, .16);
+        }
+
+        body.gei-is-development .gei-header {
+            border-bottom-color: #aeb3ba;
+            box-shadow: 0 5px 18px rgba(64, 69, 76, .10);
+        }
+
+        body.gei-is-development .gei-brand img {
+            box-shadow: 0 8px 18px rgba(69, 74, 82, .20);
+        }
+
+        /*
+         * Entorno de desarrollo/pruebas:
+         * app.css y Bootstrap también definen variantes "primary".
+         * Las sobrescribimos acá para que TODO el entorno quede gris,
+         * sin modificar la apariencia de producción.
+         */
+        @if ($geiEsTest)
+            :root {
+                --gei-primary: #3f6f86;
+                --gei-primary-hover: #355f73;
+                --gei-primary-active: #2f5567;
+                --gei-primary-light: #edf4f7;
+                --gei-primary-soft: #e1edf2;
+                --gei-secondary: #5c879a;
+                --gei-border-focus: #5c879a;
+
+                --bs-primary: #3f6f86;
+                --bs-primary-rgb: 63, 111, 134;
+                --bs-link-color: #355f73;
+                --bs-link-hover-color: #2f5567;
+            }
+
+            body.gei-is-test .btn-primary,
+            body.gei-is-test .gei-button--primary.btn {
+                --bs-btn-color: #fff;
+                --bs-btn-bg: #3f6f86;
+                --bs-btn-border-color: #3f6f86;
+                --bs-btn-hover-color: #fff;
+                --bs-btn-hover-bg: #355f73;
+                --bs-btn-hover-border-color: #355f73;
+                --bs-btn-focus-shadow-rgb: 63, 111, 134;
+                --bs-btn-active-color: #fff;
+                --bs-btn-active-bg: #2f5567;
+                --bs-btn-active-border-color: #2f5567;
+                --bs-btn-disabled-color: #fff;
+                --bs-btn-disabled-bg: #7895a3;
+                --bs-btn-disabled-border-color: #7895a3;
+            }
+
+            body.gei-is-test .btn-outline-primary {
+                --bs-btn-color: #355f73;
+                --bs-btn-border-color: #5c879a;
+                --bs-btn-hover-color: #fff;
+                --bs-btn-hover-bg: #3f6f86;
+                --bs-btn-hover-border-color: #3f6f86;
+                --bs-btn-focus-shadow-rgb: 63, 111, 134;
+                --bs-btn-active-color: #fff;
+                --bs-btn-active-bg: #2f5567;
+                --bs-btn-active-border-color: #2f5567;
+            }
+
+            body.gei-is-test .text-primary {
+                color: #355f73 !important;
+            }
+
+            body.gei-is-test .text-bg-primary,
+            body.gei-is-test .bg-primary {
+                color: #fff !important;
+                background-color: #3f6f86 !important;
+            }
+
+            body.gei-is-test .border-primary {
+                border-color: #5c879a !important;
+            }
+
+            body.gei-is-test .table-primary {
+                --bs-table-color: #334047;
+                --bs-table-bg: #e1edf2;
+                --bs-table-border-color: #c6d8e0;
+                --bs-table-striped-bg: #d7e6ec;
+                --bs-table-striped-color: #334047;
+                --bs-table-active-bg: #ccdfe7;
+                --bs-table-active-color: #334047;
+                --bs-table-hover-bg: #d2e3ea;
+                --bs-table-hover-color: #334047;
+            }
+
+            body.gei-is-test .spinner-border.text-primary {
+                color: #3f6f86 !important;
+            }
+
+            body.gei-is-test a {
+                --bs-link-color-rgb: 53, 95, 115;
+                --bs-link-hover-color-rgb: 47, 85, 103;
+            }
+
+            body.gei-is-test .gei-header {
+                border-bottom-color: #aabfc9;
+                box-shadow: 0 5px 18px rgba(47, 85, 103, .12);
+            }
+
+            body.gei-is-test .gei-brand img {
+                box-shadow: 0 8px 18px rgba(63, 111, 134, .22);
+            }
+
+            body.gei-is-test .gei-environment-badge {
+                border-color: #6f98aa;
+                color: #294a59;
+                background: #dceaf0;
+            }
+
+            body.gei-is-test .gei-environment-badge::before {
+                background: #3f6f86;
+                box-shadow: 0 0 0 3px rgba(63, 111, 134, .16);
+            }
+        @endif
+
+        @if ($geiEsDesarrollo)
+            :root {
+                --gei-primary: #666b73;
+                --gei-primary-hover: #565b62;
+                --gei-primary-active: #454a52;
+                --gei-primary-light: #f0f1f3;
+                --gei-primary-soft: #e3e5e8;
+                --gei-secondary: #7b8088;
+                --gei-border-focus: #7b8088;
+
+                --bs-primary: #666b73;
+                --bs-primary-rgb: 102, 107, 115;
+                --bs-link-color: #565b62;
+                --bs-link-hover-color: #454a52;
+            }
+
+            body.gei-is-development .btn-primary,
+            body.gei-is-development .gei-button--primary.btn {
+                --bs-btn-color: #fff;
+                --bs-btn-bg: #666b73;
+                --bs-btn-border-color: #666b73;
+                --bs-btn-hover-color: #fff;
+                --bs-btn-hover-bg: #565b62;
+                --bs-btn-hover-border-color: #565b62;
+                --bs-btn-focus-shadow-rgb: 102, 107, 115;
+                --bs-btn-active-color: #fff;
+                --bs-btn-active-bg: #454a52;
+                --bs-btn-active-border-color: #454a52;
+                --bs-btn-disabled-color: #fff;
+                --bs-btn-disabled-bg: #8e939a;
+                --bs-btn-disabled-border-color: #8e939a;
+            }
+
+            body.gei-is-development .btn-outline-primary {
+                --bs-btn-color: #565b62;
+                --bs-btn-border-color: #7b8088;
+                --bs-btn-hover-color: #fff;
+                --bs-btn-hover-bg: #666b73;
+                --bs-btn-hover-border-color: #666b73;
+                --bs-btn-focus-shadow-rgb: 102, 107, 115;
+                --bs-btn-active-color: #fff;
+                --bs-btn-active-bg: #454a52;
+                --bs-btn-active-border-color: #454a52;
+                --bs-btn-disabled-color: #8e939a;
+                --bs-btn-disabled-border-color: #aeb3b9;
+            }
+
+            body.gei-is-development .text-primary {
+                color: #565b62 !important;
+            }
+
+            body.gei-is-development .text-bg-primary,
+            body.gei-is-development .bg-primary {
+                color: #fff !important;
+                background-color: #666b73 !important;
+            }
+
+            body.gei-is-development .border-primary {
+                border-color: #7b8088 !important;
+            }
+
+            body.gei-is-development .table-primary {
+                --bs-table-color: #34383d;
+                --bs-table-bg: #e3e5e8;
+                --bs-table-border-color: #cdd0d4;
+                --bs-table-striped-bg: #dadddf;
+                --bs-table-striped-color: #34383d;
+                --bs-table-active-bg: #d0d3d7;
+                --bs-table-active-color: #34383d;
+                --bs-table-hover-bg: #d5d8dc;
+                --bs-table-hover-color: #34383d;
+            }
+
+            body.gei-is-development .spinner-border.text-primary {
+                color: #666b73 !important;
+            }
+
+            body.gei-is-development a {
+                --bs-link-color-rgb: 86, 91, 98;
+                --bs-link-hover-color-rgb: 69, 74, 82;
+            }
+        @endif
+
         @media (max-width: 991.98px) {
             .gei-menu-toggle {
                 display: grid;
@@ -526,7 +778,7 @@
 
     @stack('styles')
 </head>
-<body class="gei-app-body">
+<body class="gei-app-body{{ $geiEsTest ? ' gei-is-test' : ($geiEsDesarrollo ? ' gei-is-development' : '') }}">
     <div class="gei-app">
         <header class="gei-header">
             <div class="gei-topbar">
@@ -544,6 +796,16 @@
                     <h2 class="gei-topbar__title">
                         @yield('page-title', 'Inicio')
                     </h2>
+
+                    @if ($geiEsTest)
+                        <span class="gei-environment-badge" title="Entorno de test / preproducción">
+                            Test / Preproducción
+                        </span>
+                    @elseif ($geiEsDesarrollo)
+                        <span class="gei-environment-badge" title="Entorno no productivo">
+                            Desarrollo / Pruebas
+                        </span>
+                    @endif
                 </a>
 
                 <div class="gei-topbar__user">
