@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Exceptions\MigracionExploracionException;
+use App\Services\GeiCoreProcesarPeriodoService;
 use App\Services\MigracionExploracionService;
 use App\Services\TransformacionCobolService;
 use Illuminate\Http\RedirectResponse;
@@ -240,7 +241,8 @@ class ImportacionArchivosController extends Controller
         Request $request,
         string $periodo,
         MigracionExploracionService $migracion,
-        TransformacionCobolService $transformacion
+        TransformacionCobolService $transformacion,
+        GeiCoreProcesarPeriodoService $geiCore
     ): RedirectResponse|JsonResponse {
         $faltantes = $this->archivosObligatoriosFaltantes($periodo);
 
@@ -299,11 +301,39 @@ class ImportacionArchivosController extends Controller
                 ->withErrors(['migracion' => $mensaje]);
         }
 
+        // GeI-Core se actualiza con el mismo período ya migrado a cobol_staging.
+        // Es una etapa deliberadamente NO bloqueante: gei_db ya quedó actualizado
+        // y una falla en GeI-Core no debe impedir el circuito operativo ni las
+        // liquidaciones de propietarios/impuestos garantizados.
+        $resultadoCore = null;
+        $errorCore = null;
+
+        try {
+            $resultadoCore = $geiCore->procesar($periodo);
+        } catch (\Throwable $exception) {
+            report($exception);
+            $errorCore = $exception->getMessage();
+
+            Log::warning('GeI-Core no pudo procesar el período luego de actualizar gei_db.', [
+                'periodo' => $periodo,
+                'error' => $errorCore,
+            ]);
+        }
+
         $mensaje = $this->mensajeMigracionCompleta(
             $periodo,
             $resultadoCrudo,
             $resultadoTablas
         );
+
+        if ($resultadoCore !== null) {
+            $mensaje .= sprintf(
+                ' GeI-Core: %s.',
+                (string) ($resultadoCore['estado'] ?? 'procesado')
+            );
+        } elseif ($errorCore !== null) {
+            $mensaje .= ' GeI-Core no pudo actualizarse; la actualización operativa de gei_db quedó completada y las liquidaciones no quedan bloqueadas.';
+        }
 
         if ($request->expectsJson()) {
             return response()->json([
@@ -312,6 +342,8 @@ class ImportacionArchivosController extends Controller
                 'resultado' => [
                     'crudos' => $resultadoCrudo,
                     'tablas' => $resultadoTablas,
+                    'gei_core' => $resultadoCore,
+                    'gei_core_error' => $errorCore,
                 ],
             ]);
         }

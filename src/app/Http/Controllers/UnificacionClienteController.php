@@ -20,13 +20,21 @@ final class UnificacionClienteController extends Controller
     {
         $datos = $request->validate([
             'q' => ['nullable', 'string', 'max:180'],
-            'vista' => ['nullable', 'in:activos_ok,activos_revision,inactivos'],
+            'vista' => ['nullable', 'in:activos_ok,activos_revision,inactivos,avisos_propietarios'],
             'conflicto' => ['nullable', 'in:todos,con_conflicto,sin_conflicto'],
         ]);
 
         $texto = trim((string) ($datos['q'] ?? ''));
         $vista = (string) ($datos['vista'] ?? 'activos_ok');
         $filtroInactivos = (string) ($datos['conflicto'] ?? 'todos');
+
+        $inmuebles = app(\App\Services\UnificacionInmueblesService::class);
+        if ($vista === 'avisos_propietarios') {
+            return view('unificacion.clientes.avisos-propietarios', [
+                'texto' => $texto,
+                'avisos' => $inmuebles->avisosClientes($texto),
+            ]);
+        }
 
         $candidatos = $this->service->candidatos();
         $idsRevision = $candidatos
@@ -47,6 +55,7 @@ final class UnificacionClienteController extends Controller
             : collect();
 
         return view('unificacion.clientes.index', [
+            'avisosPropietariosTotal' => $inmuebles->totalAvisosClientes(),
             'texto' => $texto,
             'vista' => $vista,
             'filtroInactivos' => $filtroInactivos,

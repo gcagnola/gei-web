@@ -5,11 +5,16 @@ use App\Http\Controllers\Auth\RecuperarClaveController;
 use App\Http\Controllers\ClienteController;
 use App\Http\Controllers\ClienteComprobanteArcaController;
 use App\Http\Controllers\ComprobanteArcaController;
+use App\Http\Controllers\ConfiguracionFacturacionController;
 use App\Http\Controllers\ImportacionArchivosController;
+use App\Http\Controllers\CuentaCorrienteExploracionController;
+use App\Http\Controllers\InmuebleExploracionController;
+use App\Http\Controllers\PersonaExploracionController;
 use App\Http\Controllers\MigracionGeiWebController;
 use App\Http\Controllers\LiquidacionPropietarioController;
 use App\Http\Controllers\UnificacionInmuebleController;
 use App\Http\Controllers\UnificacionClienteController;
+use App\Http\Controllers\FacturaController;
 use Illuminate\Support\Facades\Route;
 
 Route::middleware('guest')->group(function () {
@@ -40,6 +45,7 @@ Route::middleware('guest')->group(function () {
     )->name('password.update');
 });
 
+use App\Http\Controllers\GeiCoreClienteController;
 Route::middleware('auth')->group(function () {
     Route::view('/', 'inicio')->name('inicio');
 
@@ -49,6 +55,19 @@ Route::middleware('auth')->group(function () {
             'seccion' => $seccion,
         ]);
     };
+
+    Route::get('/facturas/{factura}/pdf', [FacturaController::class, 'verPdf'])
+        ->whereNumber('factura')
+        ->name('facturas.pdf.ver');
+
+    Route::get('/archivo/clientes-core', [GeiCoreClienteController::class, 'index'])
+        ->name('core-clientes.index');
+    Route::get('/archivo/clientes-core/{persona}', [GeiCoreClienteController::class, 'show'])
+        ->whereNumber('persona')
+        ->name('core-clientes.show');
+    Route::get('/archivo/clientes-core/{persona}/actividad', [GeiCoreClienteController::class, 'actividad'])
+        ->whereNumber('persona')
+        ->name('core-clientes.actividad');
 
     Route::get('/archivo/importar', [ImportacionArchivosController::class, 'index'])
         ->name('archivo.importar');
@@ -113,11 +132,46 @@ Route::middleware('auth')->group(function () {
     Route::resource('/archivo/clientes', ClienteController::class)
         ->parameters(['clientes' => 'cliente'])
         ->only(['index', 'show', 'create', 'store', 'edit', 'update']);
-    Route::get('/archivo/inmuebles', $modulo('Inmuebles', 'Archivo'))
+
+    Route::put(
+        '/archivo/clientes/{cliente}/facturacion/{cuentaCorriente}',
+        [ClienteController::class, 'updateFacturacion']
+    )
+        ->whereNumber('cliente')
+        ->whereNumber('cuentaCorriente')
+        ->name('clientes.facturacion.update');
+
+    Route::put(
+        '/archivo/clientes/{cliente}/facturacion/beneficiarios/{beneficiario}',
+        [ClienteController::class, 'updateBeneficiarioFacturacion']
+    )
+        ->whereNumber('cliente')
+        ->whereNumber('beneficiario')
+        ->name('clientes.facturacion.beneficiarios.update');
+    Route::get('/archivo/personas', [PersonaExploracionController::class, 'index'])
+        ->name('personas.index');
+    Route::get('/archivo/personas/{persona}', [PersonaExploracionController::class, 'show'])
+        ->whereNumber('persona')
+        ->name('personas.show');
+
+    Route::get('/archivo/inmuebles', [InmuebleExploracionController::class, 'index'])
         ->name('inmuebles.index');
+    Route::get('/archivo/inmuebles/{inmueble}', [InmuebleExploracionController::class, 'show'])
+        ->whereNumber('inmueble')
+        ->name('inmuebles.show');
+    Route::post('/archivo/inmuebles/{inmueble}/validar-unico', [InmuebleExploracionController::class, 'validarUnico'])
+        ->whereNumber('inmueble')
+        ->name('inmuebles.validar-unico');
+    Route::delete('/archivo/inmuebles/{inmueble}/validar-unico', [InmuebleExploracionController::class, 'deshacerValidacion'])
+        ->whereNumber('inmueble')
+        ->name('inmuebles.validacion-unico.destroy');
+
+    Route::get('/archivo/cuentas-corrientes', [CuentaCorrienteExploracionController::class, 'index'])
+        ->name('cuentas-corrientes.index');
+
 
     Route::middleware('can:administrar-unificaciones')->group(function (): void {
-        Route::get('/archivo/unificacion', [UnificacionInmuebleController::class, 'index'])
+Route::get('/archivo/unificacion', [UnificacionInmuebleController::class, 'index'])
             ->name('archivo.unificacion.index');
         Route::get('/archivo/unificacion/inmuebles/comparar', [UnificacionInmuebleController::class, 'comparar'])
             ->name('archivo.unificacion.inmuebles.comparar');
@@ -157,6 +211,11 @@ Route::middleware('auth')->group(function () {
         ->where('periodo', '(19|20)\d{2}(0[1-9]|1[0-2])')
         ->where('archivo', '[A-Za-z0-9._-]+')
         ->name('comprobantes-arca.ver');
+
+    Route::get('/comprobantes-arca/lote/{lote}/{archivo}/ver', [\App\Http\Controllers\ComprobanteArcaLoteController::class, 'ver'])
+        ->whereNumber('lote')
+        ->where('archivo', '[A-Za-z0-9._-]+')
+        ->name('comprobantes-arca.lote.ver');
     Route::get('/propietarios/liquidaciones/generar', [LiquidacionPropietarioController::class, 'index'])
         ->name('propietarios.liquidaciones.generar');
     Route::post('/propietarios/liquidaciones/generar', [LiquidacionPropietarioController::class, 'procesar'])
@@ -202,9 +261,45 @@ Route::middleware('auth')->group(function () {
 
     Route::get('/opciones/usuarios', $modulo('Usuarios', 'Opciones'))
         ->name('usuarios.index');
-    Route::get('/opciones/seteos', $modulo('Seteos', 'Opciones'))
-        ->name('seteos.index');
+    Route::get(
+        '/opciones/seteos',
+        [ConfiguracionFacturacionController::class, 'index']
+    )->name('seteos.index');
+
+    Route::put(
+        '/opciones/seteos/facturacion/general',
+        [ConfiguracionFacturacionController::class, 'updateGeneral']
+    )->name('seteos.facturacion.general.update');
+
+    Route::put(
+        '/opciones/seteos/facturacion/puntos-venta/{puntoVenta}',
+        [ConfiguracionFacturacionController::class, 'updatePuntoVenta']
+    )
+        ->whereNumber('puntoVenta')
+        ->name('seteos.facturacion.puntos-venta.update');
+
+    Route::put(
+        '/opciones/seteos/facturacion/alicuotas/{alicuota}',
+        [ConfiguracionFacturacionController::class, 'updateAlicuota']
+    )
+        ->whereNumber('alicuota')
+        ->name('seteos.facturacion.alicuotas.update');
 
     Route::post('/logout', [LoginController::class, 'salir'])
         ->name('logout');
 });
+
+
+/*
+|--------------------------------------------------------------------------
+| KNG - Facturas históricas (solo lectura)
+|--------------------------------------------------------------------------
+*/
+\Illuminate\Support\Facades\Route::get(
+    '/archivo/kng/facturas/lote/{lote}/{archivo}',
+    [\App\Http\Controllers\KngFacturaPdfController::class, 'ver']
+)
+    ->middleware('auth')
+    ->whereNumber('lote')
+    ->where('archivo', '[A-Za-z0-9._-]+')
+    ->name('kng.facturas.pdf');

@@ -13,6 +13,14 @@ final class UnificacionInmueblesService
 {
     private const TIPO = 'INMUEBLE';
 
+    // Avisos de titularidad: se revisan en Clientes y no definen la identidad física.
+    public const MOTIVOS_CLIENTES = [
+        'PROPIETARIO_EN_CONFLICTO',
+        'CUENTA_PROPIETARIO_NO_ENCONTRADA',
+        'CUENTA_PROPIETARIO_AMBIGUA',
+        'CUENTA_PROPIETARIO_MULTIPLE_RELACION_INCOMPLETA',
+    ];
+
     private const FKS_ESPERADAS = [
         'contratos_inmuebles',
         'inmuebles', // id_inmueble_canonico
@@ -170,12 +178,14 @@ final class UnificacionInmueblesService
                 $query->from('inmuebles_conflictos as ic')
                     ->whereColumn('ic.inmueble_id', 'i.id')
                     ->where('ic.estado', 'PENDIENTE')
+                    ->whereNotIn('ic.motivo', self::MOTIVOS_CLIENTES)
                     ->selectRaw('count(*)');
             }, 'conflictos_pendientes')
             ->selectSub(function ($query) {
                 $query->from('inmuebles_conflictos as ic')
                     ->whereColumn('ic.inmueble_id', 'i.id')
                     ->where('ic.estado', 'PENDIENTE')
+                    ->whereNotIn('ic.motivo', self::MOTIVOS_CLIENTES)
                     ->selectRaw("string_agg(DISTINCT ic.motivo, ', ' ORDER BY ic.motivo)");
             }, 'motivos_conflicto');
 
@@ -183,7 +193,8 @@ final class UnificacionInmueblesService
             $sub->selectRaw('1')
                 ->from('inmuebles_conflictos as ic_filtro')
                 ->whereColumn('ic_filtro.inmueble_id', 'i.id')
-                ->where('ic_filtro.estado', 'PENDIENTE');
+                ->where('ic_filtro.estado', 'PENDIENTE')
+                ->whereNotIn('ic_filtro.motivo', self::MOTIVOS_CLIENTES);
         };
 
         if ($vista === 'activos_revision') {
@@ -232,7 +243,8 @@ final class UnificacionInmueblesService
         $activosConConflicto = DB::table('inmuebles as i')
             ->join('inmuebles_conflictos as ic', function ($join): void {
                 $join->on('ic.inmueble_id', '=', 'i.id')
-                    ->where('ic.estado', '=', 'PENDIENTE');
+                    ->where('ic.estado', '=', 'PENDIENTE')
+                    ->whereNotIn('ic.motivo', self::MOTIVOS_CLIENTES);
             })
             ->whereNull('i.id_inmueble_canonico')
             ->where('i.estado', 'ACTIVO')
@@ -256,7 +268,8 @@ final class UnificacionInmueblesService
         $inactivosConConflicto = DB::table('inmuebles as i')
             ->join('inmuebles_conflictos as ic', function ($join): void {
                 $join->on('ic.inmueble_id', '=', 'i.id')
-                    ->where('ic.estado', '=', 'PENDIENTE');
+                    ->where('ic.estado', '=', 'PENDIENTE')
+                    ->whereNotIn('ic.motivo', self::MOTIVOS_CLIENTES);
             })
             ->whereNull('i.id_inmueble_canonico')
             ->where('i.estado', 'INACTIVO')
@@ -269,10 +282,12 @@ final class UnificacionInmueblesService
             'inactivos' => $inactivosTotal,
             'inactivos_con_conflicto' => $inactivosConConflicto,
             'inactivos_sin_conflicto' => max(0, $inactivosTotal - $inactivosConConflicto),
+            'avisos_clientes' => $this->totalAvisosClientes(),
             'unificados' => DB::table('inmuebles')->whereNotNull('id_inmueble_canonico')->count(),
             'conflictos_sin_inmueble' => DB::table('inmuebles_conflictos')
                 ->where('estado', 'PENDIENTE')
                 ->whereNull('inmueble_id')
+                ->whereNotIn('motivo', self::MOTIVOS_CLIENTES)
                 ->count(),
         ];
     }
@@ -290,6 +305,7 @@ final class UnificacionInmueblesService
         $ordenIds = implode(',', $ids);
 
         return $this->consultaConflictosPendientes()
+            ->whereNotIn('ic.motivo', self::MOTIVOS_CLIENTES)
             ->whereIn('ic.inmueble_id', $ids)
             ->orderByRaw("array_position(ARRAY[{$ordenIds}]::bigint[], ic.inmueble_id::bigint)")
             ->orderByDesc('ic.ultima_deteccion_at')
@@ -297,13 +313,145 @@ final class UnificacionInmueblesService
             ->get();
     }
 
-    public function conflictosPendientesSinInmueble(): Collection
+    public function conflictosPendientesSinInmueble(string $texto = ''): LengthAwarePaginator
     {
-        return $this->consultaConflictosPendientes()
-            ->whereNull('ic.inmueble_id')
-            ->orderByDesc('ic.ultima_deteccion_at')
-            ->limit(100)
+        $consulta = $this->consultaConflictosPendientes()
+            ->whereNotIn('ic.motivo', self::MOTIVOS_CLIENTES)
+            ->whereNull('ic.inmueble_id');
+        $this->buscarAvisos($consulta, $texto);
+
+        $paginador = $consulta->orderByDesc('ic.ultima_deteccion_at')->orderBy('ic.id')
+            ->paginate(50)->withQueryString();
+
+        $idsCandidatos = $paginador->getCollection()
+            ->flatMap(function ($conflicto): array {
+                $detalle = $this->decodificarJson($conflicto->detalle ?? null);
+                if (! is_array($detalle)) {
+                    return [];
+                }
+
+                return array_values(array_filter(array_map(
+                    'intval',
+                    (array) ($detalle['inmuebles_candidatos'] ?? [])
+                )));
+            })
+            ->unique()
+            ->values()
+            ->all();
+
+        $candidatos = $this->detallesInmueblesCandidatos($idsCandidatos)->keyBy('id');
+
+        $paginador->setCollection(
+            $paginador->getCollection()->map(function ($conflicto) use ($candidatos) {
+                $detalle = $this->decodificarJson($conflicto->detalle ?? null);
+                $ids = is_array($detalle)
+                    ? array_values(array_filter(array_map('intval', (array) ($detalle['inmuebles_candidatos'] ?? []))))
+                    : [];
+
+                $conflicto->candidatos_detalle = collect($ids)
+                    ->map(fn (int $id) => $candidatos->get($id))
+                    ->filter()
+                    ->values();
+
+                return $conflicto;
+            })
+        );
+
+        return $paginador;
+    }
+
+    /** @param list<int> $ids */
+    private function detallesInmueblesCandidatos(array $ids): Collection
+    {
+        $ids = array_values(array_unique(array_map('intval', $ids)));
+        if ($ids === []) {
+            return collect();
+        }
+
+        return DB::table('inmuebles as i')
+            ->whereIn('i.id', $ids)
+            ->select([
+                'i.id',
+                'i.domicilio',
+                'i.domicilio_normalizado',
+                'i.estado',
+                'i.codigo_origen',
+                'i.id_inmueble_canonico',
+            ])
+            ->selectSub(function ($q): void {
+                $q->from('inmuebles_origenes as io')
+                    ->whereColumn('io.inmueble_id', 'i.id')
+                    ->selectRaw("string_agg(DISTINCT io.clave_origen, ', ' ORDER BY io.clave_origen)");
+            }, 'cuentas_inquilino')
+            ->selectSub(function ($q): void {
+                $q->from('inmuebles_origenes as io')
+                    ->whereColumn('io.inmueble_id', 'i.id')
+                    ->selectRaw("string_agg(DISTINCT io.cuenta_propietario, ', ' ORDER BY io.cuenta_propietario)");
+            }, 'cuentas_propietario')
+            ->selectSub(function ($q): void {
+                $q->from('inmuebles_partidas as ipar')
+                    ->whereColumn('ipar.inmueble_id', 'i.id')
+                    ->whereNull('ipar.vigencia_hasta')
+                    ->selectRaw("string_agg(DISTINCT ipar.partida, ', ' ORDER BY ipar.partida)");
+            }, 'partidas')
+            ->selectSub(function ($q): void {
+                $q->from('inmuebles_propietarios as ip')
+                    ->join('clientes as c', 'c.id', '=', 'ip.cliente_id')
+                    ->whereColumn('ip.inmueble_id', 'i.id')
+                    ->whereNull('ip.vigencia_hasta')
+                    ->selectRaw("string_agg(DISTINCT c.nombre, ' / ' ORDER BY c.nombre)");
+            }, 'propietarios_nombres')
+            ->selectSub(function ($q): void {
+                $q->from('contratos_inmuebles as ci')
+                    ->join('contratos_inquilinos as cinq', 'cinq.contrato_id', '=', 'ci.contrato_id')
+                    ->join('clientes as c', 'c.id', '=', 'cinq.cliente_id')
+                    ->whereColumn('ci.inmueble_id', 'i.id')
+                    ->where('ci.activo', true)
+                    ->where('cinq.activo', true)
+                    ->selectRaw("string_agg(DISTINCT c.nombre, ' / ' ORDER BY c.nombre)");
+            }, 'inquilinos_nombres')
+            ->orderBy('i.id')
             ->get();
+    }
+
+    public function totalAvisosClientes(): int
+    {
+        return DB::table('inmuebles_conflictos')->where('estado', 'PENDIENTE')
+            ->whereIn('motivo', self::MOTIVOS_CLIENTES)->count();
+    }
+
+    public function avisosClientes(string $texto = ''): LengthAwarePaginator
+    {
+        $consulta = $this->consultaConflictosPendientes()
+            ->whereIn('ic.motivo', self::MOTIVOS_CLIENTES)
+            ->selectSub(function ($q): void {
+                $q->from('clientes_conflictos as cc')
+                    ->whereColumn('cc.clave_origen', 'ic.cuenta_propietario')
+                    ->where('cc.sistema_origen', 'COBOL')
+                    ->where('cc.entidad_origen', 'PROPIETAR')
+                    ->where('cc.estado', 'PENDIENTE')->selectRaw('MIN(cc.id)');
+            }, 'revision_cliente_id');
+        $this->buscarAvisos($consulta, $texto);
+
+        return $consulta->orderByDesc('ic.ultima_deteccion_at')->orderBy('ic.id')
+            ->paginate(50)->withQueryString();
+    }
+
+    private function buscarAvisos($consulta, string $texto): void
+    {
+        $texto = trim($texto);
+        if ($texto === '') {
+            return;
+        }
+        $como = '%'.$this->escaparLike($texto).'%';
+        $consulta->where(function ($q) use ($texto, $como): void {
+            if (ctype_digit($texto)) {
+                $q->orWhere('ic.id', (int) $texto)->orWhere('ic.inmueble_id', (int) $texto);
+            }
+            foreach (['ic.cuenta_inquilino', 'ic.cuenta_propietario', 'ic.motivo', 'i.domicilio'] as $campo) {
+                $q->orWhereRaw("{$campo} ILIKE ? ESCAPE '!'", [$como]);
+            }
+        });
     }
 
     private function aplicarBusqueda($consulta, string $texto): void
@@ -804,7 +952,21 @@ final class UnificacionInmueblesService
                 'i.id_inmueble_canonico',
                 'ro.decision as resolucion_decision',
                 'ro.inmueble_id as resolucion_inmueble_id',
-            ]);
+            ])
+            ->selectSub(function ($q): void {
+                $q->from('clientes_cuentas as cc')
+                    ->join('clientes as c', 'c.id', '=', 'cc.cliente_id')
+                    ->whereColumn('cc.cuenta', 'ic.cuenta_inquilino')
+                    ->where('cc.rol', 'INQUILINO')
+                    ->selectRaw("string_agg(DISTINCT c.nombre, ' / ' ORDER BY c.nombre)");
+            }, 'inquilino_nombre')
+            ->selectSub(function ($q): void {
+                $q->from('clientes_cuentas as cc')
+                    ->join('clientes as c', 'c.id', '=', 'cc.cliente_id')
+                    ->whereColumn('cc.cuenta', 'ic.cuenta_propietario')
+                    ->where('cc.rol', 'PROPIETARIO')
+                    ->selectRaw("string_agg(DISTINCT c.nombre, ' / ' ORDER BY c.nombre)");
+            }, 'propietario_nombre');
     }
 
     /** @return array<string, mixed> */
@@ -1028,6 +1190,10 @@ final class UnificacionInmueblesService
             }
             if ($conflicto->estado !== 'PENDIENTE') {
                 throw new DomainException('El conflicto ya fue resuelto.');
+            }
+            if (! str_starts_with((string) $conflicto->motivo, 'PARTIDA_')
+                && ! str_starts_with((string) $conflicto->motivo, 'CLAVE_MIGRACION_')) {
+                throw new DomainException('Este aviso no admite una decisión de identidad de inmueble. Revise el origen o la titularidad en el módulo correspondiente.');
             }
             if (trim((string) $conflicto->cuenta_inquilino) === '') {
                 throw new DomainException('El conflicto no contiene una cuenta de inquilino utilizable como identidad COBOL.');

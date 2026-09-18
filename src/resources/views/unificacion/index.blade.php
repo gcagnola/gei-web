@@ -26,7 +26,7 @@
 
     <ul class="nav nav-tabs mb-3">
         <li class="nav-item"><span class="nav-link active">Inmuebles</span></li>
-        <li class="nav-item"><a class="nav-link" href="{{ route('archivo.unificacion.clientes.index') }}">Clientes / Propietarios</a></li>
+        <li class="nav-item"><a class="nav-link" href="{{ route('archivo.unificacion.clientes.index') }}">Clientes</a></li>
     </ul>
 
     {{-- Vistas operativas: el usuario trabaja sobre un universo acotado y comprensible. --}}
@@ -43,7 +43,7 @@
                     class="btn {{ $vista === 'activos_revision' ? 'btn-danger' : 'btn-outline-danger' }}"
                     href="{{ route('archivo.unificacion.index', ['vista' => 'activos_revision']) }}"
                 >
-                    Activos con conflicto / revisión
+                    Activos: revisión de inmueble
                     <span class="badge text-bg-light ms-1">{{ $resumen['activos_revision'] }}</span>
                 </a>
                 <a
@@ -53,6 +53,9 @@
                     Inactivos <span class="badge text-bg-light ms-1">{{ $resumen['inactivos'] }}</span>
                 </a>
             </div>
+
+            <a class="btn {{ $vista === 'cobol_sin_asociar' ? 'btn-warning' : 'btn-outline-warning' }} mt-2"
+               href="{{ route('archivo.unificacion.index', ['vista' => 'cobol_sin_asociar']) }}">COBOL sin asociar <span class="badge text-bg-light">{{ $resumen['conflictos_sin_inmueble'] }}</span></a>
 
             @if ($vista === 'inactivos')
                 <div class="d-flex flex-wrap gap-2 mt-2 pt-2 border-top">
@@ -74,6 +77,12 @@
         </div>
     </div>
 
+    <div class="alert alert-info py-2">
+        “Activos OK” indica que no hay revisión pendiente de identidad del inmueble.
+        Los avisos de titularidad se revisan en
+        <a href="{{ route('archivo.unificacion.clientes.index', ['vista' => 'avisos_propietarios']) }}">Clientes / Propietarios ({{ $resumen['avisos_clientes'] }} avisos)</a>.
+    </div>
+
     <div class="row g-3 mb-3">
         <div class="col-xl-8">
             <div class="card h-100">
@@ -83,7 +92,7 @@
                         <input type="hidden" name="vista" value="{{ $vista }}">
                         <input type="hidden" name="conflicto" value="{{ $filtroInactivos }}">
                         <div class="col-lg-9">
-                            <label for="q" class="form-label">ID, domicilio, cuenta de propietario o cuenta de inquilino</label>
+                            <label for="q" class="form-label">{{ $vista === 'cobol_sin_asociar' ? 'ID de aviso, cuenta COBOL o motivo' : 'ID, domicilio, cuenta de propietario o cuenta de inquilino' }}</label>
                             <input
                                 type="text"
                                 class="form-control"
@@ -101,6 +110,7 @@
                 </div>
             </div>
         </div>
+        @if ($vista !== 'cobol_sin_asociar')
         <div class="col-xl-4">
             <div class="card h-100">
                 <div class="card-header fw-semibold">Comparación directa por ID</div>
@@ -121,11 +131,13 @@
                 </div>
             </div>
         </div>
+        @endif
     </div>
 
+    @if ($vista !== 'cobol_sin_asociar')
     @php
         $tituloVista = match ($vista) {
-            'activos_revision' => 'Activos con conflicto / revisión',
+            'activos_revision' => 'Activos: revisión de inmueble',
             'inactivos' => 'Inmuebles inactivos',
             default => 'Activos OK',
         };
@@ -141,7 +153,7 @@
             </small>
         </div>
         <div class="card-body p-0">
-            <form method="GET" action="{{ route('archivo.unificacion.inmuebles.comparar') }}">
+            <form id="comparar-lista" method="GET" action="{{ route('archivo.unificacion.inmuebles.comparar') }}"></form>
                 <div class="table-responsive">
                     <table class="table table-sm table-hover align-middle mb-0">
                         <thead>
@@ -169,8 +181,8 @@
                                 @endphp
                                 <tr>
                                     @if ($permitirSeleccionComparacion)
-                                        <td><input class="form-check-input" type="radio" name="principal" value="{{ $inmueble->id }}" required></td>
-                                        <td><input class="form-check-input" type="radio" name="secundario" value="{{ $inmueble->id }}" required></td>
+                                        <td><input class="form-check-input" form="comparar-lista" type="radio" name="principal" value="{{ $inmueble->id }}" required></td>
+                                        <td><input class="form-check-input" form="comparar-lista" type="radio" name="secundario" value="{{ $inmueble->id }}" required></td>
                                     @endif
                                     <td class="fw-semibold">{{ $inmueble->id }}</td>
                                     <td style="min-width: 220px;">
@@ -205,6 +217,19 @@
                                     </td>
                                     <td class="text-center">{{ $inmueble->contratos_activos }}</td>
                                 </tr>
+                                @if ($conflictosVisibles->has($inmueble->id))
+                                    <tr><td colspan="{{ $permitirSeleccionComparacion ? 10 : 8 }}">
+                                        <details>
+                                            <summary class="text-primary" style="cursor:pointer;">Revisar inmueble #{{ $inmueble->id }}</summary>
+                                            <div class="p-3">
+                                                @foreach ($conflictosVisibles->get($inmueble->id) as $conflicto)
+                                                    <div class="border-bottom pb-3 mb-3">@include('unificacion.decision-inmueble')</div>
+                                                @endforeach
+                                            </div>
+                                        </details>
+                                    </td></tr>
+                                @endif
+
                             @empty
                                 <tr>
                                     <td colspan="{{ $permitirSeleccionComparacion ? 10 : 8 }}" class="text-center text-muted py-4">No hay inmuebles para los filtros indicados.</td>
@@ -216,10 +241,9 @@
                 @if ($resultados->count() > 0 && $permitirSeleccionComparacion)
                     <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 p-3 border-top">
                         <small class="text-muted">Podés comparar dos registros de esta lista o usar “Comparación directa por ID”.</small>
-                        <button class="btn btn-outline-primary" type="submit">Comparar seleccionados</button>
+                        <button form="comparar-lista" class="btn btn-outline-primary" type="submit">Comparar seleccionados</button>
                     </div>
                 @endif
-            </form>
         </div>
     </div>
 
@@ -361,80 +385,23 @@
         </div>
     @endif
 
-    @if ($conflictosVisibles->isNotEmpty())
-        <div class="card mb-4 border-danger">
-            <div class="card-header fw-semibold">Detalle de conflictos de los inmuebles mostrados — mismo orden que el listado</div>
-            <div class="card-body p-0">
-                <div class="table-responsive">
-                    <table class="table table-sm table-hover align-middle mb-0">
-                        <thead><tr><th>ID</th><th>Inmueble</th><th>Cuenta inquilino</th><th>Cuenta propietario</th><th>Motivo / evidencia</th><th>Última detección</th><th style="min-width: 340px;">Decisión humana</th></tr></thead>
-                        <tbody>
-                            @foreach ($conflictosVisibles as $conflicto)
-                                @php
-                                    $detalleConflicto = is_string($conflicto->detalle) ? (json_decode($conflicto->detalle, true) ?: []) : ((array) ($conflicto->detalle ?? []));
-                                    $esConflictoIdentidad = str_starts_with((string) $conflicto->motivo, 'PARTIDA_') || str_starts_with((string) $conflicto->motivo, 'CLAVE_MIGRACION_');
-                                    $candidatosDetalle = $detalleConflicto['inmuebles_candidatos'] ?? [];
-                                    $partidasDetalle = $detalleConflicto['partidas_coincidentes'] ?? $detalleConflicto['partidas_ambiguas'] ?? [];
-                                    $candidatoSugerido = count($candidatosDetalle) === 1 ? (int) $candidatosDetalle[0] : null;
-                                @endphp
-                                <tr>
-                                    <td>#{{ $conflicto->id }}</td>
-                                    <td>#{{ $conflicto->inmueble_id }} — {{ $conflicto->domicilio ?: '—' }}</td>
-                                    <td>{{ $conflicto->cuenta_inquilino ?: '—' }}</td>
-                                    <td>{{ $conflicto->cuenta_propietario ?: '—' }}</td>
-                                    <td>
-                                        <code>{{ $conflicto->motivo }}</code>
-                                        @if ($partidasDetalle !== []) <div class="small"><strong>Partida(s):</strong> {{ implode(', ', $partidasDetalle) }}</div> @endif
-                                        @if ($candidatosDetalle !== []) <div class="small"><strong>Candidato(s):</strong> #{{ implode(', #', $candidatosDetalle) }}</div> @endif
-                                    </td>
-                                    <td>{{ $conflicto->ultima_deteccion_at }}</td>
-                                    <td>
-                                        @if ($esConflictoIdentidad && $conflicto->cuenta_inquilino)
-                                            <form method="POST" action="{{ route('archivo.unificacion.inmuebles.conflicto.resolver', ['conflicto' => $conflicto->id]) }}" class="d-flex gap-2 mb-2">
-                                                @csrf
-                                                <input type="hidden" name="decision" value="ASOCIAR_EXISTENTE">
-                                                <input class="form-control form-control-sm" type="number" name="inmueble_id" min="1" value="{{ $candidatoSugerido }}" placeholder="ID canónico" required>
-                                                <button class="btn btn-sm btn-outline-primary" type="submit" onclick="return confirm('¿Asociar esta identidad COBOL al inmueble indicado?');">Asociar</button>
-                                            </form>
-                                            <form method="POST" action="{{ route('archivo.unificacion.inmuebles.conflicto.resolver', ['conflicto' => $conflicto->id]) }}">
-                                                @csrf
-                                                <input type="hidden" name="decision" value="CREAR_SEPARADO">
-                                                <button class="btn btn-sm btn-outline-secondary" type="submit" onclick="return confirm('¿Mantener esta identidad COBOL como inmueble separado?');">Mantener / crear separado</button>
-                                            </form>
-                                        @else
-                                            <span class="small text-muted">No es un conflicto de identidad de inmueble; se resolverá en el módulo correspondiente.</span>
-                                        @endif
-                                    </td>
-                                </tr>
-                            @endforeach
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
     @endif
 
-    @if ($vista === 'activos_revision' && $resumen['conflictos_sin_inmueble'] > 0)
-        <details class="card mb-4">
-            <summary class="card-header fw-semibold" style="cursor:pointer;">
-                Conflictos COBOL todavía sin inmueble asociado ({{ $resumen['conflictos_sin_inmueble'] }})
-            </summary>
-            <div class="card-body p-0">
-                <div class="px-3 py-2 small text-muted border-bottom">
-                    Estos conflictos todavía no pertenecen a ningún inmueble de GeI-Web; por eso no forman parte del orden del listado superior.
-                </div>
-                <div class="table-responsive">
-                    <table class="table table-sm table-hover align-middle mb-0">
-                        <thead><tr><th>ID</th><th>Cuenta inquilino</th><th>Cuenta propietario</th><th>Motivo</th><th>Última detección</th></tr></thead>
-                        <tbody>
-                            @foreach ($conflictosSinInmueble as $conflicto)
-                                <tr><td>#{{ $conflicto->id }}</td><td>{{ $conflicto->cuenta_inquilino ?: '—' }}</td><td>{{ $conflicto->cuenta_propietario ?: '—' }}</td><td><code>{{ $conflicto->motivo }}</code></td><td>{{ $conflicto->ultima_deteccion_at }}</td></tr>
-                            @endforeach
-                        </tbody>
-                    </table>
-                </div>
+    @if ($vista === 'cobol_sin_asociar')
+        <div class="card mb-4">
+            <div class="card-header fw-semibold">COBOL sin asociar — {{ $conflictosSinInmueble->total() }} aviso(s)</div>
+            <div class="card-body">
+                <p class="text-muted">Registros pendientes sin inmueble asociado. Revisá las partidas y los candidatos antes de decidir. Una decisión se aplica en la próxima importación.</p>
+                @forelse ($conflictosSinInmueble as $conflicto)
+                    <div class="border rounded p-3 mb-3">
+                        @include('unificacion.decision-inmueble')
+                    </div>
+                @empty
+                    <p class="text-muted mb-0">No hay registros para los filtros indicados.</p>
+                @endforelse
+                {{ $conflictosSinInmueble->links() }}
             </div>
-        </details>
+        </div>
     @endif
 
     <details class="card mb-5">

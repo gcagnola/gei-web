@@ -13,6 +13,7 @@ services:
     volumes:
       - ./src:/var/www/html
       - ../../dockers/samba-server/archivos/KNG/Facturas:/archivo-kng/facturas:ro
+      - ./kng-dbf-reader/cache:/kng-cache:ro
       - ./docker/php/php.ini:/usr/local/etc/php/conf.d/gei.ini:ro
     networks:
       - gei-network

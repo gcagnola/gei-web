@@ -1,0 +1,10 @@
+cache/*
+!cache/.gitkeep
+
+state/*
+!state/.gitkeep
+
+*.sqlite
+*.sqlite.new
+__pycache__/
+*.pyc

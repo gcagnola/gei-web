@@ -26,6 +26,7 @@
             <a class="btn {{ $vista === 'activos_revision' ? 'btn-danger' : 'btn-outline-danger' }}" href="{{ route('archivo.unificacion.clientes.index', ['vista' => 'activos_revision']) }}">Activos con revisión COBOL <span class="badge text-bg-light ms-1">{{ $resumen['activos_revision'] }}</span></a>
             <a class="btn {{ $vista === 'inactivos' ? 'btn-secondary' : 'btn-outline-secondary' }}" href="{{ route('archivo.unificacion.clientes.index', ['vista' => 'inactivos', 'conflicto' => 'todos']) }}">Inactivos <span class="badge text-bg-light ms-1">{{ $resumen['inactivos'] }}</span></a>
         </div>
+        <a class="btn btn-outline-warning mt-2" href="{{ route('archivo.unificacion.clientes.index', ['vista' => 'avisos_propietarios']) }}">Propietarios: avisos de inmuebles <span class="badge text-bg-light">{{ $avisosPropietariosTotal }}</span></a>
         @if ($vista === 'inactivos')
             <div class="d-flex flex-wrap gap-2 mt-2 pt-2 border-top">
                 <span class="small text-muted align-self-center">Mostrar:</span>
@@ -179,11 +180,11 @@
     @if ($vista === 'activos_revision' && $conflictosSinCliente->isNotEmpty())
         <details class="card mb-3">
             <summary class="card-header fw-semibold">
-                Revisiones COBOL todavía sin cliente asociado ({{ $conflictosSinClienteTotal }})
+                Revisiones COBOL sin cliente operativo asociado ({{ $conflictosSinClienteTotal }})
             </summary>
             <div class="card-body py-2">
                 <div class="small text-muted mb-2">
-                    Estas identidades COBOL todavía no pudieron vincularse a un cliente canónico o candidato visible.
+                    Estas identidades COBOL activas todavía no tienen un cliente operativo resuelto. También se incluyen casos cuyo único candidato es histórico/inactivo.
                 </div>
             </div>
             <div class="table-responsive">

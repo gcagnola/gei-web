@@ -94,17 +94,112 @@ class ClienteController extends Controller
             ->with('estado', 'Los datos del cliente fueron actualizados.');
     }
 
+    public function updateFacturacion(
+        Request $request,
+        Cliente $cliente,
+        int $cuentaCorriente
+    ): RedirectResponse {
+        if ($cliente->id_cliente_canonico !== null) {
+            return redirect()
+                ->route('clientes.show', $cliente->id_cliente_canonico)
+                ->withErrors([
+                    'facturacion' => 'No se puede modificar la facturación de un cliente absorbido.',
+                ]);
+        }
+
+        $cuenta = DB::table('cuentas_corrientes')
+            ->where('id', $cuentaCorriente)
+            ->where('cliente_id', $cliente->id)
+            ->first();
+
+        abort_if(! $cuenta, 404);
+
+        $data = $request->validate([
+            'facturable' => ['required', 'boolean'],
+            'modalidad_facturacion' => ['required', 'in:NORMAL,INDIVIDUAL'],
+            'destinatario_facturacion' => ['required', 'in:PROPIETARIO,COPROPIETARIOS'],
+            'agrupacion_facturacion' => ['required', 'in:CONSOLIDADA,POR_INMUEBLE,POR_MOVIMIENTO'],
+            'tratamiento_fiscal' => ['required', 'in:AUTOMATICO,FORZAR_A,FORZAR_B,SIN_CATEGORIZAR'],
+            'observaciones_facturacion' => ['nullable', 'string', 'max:1000'],
+        ]);
+
+        $data['updated_at'] = now();
+
+        DB::table('cuentas_corrientes')
+            ->where('id', $cuentaCorriente)
+            ->update($data);
+
+        return redirect()
+            ->route('clientes.show', [
+                'cliente' => $cliente->id,
+                'buscar' => $request->input('volver_buscar'),
+                'rol' => $request->input('volver_rol', 'TODOS'),
+                'actividad' => $request->input('volver_actividad', 'todos'),
+                'facturacion' => $request->input('volver_facturacion', 'todos'),
+                'page' => $request->input('volver_page', 1),
+            ])
+            ->with('estado', 'Configuración de facturación actualizada.');
+    }
+
+    public function updateBeneficiarioFacturacion(
+        Request $request,
+        Cliente $cliente,
+        int $beneficiario
+    ): RedirectResponse {
+        $registro = DB::table('cuentas_facturacion_beneficiarios as b')
+            ->join('cuentas_corrientes as cc', 'cc.id', '=', 'b.cuenta_corriente_id')
+            ->where('b.id_cuenta_facturacion_beneficiario', $beneficiario)
+            ->where('cc.cliente_id', $cliente->id)
+            ->select(['b.id_cuenta_facturacion_beneficiario'])
+            ->first();
+
+        abort_if(! $registro, 404);
+
+        $data = $request->validate([
+            'porcentaje' => ['required', 'numeric', 'gt:0', 'lte:100'],
+        ]);
+
+        $data['activo'] = $request->boolean('activo');
+        $data['updated_at'] = now();
+
+        DB::table('cuentas_facturacion_beneficiarios')
+            ->where('id_cuenta_facturacion_beneficiario', $beneficiario)
+            ->update($data);
+
+        return redirect()
+            ->route('clientes.show', [
+                'cliente' => $cliente->id,
+                'buscar' => $request->input('volver_buscar'),
+                'rol' => $request->input('volver_rol', 'TODOS'),
+                'actividad' => $request->input('volver_actividad', 'todos'),
+                'facturacion' => $request->input('volver_facturacion', 'todos'),
+                'page' => $request->input('volver_page', 1),
+            ])
+            ->with('estado', 'Beneficiario de facturación actualizado.');
+    }
+
     private function vistaListado(Request $request, ?Cliente $clienteSeleccionado = null): View
     {
         $busqueda = trim((string) $request->query('buscar'));
         $rol = strtoupper(trim((string) $request->query('rol', 'TODOS')));
         $actividad = strtolower(trim((string) $request->query('actividad', 'todos')));
+        $facturacion = strtolower(trim((string) $request->query('facturacion', 'todos')));
 
         if (! in_array($rol, ['TODOS', 'PROPIETARIO', 'INQUILINO', 'GARANTE', 'PROVEEDOR', 'OTRO'], true)) {
             $rol = 'TODOS';
         }
         if (! in_array($actividad, ['todos', 'activos', 'inactivos'], true)) {
             $actividad = 'todos';
+        }
+        if (! in_array($facturacion, [
+            'todos',
+            'especial',
+            'no_facturar',
+            'individual',
+            'agrupacion',
+            'fiscal',
+        ], true)) {
+            $facturacion = 'todos';
         }
 
         $clientes = Cliente::query()
@@ -126,6 +221,42 @@ class ClienteController extends Controller
             )
             ->when($actividad === 'activos', fn (Builder $query) => $query->where('activo', true))
             ->when($actividad === 'inactivos', fn (Builder $query) => $query->where('activo', false))
+            ->when($facturacion !== 'todos', function (Builder $query) use ($facturacion): void {
+                $query->whereExists(function ($sub) use ($facturacion): void {
+                    $sub->selectRaw('1')
+                        ->from('cuentas_corrientes as ccf')
+                        ->whereColumn('ccf.cliente_id', 'clientes.id')
+                        ->where(function ($f) use ($facturacion): void {
+                            if ($facturacion === 'no_facturar') {
+                                $f->where('ccf.facturable', false);
+                                return;
+                            }
+
+                            if ($facturacion === 'individual') {
+                                $f->where('ccf.modalidad_facturacion', 'INDIVIDUAL')
+                                    ->orWhere('ccf.destinatario_facturacion', 'COPROPIETARIOS');
+                                return;
+                            }
+
+                            if ($facturacion === 'agrupacion') {
+                                $f->whereIn('ccf.agrupacion_facturacion', ['POR_INMUEBLE', 'POR_MOVIMIENTO']);
+                                return;
+                            }
+
+                            if ($facturacion === 'fiscal') {
+                                $f->whereIn('ccf.tratamiento_fiscal', ['FORZAR_A', 'FORZAR_B', 'SIN_CATEGORIZAR']);
+                                return;
+                            }
+
+                            $f->where('ccf.facturable', false)
+                                ->orWhere('ccf.modalidad_facturacion', '<>', 'NORMAL')
+                                ->orWhere('ccf.destinatario_facturacion', '<>', 'PROPIETARIO')
+                                ->orWhere('ccf.agrupacion_facturacion', '<>', 'CONSOLIDADA')
+                                ->orWhere('ccf.tratamiento_fiscal', '<>', 'AUTOMATICO')
+                                ->orWhereNotNull('ccf.observaciones_facturacion');
+                        });
+                });
+            })
             ->orderByRaw("TRANSLATE(LOWER(TRIM(nombre)), 'áéíóúüñ', 'aeiouun')")
             ->orderBy('id')
             ->paginate(25)
@@ -142,6 +273,8 @@ class ClienteController extends Controller
         $liquidaciones = collect();
         $documentos = collect();
         $repartos = collect();
+        $cuentasFacturacion = collect();
+        $beneficiariosFacturacion = collect();
 
         if ($clienteSeleccionado) {
             $clienteSeleccionado->load([
@@ -160,6 +293,29 @@ class ClienteController extends Controller
             $liquidaciones = $this->liquidacionesDelPropietario($clienteSeleccionado);
             $documentos = $this->documentosDelCliente($clienteSeleccionado, $liquidaciones);
             $repartos = $this->repartosDelPropietario($clienteSeleccionado);
+
+            $cuentasFacturacion = DB::table('cuentas_corrientes')
+                ->where('cliente_id', $clienteSeleccionado->id)
+                ->orderBy('dominio')
+                ->orderBy('cuenta')
+                ->get();
+
+            $idsCuentasFacturacion = $cuentasFacturacion->pluck('id')->all();
+
+            if ($idsCuentasFacturacion !== []) {
+                $beneficiariosFacturacion = DB::table('cuentas_facturacion_beneficiarios as b')
+                    ->leftJoin('clientes as c', 'c.id', '=', 'b.cliente_id')
+                    ->whereIn('b.cuenta_corriente_id', $idsCuentasFacturacion)
+                    ->select([
+                        'b.*',
+                        'c.nombre as cliente_nombre',
+                        'c.cuit as cliente_cuit',
+                    ])
+                    ->orderBy('b.cuenta_corriente_id')
+                    ->orderBy('b.identificador_origen')
+                    ->get()
+                    ->groupBy('cuenta_corriente_id');
+            }
         }
 
         return view('clientes.index', compact(
@@ -168,12 +324,15 @@ class ClienteController extends Controller
             'busqueda',
             'rol',
             'actividad',
+            'facturacion',
             'inmuebles',
             'contratos',
             'inquilinosDePropietario',
             'liquidaciones',
             'documentos',
-            'repartos'
+            'repartos',
+            'cuentasFacturacion',
+            'beneficiariosFacturacion'
         ));
     }
 
@@ -390,10 +549,12 @@ class ClienteController extends Controller
 
     /**
      * Reúne, por período, todos los documentos operativos del cliente:
-     * liquidaciones, impuestos garantizados y comprobantes ARCA.
+     * liquidaciones, impuestos garantizados, facturas migradas/emitidas por GeI
+     * y comprobantes ARCA todavía no migrados a facturas.
      *
-     * Los comprobantes ARCA se buscan por TODAS las cuentas vinculadas al cliente,
-     * independientemente de si son cuentas de propietario o inquilino.
+     * Las facturas se muestran siempre como registro. El PDF sólo queda
+     * disponible cuando existe el comprobante_arca vinculado y además está
+     * presente físicamente en el disk arca_facturas.
      *
      * @param Collection<int, object> $liquidaciones
      * @return Collection<int, object>
@@ -408,6 +569,7 @@ class ClienteController extends Controller
                     'periodo' => $periodo,
                     'cuentas' => collect(),
                     'liquidaciones' => collect(),
+                    'facturas' => collect(),
                     'comprobantes_arca' => collect(),
                 ];
             }
@@ -415,7 +577,7 @@ class ClienteController extends Controller
             return $porPeriodo[$periodo];
         };
 
-        // Primero incorporamos las liquidaciones e impuestos de propietario.
+        // Liquidaciones e impuestos garantizados de propietario.
         foreach ($liquidaciones as $liquidacion) {
             $periodo = trim((string) $liquidacion->periodo);
             if ($periodo === '') {
@@ -434,19 +596,121 @@ class ClienteController extends Controller
             $fila->liquidaciones->put((int) $liquidacion->id, $liquidacion);
         }
 
-        // ARCA se busca por todas las cuentas del cliente. Limitamos a los
-        // últimos 12 períodos físicos para mantener ágil la ficha de cliente.
         $cuentas = $cliente->cuentas
             ->pluck('cuenta')
-            ->map(fn (mixed $cuenta): string => $this->comprobantesArca->normalizarCuenta((string) $cuenta))
+            ->map(fn (mixed $cuenta): string =>
+                $this->comprobantesArca->normalizarCuenta((string) $cuenta)
+            )
             ->filter()
             ->unique()
             ->values()
             ->all();
 
+        /*
+         * Facturas operativas/históricas.
+         *
+         * Regla de pertenencia:
+         * - si factura.cliente_id está resuelto, manda ese destinatario;
+         * - si cliente_id es NULL (histórico todavía sin identidad resuelta),
+         *   permitimos recuperarla por una cuenta del cliente.
+         *
+         * De esta manera no atribuimos una factura FACT_IND ya resuelta al
+         * titular de CTA_ORIG sólo porque comparte la cuenta madre.
+         */
+        if (Schema::hasTable('facturas') && Schema::hasTable('facturaciones')) {
+            $facturasQuery = DB::table('facturas as f')
+                ->join('facturaciones as fg', 'fg.id_facturacion', '=', 'f.facturacion_id')
+                ->leftJoin('puntos_venta as pv', 'pv.id_punto_venta', '=', 'f.punto_venta_id')
+                ->where(function ($query) use ($cliente, $cuentas): void {
+                    $query->where('f.cliente_id', $cliente->id);
+
+                    if ($cuentas !== []) {
+                        $query->orWhere(function ($sinCliente) use ($cuentas): void {
+                            $sinCliente
+                                ->whereNull('f.cliente_id')
+                                ->whereExists(function ($sub) use ($cuentas): void {
+                                    $sub->selectRaw('1')
+                                        ->from('facturas_cuentas as fc2')
+                                        ->whereColumn('fc2.factura_id', 'f.id_factura')
+                                        ->whereIn('fc2.cuenta', $cuentas);
+                                });
+                        });
+                    }
+                })
+                ->select([
+                    'f.id_factura',
+                    'fg.periodo',
+                    'fg.lote_origen',
+                    'f.tipo_comprobante',
+                    'f.numero_comprobante',
+                    'f.fecha_comprobante',
+                    'f.total',
+                    'f.estado',
+                    'f.origen',
+                    'f.cae',
+                    'f.vencimiento_cae',
+                    'f.comprobante_arca_id',
+                    'f.pdf_ruta',
+                    'pv.numero as punto_venta',
+                ])
+                ->orderByDesc('f.fecha_comprobante')
+                ->orderByDesc('f.id_factura')
+                ->limit(250)
+                ->get();
+
+            $cuentasPorFactura = collect();
+
+            if ($facturasQuery->isNotEmpty() && Schema::hasTable('facturas_cuentas')) {
+                $cuentasPorFactura = DB::table('facturas_cuentas')
+                    ->whereIn('factura_id', $facturasQuery->pluck('id_factura')->all())
+                    ->get(['factura_id', 'cuenta'])
+                    ->groupBy('factura_id');
+            }
+
+            foreach ($facturasQuery as $factura) {
+                $periodo = trim((string) $factura->periodo);
+                if ($periodo === '') {
+                    continue;
+                }
+
+                $fila = $obtenerPeriodo($porPeriodo, $periodo);
+
+                $factura->cuentas = collect($cuentasPorFactura->get(
+                    $factura->id_factura,
+                    collect()
+                ))
+                    ->pluck('cuenta')
+                    ->map(fn (mixed $cuenta): string =>
+                        $this->comprobantesArca->normalizarCuenta((string) $cuenta)
+                    )
+                    ->filter()
+                    ->unique()
+                    ->values();
+
+                foreach ($factura->cuentas as $cuentaFactura) {
+                    $fila->cuentas->put($cuentaFactura, $cuentaFactura);
+                }
+
+                $factura->pdf_disponible =
+                    ! empty($factura->pdf_ruta)
+                    && Storage::disk('arca_facturas')->exists((string) $factura->pdf_ruta);
+
+                $fila->facturas->put((int) $factura->id_factura, $factura);
+            }
+        }
+
+        /*
+         * Comprobantes ARCA del catálogo histórico.
+         *
+         * Seguimos mostrándolos para períodos que todavía no fueron migrados a
+         * facturas. Si un archivo ya está vinculado a una factura, no se repite.
+         */
         if ($cuentas !== []) {
             foreach ($this->comprobantesArca->periodosDisponibles()->take(12) as $periodo) {
-                $grupos = $this->comprobantesArca->porCuentasYPeriodo($cuentas, (string) $periodo);
+                $grupos = $this->comprobantesArca->porCuentasYPeriodo(
+                    $cuentas,
+                    (string) $periodo
+                );
 
                 if ($grupos->isEmpty()) {
                     continue;
@@ -455,15 +719,29 @@ class ClienteController extends Controller
                 $fila = $obtenerPeriodo($porPeriodo, (string) $periodo);
 
                 foreach ($grupos as $cuenta => $comprobantes) {
-                    $cuentaNormalizada = $this->comprobantesArca->normalizarCuenta((string) $cuenta);
+                    $cuentaNormalizada = $this->comprobantesArca->normalizarCuenta(
+                        (string) $cuenta
+                    );
 
                     if ($cuentaNormalizada !== '') {
                         $fila->cuentas->put($cuentaNormalizada, $cuentaNormalizada);
                     }
 
                     foreach ($comprobantes as $comprobante) {
+                        $nombreArchivo = (string) $comprobante->nombre_archivo;
+
+                        $yaRepresentadoPorFactura = $fila->facturas->contains(
+                            fn (object $factura): bool =>
+                                (int) ($factura->punto_venta ?? 0) === (int) preg_replace('/\D+/', '', (string) ($comprobante->punto_venta ?? ''))
+                                && (int) ($factura->numero_comprobante ?? 0) === (int) preg_replace('/\D+/', '', (string) ($comprobante->numero_comprobante ?? ''))
+                        );
+
+                        if ($yaRepresentadoPorFactura) {
+                            continue;
+                        }
+
                         $fila->comprobantes_arca->put(
-                            (string) $comprobante->nombre_archivo,
+                            $nombreArchivo,
                             $comprobante
                         );
                     }
@@ -475,6 +753,18 @@ class ClienteController extends Controller
             ->map(function (object $fila): object {
                 $fila->cuentas = $fila->cuentas->values();
                 $fila->liquidaciones = $fila->liquidaciones->values();
+
+                $fila->facturas = $fila->facturas
+                    ->values()
+                    ->sortByDesc(function (object $factura): string {
+                        return implode('|', [
+                            (string) ($factura->fecha_comprobante ?? ''),
+                            str_pad((string) ($factura->punto_venta ?? ''), 5, '0', STR_PAD_LEFT),
+                            str_pad((string) ($factura->numero_comprobante ?? ''), 10, '0', STR_PAD_LEFT),
+                        ]);
+                    })
+                    ->values();
+
                 $fila->comprobantes_arca = $fila->comprobantes_arca
                     ->values()
                     ->sortByDesc(
@@ -485,6 +775,11 @@ class ClienteController extends Controller
 
                 return $fila;
             })
+            ->filter(fn (object $fila): bool =>
+                $fila->liquidaciones->isNotEmpty()
+                || $fila->facturas->isNotEmpty()
+                || $fila->comprobantes_arca->isNotEmpty()
+            )
             ->sortByDesc(fn (object $fila): string => $fila->periodo)
             ->take(24)
             ->values();

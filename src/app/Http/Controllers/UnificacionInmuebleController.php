@@ -20,7 +20,7 @@ final class UnificacionInmuebleController extends Controller
     {
         $datos = $request->validate([
             'q' => ['nullable', 'string', 'max:180'],
-            'vista' => ['nullable', 'in:activos_ok,activos_revision,inactivos'],
+            'vista' => ['nullable', 'in:activos_ok,activos_revision,inactivos,cobol_sin_asociar'],
             'conflicto' => ['nullable', 'in:todos,con_conflicto,sin_conflicto'],
         ]);
 
@@ -36,7 +36,9 @@ final class UnificacionInmuebleController extends Controller
             ->all();
 
         $resumen = $this->service->resumenClasificacion($idsActivosConCandidato);
-        $resultados = $this->service->listarClasificados(
+        $resultados = $vista === 'cobol_sin_asociar'
+            ? new \Illuminate\Pagination\LengthAwarePaginator([], 0, 100)
+            : $this->service->listarClasificados(
             $texto,
             $vista,
             $filtroInactivos,
@@ -60,10 +62,10 @@ final class UnificacionInmuebleController extends Controller
             'gruposCandidatosBusqueda' => $this->service->agruparCandidatosBusqueda($candidatosBusqueda),
             'candidatosActivos' => $vista === 'activos_revision' ? $candidatosActivos : collect(),
             'conflictosVisibles' => in_array($vista, ['activos_revision', 'inactivos'], true)
-                ? $this->service->conflictosPendientesPorInmuebles($idsVisibles)
+                ? $this->service->conflictosPendientesPorInmuebles($idsVisibles)->groupBy('inmueble_id')
                 : collect(),
-            'conflictosSinInmueble' => $vista === 'activos_revision'
-                ? $this->service->conflictosPendientesSinInmueble()
+            'conflictosSinInmueble' => $vista === 'cobol_sin_asociar'
+                ? $this->service->conflictosPendientesSinInmueble($texto)
                 : collect(),
             'ultimasUnificaciones' => $this->service->ultimasUnificaciones(),
         ]);

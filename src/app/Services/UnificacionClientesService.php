@@ -1063,11 +1063,28 @@ final class UnificacionClientesService
 
     public function conflictosPendientesSinCliente(): Collection
     {
+        /*
+         * Mostrar revisiones COBOL activas que todavía no tienen un cliente
+         * operativo visible al cual asociarlas.
+         *
+         * Antes sólo se mostraban los conflictos cuyo JSON de candidatos estaba
+         * vacío. Eso ocultaba casos como MEAT TRADING: el origen COBOL está
+         * ACTIVO, no tiene cliente resuelto, pero el único candidato es un
+         * cliente histórico/inactivo.
+         */
+        $activoSql = $this->sqlClienteActivo();
+
         return DB::table('clientes_conflictos as cf')
             ->where('cf.estado', 'PENDIENTE')
             ->where('cf.estado_origen', 'ACTIVO')
             ->whereNull('cf.cliente_resuelto_id')
-            ->whereRaw("jsonb_array_length(COALESCE(cf.clientes_candidatos, '[]'::jsonb)) = 0")
+            ->whereNotExists(function ($q) use ($activoSql): void {
+                $q->selectRaw('1')
+                    ->from('clientes as c')
+                    ->whereNull('c.id_cliente_canonico')
+                    ->whereRaw("COALESCE(cf.clientes_candidatos, '[]'::jsonb) @> jsonb_build_array(c.id)")
+                    ->whereRaw("({$activoSql})");
+            })
             ->select('cf.*')
             ->orderByDesc('cf.ultima_deteccion_at')
             ->limit(100)
@@ -1076,11 +1093,19 @@ final class UnificacionClientesService
 
     public function conflictosPendientesSinClienteTotal(): int
     {
+        $activoSql = $this->sqlClienteActivo();
+
         return DB::table('clientes_conflictos as cf')
             ->where('cf.estado', 'PENDIENTE')
             ->where('cf.estado_origen', 'ACTIVO')
             ->whereNull('cf.cliente_resuelto_id')
-            ->whereRaw("jsonb_array_length(COALESCE(cf.clientes_candidatos, '[]'::jsonb)) = 0")
+            ->whereNotExists(function ($q) use ($activoSql): void {
+                $q->selectRaw('1')
+                    ->from('clientes as c')
+                    ->whereNull('c.id_cliente_canonico')
+                    ->whereRaw("COALESCE(cf.clientes_candidatos, '[]'::jsonb) @> jsonb_build_array(c.id)")
+                    ->whereRaw("({$activoSql})");
+            })
             ->count();
     }
 
