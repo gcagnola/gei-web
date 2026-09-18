@@ -2,7 +2,7 @@
 set -euo pipefail
 
 KNG="/home/gcagnola/dockers/samba-server/archivos/KNG"
-APP="/home/gcagnola/proyectos/kng-dbf-reader"
+APP="/home/gcagnola/proyectos/gei-web/kng-dbf-reader"
 CACHE="$APP/cache"
 STATE="$APP/state"
 
