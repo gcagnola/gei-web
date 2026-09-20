@@ -46,6 +46,18 @@ Route::middleware('guest')->group(function () {
 });
 
 use App\Http\Controllers\GeiCoreClienteController;
+
+// Progreso de importación: ruta firmada y sin middleware auth.
+// Lee únicamente el JSON local de progreso y no consulta PostgreSQL.
+
+Route::get(
+    '/archivo/importar/{periodo}/progreso',
+    [ImportacionArchivosController::class, 'progreso']
+)
+    ->where('periodo', '(19|20)[0-9]{2}(0[1-9]|1[0-2])')
+    ->middleware('signed')
+    ->name('archivo.importar.progreso');
+
 Route::middleware('auth')->group(function () {
     Route::view('/', 'inicio')->name('inicio');
 

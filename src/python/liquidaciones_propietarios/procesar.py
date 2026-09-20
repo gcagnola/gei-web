@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import re
+import sys
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -29,7 +30,7 @@ def clave_origen(data: dict[str, Any]) -> str:
     componentes = (
         data.get("sede", ""),
         data.get("tipo", ""),
-        data.get("periodo", ""),
+        data.get("periodo_aaaamm") or data.get("periodo", ""),
         data.get("cuenta", ""),
         data.get("comprobante", ""),
         data.get("copropietario", ""),
@@ -51,11 +52,27 @@ def extraer(args: argparse.Namespace) -> int:
     if faltantes:
         raise RuntimeError("Faltan archivos de liquidación: " + ", ".join(faltantes))
 
-    periodo = motor.detectar_periodo(paths, encoding)
-    if args.periodo and periodo != args.periodo:
-        raise RuntimeError(
-            f"El período detectado ({periodo}) no coincide con el solicitado ({args.periodo})."
+    # El período elegido en GeI-Web es la referencia operativa. La detección
+    # dentro de los listados se conserva sólo como diagnóstico y nunca bloquea.
+    periodo_detectado = None
+    advertencia_periodo = None
+    try:
+        periodo_detectado = motor.detectar_periodo(paths, encoding)
+    except RuntimeError as exc:
+        advertencia_periodo = str(exc)
+
+    periodo = args.periodo or periodo_detectado
+    if not periodo:
+        raise RuntimeError("No se indicó período y tampoco pudo detectarse en los listados.")
+
+    if periodo_detectado and periodo_detectado != periodo:
+        advertencia_periodo = (
+            f"El período detectado ({periodo_detectado}) no coincide con el solicitado ({periodo}); "
+            "se utiliza el período solicitado."
         )
+
+    if advertencia_periodo:
+        print("ADVERTENCIA_PERIODO=" + advertencia_periodo, file=sys.stderr)
 
     motor.ENT_LIQ = liquidaciones_dir
     controles = motor.cargar_pliqloc(encoding)
@@ -68,6 +85,7 @@ def extraer(args: argparse.Namespace) -> int:
             control = motor.aplicar_control_pliqloc(liquidacion, controles)
             data = liquidacion.dict()
             data.pop("raw", None)
+            data["periodo_detectado_texto"] = data.get("periodo", "")
             data["periodo_aaaamm"] = periodo
             data["cuenta_normalizada"] = re.sub(r"\D", "", liquidacion.cuenta)
             data["clave_origen"] = clave_origen(data)

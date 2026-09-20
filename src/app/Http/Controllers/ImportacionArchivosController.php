@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Exceptions\MigracionExploracionException;
 use App\Services\GeiCoreProcesarPeriodoService;
+use App\Services\LiquidacionesPropietariosService;
 use App\Services\MigracionExploracionService;
 use App\Services\TransformacionCobolService;
 use Illuminate\Http\RedirectResponse;
@@ -68,13 +69,31 @@ class ImportacionArchivosController extends Controller
         ]);
     }
 
+    /**
+     * Endpoint de progreso deliberadamente separado de auth:
+     * sólo lee el JSON local y no necesita consultar PostgreSQL.
+     * La ruta está protegida con firma Laravel.
+     */
+    public function progreso(string $periodo): JsonResponse
+    {
+        $response = $this->respuestaProgreso($periodo);
+
+        $response->headers->set(
+            'Cache-Control',
+            'no-store, no-cache, must-revalidate, max-age=0'
+        );
+        $response->headers->set('Pragma', 'no-cache');
+
+        return $response;
+    }
+
     public function store(Request $request): RedirectResponse|JsonResponse
     {
         $datos = $request->validate([
             'archivos' => ['required', 'array'],
             'archivos.*' => ['file', 'max:131072'],
-            'periodo_mes' => ['nullable', 'required_with:periodo_anio', 'integer', 'between:1,12'],
-            'periodo_anio' => ['nullable', 'required_with:periodo_mes', 'integer', 'between:2000,2100'],
+            'periodo_mes' => ['required', 'integer', 'between:1,12'],
+            'periodo_anio' => ['required', 'integer', 'between:2000,2100'],
         ]);
 
         $this->crearDirectoriosBase();
@@ -85,8 +104,7 @@ class ImportacionArchivosController extends Controller
         $cobol = [];
         $liquidaciones = [];
         $rechazados = [];
-        $periodosDetectados = [];
-        $periodosCobolDetectados = [];
+        $fechasPosteriores = [];
 
         try {
             foreach ($request->file('archivos', []) as $archivo) {
@@ -124,29 +142,23 @@ class ImportacionArchivosController extends Controller
 
                 if ($clasificacion['tipo'] === 'cobol') {
                     $cobol[] = $entrada;
-                    $periodoCobol = $this->detectarPeriodoCobol(
-                        $entrada['ruta'],
-                        $entrada['nombre']
-                    );
 
-                    if ($periodoCobol !== null) {
-                        $periodosCobolDetectados[] = $periodoCobol;
+                    // INQCTACTE puede contener vencimientos posteriores al período.
+                    // Es sólo una advertencia: nunca bloquea la carga.
+                    if ($entrada['nombre'] === 'INQCTACTE.TXT') {
+                        $fechasPosteriores = array_merge(
+                            $fechasPosteriores,
+                            $this->detectarVencimientosPosterioresInqctacte(
+                                $entrada['ruta'],
+                                $periodoManual
+                            )
+                        );
                     }
 
                     continue;
                 }
 
                 $liquidaciones[] = $entrada;
-                $periodoDetectado = $this->detectarPeriodoLiquidacion($entrada['ruta']);
-
-                if ($periodoDetectado !== null) {
-                    $periodosDetectados[$periodoDetectado] = true;
-                }
-            }
-
-            if ($periodosCobolDetectados !== []) {
-                $periodoCobol = max($periodosCobolDetectados);
-                $periodosDetectados[$periodoCobol] = true;
             }
 
             if ($rechazados !== []) {
@@ -159,26 +171,36 @@ class ImportacionArchivosController extends Controller
 
             $periodo = $periodoManual;
 
-            $detectados = array_keys($periodosDetectados);
+            $advertenciaFechas = null;
 
-            if ($periodo === null && count($detectados) === 1) {
-                $periodo = $detectados[0];
-            }
+            if ($fechasPosteriores !== []) {
+                $cantidad = count($fechasPosteriores);
+                $muestra = collect($fechasPosteriores)
+                    ->take(10)
+                    ->map(function (array $item): string {
+                        return sprintf(
+                            'cuenta %s, Nº COBOL %s, línea %d, venc. %s',
+                            $item['cuenta_cobol'],
+                            $item['numero_cobol'],
+                            $item['linea'],
+                            $this->formatearFechaCobol($item['fecha_vencimiento'])
+                        );
+                    })
+                    ->implode('; ');
 
-            if (count($detectados) > 1 && $periodoManual === null) {
-                return $this->respuestaError(
-                    $request,
-                    'archivos',
-                    'Los archivos contienen períodos distintos: '.implode(', ', $detectados)
+                $advertenciaFechas = sprintf(
+                    'Advertencia: INQCTACTE.TXT contiene %d registro(s) con vencimiento posterior a %s. %s%s La importación continuó normalmente.',
+                    $cantidad,
+                    $this->etiquetaPeriodo($periodo),
+                    $muestra,
+                    $cantidad > 10 ? '; y '.($cantidad - 10).' más (ver laravel.log).' : '.'
                 );
-            }
 
-            if ($periodo === null) {
-                return $this->respuestaError(
-                    $request,
-                    'periodo_mes',
-                    'No se pudo detectar un único período. Indicá mes y año para guardar todos los archivos.'
-                );
+                Log::warning('INQCTACTE con vencimientos posteriores al período importado', [
+                    'periodo_seleccionado' => $periodo,
+                    'cantidad' => $cantidad,
+                    'registros' => $fechasPosteriores,
+                ]);
             }
 
             $rutasGuardadas = [];
@@ -213,6 +235,10 @@ class ImportacionArchivosController extends Controller
             $mensaje = 'Período '.$this->etiquetaPeriodo($periodo).': '
                 .count($cobol).' COBOL y '
                 .count($liquidaciones).' de liquidaciones importados y verificados.';
+
+            if ($advertenciaFechas !== null) {
+                $mensaje .= ' '.$advertenciaFechas;
+            }
         } catch (\Throwable $exception) {
             report($exception);
 
@@ -242,7 +268,8 @@ class ImportacionArchivosController extends Controller
         string $periodo,
         MigracionExploracionService $migracion,
         TransformacionCobolService $transformacion,
-        GeiCoreProcesarPeriodoService $geiCore
+        GeiCoreProcesarPeriodoService $geiCore,
+        LiquidacionesPropietariosService $liquidaciones
     ): RedirectResponse|JsonResponse {
         $faltantes = $this->archivosObligatoriosFaltantes($periodo);
 
@@ -261,9 +288,25 @@ class ImportacionArchivosController extends Controller
                 ->withErrors(['migracion' => $mensaje]);
         }
 
+        $this->guardarProgreso($periodo, [
+            'estado' => 'PROCESANDO',
+            'etapa' => 'PREPARANDO',
+            'detalle' => 'Preparando la migración del período.',
+            'porcentaje' => 2,
+            'archivo' => null,
+            'procesados' => null,
+            'total' => null,
+        ]);
+
         try {
             $resultadoCrudo = $migracion->migrar($periodo);
         } catch (MigracionExploracionException $exception) {
+            $this->guardarProgreso($periodo, [
+                'estado' => 'ERROR',
+                'etapa' => 'MIGRACION_CRUDOS',
+                'detalle' => $exception->getMessage(),
+            ]);
+
             if ($request->expectsJson()) {
                 return response()->json([
                     'message' => $exception->getMessage(),
@@ -277,9 +320,25 @@ class ImportacionArchivosController extends Controller
                 ]);
         }
 
+        $this->guardarProgreso($periodo, [
+            'estado' => 'PROCESANDO',
+            'etapa' => 'TABLAS_GEI_WEB',
+            'detalle' => 'Actualizando tablas operativas de GeI-Web.',
+            'porcentaje' => 40,
+            'archivo' => null,
+            'procesados' => null,
+            'total' => null,
+        ]);
+
         try {
             $resultadoTablas = $transformacion->ejecutar($periodo);
         } catch (\Throwable $exception) {
+            $this->guardarProgreso($periodo, [
+                'estado' => 'ERROR',
+                'etapa' => 'TABLAS_GEI_WEB',
+                'detalle' => $exception->getMessage(),
+            ]);
+
             $mensaje = sprintf(
                 'Los archivos crudos del período %s se migraron correctamente, pero falló la actualización de las tablas definitivas: %s. Podés reintentar el mismo período sin duplicar datos.',
                 $this->etiquetaPeriodo($periodo),
@@ -308,11 +367,28 @@ class ImportacionArchivosController extends Controller
         $resultadoCore = null;
         $errorCore = null;
 
+        $this->guardarProgreso($periodo, [
+            'estado' => 'PROCESANDO',
+            'etapa' => 'GEI_CORE',
+            'detalle' => 'Actualizando GeI-Core.',
+            'porcentaje' => 74,
+            'archivo' => null,
+            'procesados' => null,
+            'total' => null,
+        ]);
+
         try {
             $resultadoCore = $geiCore->procesar($periodo);
         } catch (\Throwable $exception) {
             report($exception);
             $errorCore = $exception->getMessage();
+
+            $this->guardarProgreso($periodo, [
+                'estado' => 'PROCESANDO',
+                'etapa' => 'GEI_CORE',
+                'detalle' => 'GeI-Core terminó con advertencia: '.$errorCore,
+                'porcentaje' => 82,
+            ]);
 
             Log::warning('GeI-Core no pudo procesar el período luego de actualizar gei_db.', [
                 'periodo' => $periodo,
@@ -335,6 +411,70 @@ class ImportacionArchivosController extends Controller
             $mensaje .= ' GeI-Core no pudo actualizarse; la actualización operativa de gei_db quedó completada y las liquidaciones no quedan bloqueadas.';
         }
 
+        $this->guardarProgreso($periodo, [
+            'estado' => 'PROCESANDO',
+            'etapa' => 'LIQUIDACIONES_PROPIETARIOS',
+            'detalle' => 'Procesando liquidaciones de propietarios e impuestos garantizados.',
+            'porcentaje' => 84,
+            'archivo' => null,
+            'procesados' => null,
+            'total' => null,
+        ]);
+
+        try {
+            $resultadoLiquidaciones = $liquidaciones->procesar($periodo, null);
+        } catch (\Throwable $exception) {
+            report($exception);
+
+            $this->guardarProgreso($periodo, [
+                'estado' => 'ERROR',
+                'etapa' => 'LIQUIDACIONES_PROPIETARIOS',
+                'detalle' => $exception->getMessage(),
+            ]);
+
+            $mensajeError = sprintf(
+                'La base del período %s quedó migrada y actualizada, pero falló el procesamiento obligatorio de liquidaciones/impuestos: %s',
+                $this->etiquetaPeriodo($periodo),
+                $exception->getMessage()
+            );
+
+            if ($request->expectsJson()) {
+                return response()->json([
+                    'message' => $mensajeError,
+                    'resultado' => [
+                        'crudos' => $resultadoCrudo,
+                        'tablas' => $resultadoTablas,
+                        'gei_core' => $resultadoCore,
+                        'gei_core_error' => $errorCore,
+                        'liquidaciones' => null,
+                    ],
+                ], 422);
+            }
+
+            return redirect()
+                ->route('archivo.importar')
+                ->withErrors(['migracion' => $mensajeError]);
+        }
+
+        $mensaje .= sprintf(
+            ' Liquidaciones: %d insertadas, %d actualizadas, %d omitidas; %d PDF de propietarios y %d PDF de impuestos garantizados.',
+            (int) ($resultadoLiquidaciones['insertadas'] ?? 0),
+            (int) ($resultadoLiquidaciones['actualizadas'] ?? 0),
+            (int) ($resultadoLiquidaciones['omitidas'] ?? 0),
+            (int) ($resultadoLiquidaciones['pdf_generados'] ?? 0),
+            (int) ($resultadoLiquidaciones['pdf_impuestos_garantizados_generados'] ?? 0)
+        );
+
+        $this->guardarProgreso($periodo, [
+            'estado' => 'FINALIZADO',
+            'etapa' => 'COMPLETO',
+            'detalle' => 'Migración y actualización finalizadas.',
+            'porcentaje' => 100,
+            'archivo' => null,
+            'procesados' => null,
+            'total' => null,
+        ]);
+
         if ($request->expectsJson()) {
             return response()->json([
                 'message' => $mensaje,
@@ -344,6 +484,7 @@ class ImportacionArchivosController extends Controller
                     'tablas' => $resultadoTablas,
                     'gei_core' => $resultadoCore,
                     'gei_core_error' => $errorCore,
+                    'liquidaciones' => $resultadoLiquidaciones,
                 ],
             ]);
         }
@@ -351,6 +492,75 @@ class ImportacionArchivosController extends Controller
         return redirect()
             ->route('archivo.importar')
             ->with('estado', $mensaje);
+    }
+
+    private function respuestaProgreso(string $periodo): JsonResponse
+    {
+        if (preg_match('/^(19|20)\d{2}(0[1-9]|1[0-2])$/', $periodo) !== 1) {
+            return response()->json([
+                'estado' => 'ERROR',
+                'detalle' => 'Período inválido.',
+            ], 422);
+        }
+
+        $ruta = $this->rutaProgreso($periodo);
+
+        if (! Storage::exists($ruta)) {
+            return response()->json([
+                'estado' => 'PENDIENTE',
+                'etapa' => 'PREPARANDO',
+                'detalle' => 'Esperando el inicio del proceso.',
+                'porcentaje' => 0,
+                'archivo' => null,
+                'procesados' => null,
+                'total' => null,
+            ]);
+        }
+
+        try {
+            $datos = json_decode(Storage::get($ruta), true, 512, JSON_THROW_ON_ERROR);
+        } catch (\Throwable) {
+            return response()->json([
+                'estado' => 'PROCESANDO',
+                'etapa' => 'PREPARANDO',
+                'detalle' => 'Actualizando información de progreso.',
+                'porcentaje' => null,
+            ]);
+        }
+
+        return response()->json(is_array($datos) ? $datos : []);
+    }
+
+    private function guardarProgreso(string $periodo, array $cambios): void
+    {
+        $ruta = $this->rutaProgreso($periodo);
+        $actual = [];
+
+        if (Storage::exists($ruta)) {
+            try {
+                $leido = json_decode(Storage::get($ruta), true, 512, JSON_THROW_ON_ERROR);
+                if (is_array($leido)) {
+                    $actual = $leido;
+                }
+            } catch (\Throwable) {
+                $actual = [];
+            }
+        }
+
+        $datos = array_merge($actual, $cambios, [
+            'periodo' => $periodo,
+            'actualizado_at' => now()->toIso8601String(),
+        ]);
+
+        Storage::put(
+            $ruta,
+            json_encode($datos, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES).PHP_EOL
+        );
+    }
+
+    private function rutaProgreso(string $periodo): string
+    {
+        return "liquidaciones/periodos/{$periodo}/progreso_migracion.json";
     }
 
     private function crearDirectoriosBase(): void
@@ -660,6 +870,86 @@ class ImportacionArchivosController extends Controller
         ];
     }
 
+    /**
+     * Busca vencimientos posteriores al período seleccionado en INQCTACTE.TXT.
+     * Es sólo informativo: nunca bloquea la importación.
+     *
+     * Layout COBOL:
+     *   0..10  cuenta
+     *  11..18  fecha movimiento
+     *  19..20  código
+     *  21..26  número COBOL
+     *  27..34  fecha vencimiento
+     *
+     * @return list<array{
+     *   linea:int,
+     *   cuenta_cobol:string,
+     *   fecha_movimiento:string,
+     *   codigo:string,
+     *   numero_cobol:string,
+     *   fecha_vencimiento:string,
+     *   periodo_vencimiento:string
+     * }>
+     */
+    private function detectarVencimientosPosterioresInqctacte(
+        string $ruta,
+        string $periodoSeleccionado
+    ): array {
+        $archivo = fopen($ruta, 'rb');
+
+        if ($archivo === false) {
+            return [];
+        }
+
+        $resultado = [];
+        $numeroLinea = 0;
+
+        try {
+            while (($linea = fgets($archivo)) !== false) {
+                $numeroLinea++;
+
+                $cuenta = trim(substr($linea, 0, 11));
+                $fechaMovimiento = substr($linea, 11, 8);
+                $codigo = trim(substr($linea, 19, 2));
+                $numeroCobol = trim(substr($linea, 21, 6));
+                $fechaVencimiento = substr($linea, 27, 8);
+
+                if (! $this->esFechaCobolValida($fechaVencimiento)) {
+                    continue;
+                }
+
+                $periodoVencimiento = substr($fechaVencimiento, 0, 6);
+
+                if ($periodoVencimiento <= $periodoSeleccionado) {
+                    continue;
+                }
+
+                $resultado[] = [
+                    'linea' => $numeroLinea,
+                    'cuenta_cobol' => $cuenta,
+                    'fecha_movimiento' => $fechaMovimiento,
+                    'codigo' => $codigo,
+                    'numero_cobol' => $numeroCobol,
+                    'fecha_vencimiento' => $fechaVencimiento,
+                    'periodo_vencimiento' => $periodoVencimiento,
+                ];
+            }
+        } finally {
+            fclose($archivo);
+        }
+
+        return $resultado;
+    }
+
+    private function formatearFechaCobol(string $fecha): string
+    {
+        if (! $this->esFechaCobolValida($fecha)) {
+            return $fecha;
+        }
+
+        return substr($fecha, 6, 2).'/'.substr($fecha, 4, 2).'/'.substr($fecha, 0, 4);
+    }
+
     private function detectarPeriodoCobol(string $ruta, string $nombre): ?string
     {
         $posicionFecha = match ($nombre) {
@@ -720,54 +1010,54 @@ class ImportacionArchivosController extends Controller
 
     private function detectarPeriodoLiquidacion(string $ruta): ?string
     {
-        $contenido = file_get_contents($ruta, false, null, 0, 524288);
+        $archivo = fopen($ruta, 'rb');
 
-        if ($contenido === false) {
+        if ($archivo === false) {
             return null;
         }
 
         $meses = implode('|', array_keys(self::MESES));
+        $periodoMaximo = null;
 
-        if (! preg_match_all("/\\b({$meses})\\s+(?:DE\\s+)?(20\\d{2})\\b/i", $contenido, $matches, PREG_SET_ORDER)) {
-            return null;
-        }
+        try {
+            while (($linea = fgets($archivo)) !== false) {
+                if (! preg_match_all(
+                    "/\\b({$meses})\\s+(?:DE\\s+)?(20\\d{2})\\b/ui",
+                    $linea,
+                    $matches,
+                    PREG_SET_ORDER
+                )) {
+                    continue;
+                }
 
-        $conteo = [];
+                foreach ($matches as $match) {
+                    $mes = self::MESES[mb_strtoupper($match[1])] ?? null;
 
-        foreach ($matches as $match) {
-            $mes = self::MESES[mb_strtoupper($match[1])] ?? null;
+                    if ($mes === null) {
+                        continue;
+                    }
 
-            if ($mes === null) {
-                continue;
+                    $periodo = $match[2].$mes;
+
+                    if ($periodoMaximo === null || $periodo > $periodoMaximo) {
+                        $periodoMaximo = $periodo;
+                    }
+                }
             }
-
-            $periodo = $match[2].$mes;
-            $conteo[$periodo] = ($conteo[$periodo] ?? 0) + 1;
+        } finally {
+            fclose($archivo);
         }
 
-        if ($conteo === []) {
-            return null;
-        }
-
-        arsort($conteo);
-
-        return array_key_first($conteo);
+        return $periodoMaximo;
     }
 
-    private function periodoManual(array $datos): ?string
+    private function periodoManual(array $datos): string
     {
-        $mes = $datos['periodo_mes'] ?? null;
-        $anio = $datos['periodo_anio'] ?? null;
-
-        if ($mes === null && $anio === null) {
-            return null;
-        }
-
-        if ($mes === null || $anio === null) {
-            return null;
-        }
-
-        return sprintf('%04d%02d', $anio, $mes);
+        return sprintf(
+            '%04d%02d',
+            (int) $datos['periodo_anio'],
+            (int) $datos['periodo_mes']
+        );
     }
 
     private function etiquetaPeriodo(string $periodo): string

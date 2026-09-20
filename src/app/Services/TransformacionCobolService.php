@@ -11,6 +11,7 @@ use Throwable;
 
 final class TransformacionCobolService
 {
+    private const ARCHIVO_PROGRESO = 'progreso_migracion.json';
     private const ARCHIVOS_COBOL = [
         'CTACTEPRO.TXT',
         'INQCTACTE.TXT',
@@ -53,19 +54,52 @@ final class TransformacionCobolService
 
         try {
             $resultado = [];
+
+            $this->guardarProgreso($periodo, 'CLIENTES', 'Actualizando clientes desde PostgreSQL.', 45);
             $resultado['clientes'] = $this->clientes->ejecutar(true);
 
             $etapa = 'INMUEBLES';
             $this->actualizarEtapa($procesoId, $etapa);
+            $this->guardarProgreso($periodo, 'INMUEBLES', 'Actualizando inmuebles desde PostgreSQL.', 52);
             $resultado['inmuebles'] = $this->inmuebles->ejecutar(true);
 
             $etapa = 'CONTRATOS';
             $this->actualizarEtapa($procesoId, $etapa);
+            $this->guardarProgreso($periodo, 'CONTRATOS', 'Actualizando contratos desde PostgreSQL.', 59);
             $resultado['contratos'] = $this->contratos->ejecutar(true);
 
             $etapa = 'CUENTAS_CORRIENTES';
             $this->actualizarEtapa($procesoId, $etapa);
-            $resultado['cuentas_corrientes'] = $this->cuentasCorrientes->ejecutar(true);
+            $this->guardarProgreso($periodo, 'CUENTAS_CORRIENTES', 'Actualizando cuentas corrientes y movimientos.', 66);
+            $resultado['cuentas_corrientes'] = $this->cuentasCorrientes->ejecutar(
+                true,
+                null,
+                function (string $tabla, int $procesados, int $total) use ($periodo): void {
+                    $porcentaje = $total > 0
+                        ? 66 + (int) floor(min(1, $procesados / $total) * 6)
+                        : 66;
+
+                    $this->guardarProgreso(
+                        $periodo,
+                        'CUENTAS_CORRIENTES',
+                        'Procesando '.strtoupper($tabla).'.',
+                        $porcentaje,
+                        'PROCESANDO',
+                        strtoupper($tabla),
+                        $procesados,
+                        $total
+                    );
+                }
+            );
+
+            $movimientos = $resultado['cuentas_corrientes']['movimientos_creados'] ?? null;
+            $actualizados = $resultado['cuentas_corrientes']['movimientos_actualizados'] ?? null;
+            $detalleCuentas = 'Cuentas corrientes actualizadas.';
+            if ($movimientos !== null || $actualizados !== null) {
+                $detalleCuentas .= ' Movimientos creados: '.(int) ($movimientos ?? 0)
+                    .'; actualizados: '.(int) ($actualizados ?? 0).'.';
+            }
+            $this->guardarProgreso($periodo, 'CUENTAS_CORRIENTES', $detalleCuentas, 72);
 
             DB::table('web_procesos_transformacion_cobol')
                 ->where('web_id', $procesoId)
@@ -82,6 +116,8 @@ final class TransformacionCobolService
 
             return $resultado;
         } catch (Throwable $exception) {
+            $this->guardarProgreso($periodo, $etapa, 'Error: '.$exception->getMessage(), 70, 'ERROR');
+
             DB::table('web_procesos_transformacion_cobol')
                 ->where('web_id', $procesoId)
                 ->update([
@@ -200,6 +236,49 @@ final class TransformacionCobolService
                 'web_etapa' => $etapa,
                 'web_updated_at' => now(),
             ]);
+    }
+
+    private function guardarProgreso(
+        string $periodo,
+        string $etapa,
+        string $detalle,
+        int $porcentaje,
+        string $estado = 'PROCESANDO',
+        ?string $archivo = null,
+        ?int $procesados = null,
+        ?int $total = null
+    ): void {
+        $ruta = "liquidaciones/periodos/{$periodo}/".self::ARCHIVO_PROGRESO;
+        $actual = [];
+
+        if (Storage::exists($ruta)) {
+            try {
+                $leido = json_decode(Storage::get($ruta), true, 512, JSON_THROW_ON_ERROR);
+                if (is_array($leido)) {
+                    $actual = $leido;
+                }
+            } catch (\Throwable) {
+                $actual = [];
+            }
+        }
+
+        Storage::put(
+            $ruta,
+            json_encode(
+                array_merge($actual, [
+                    'periodo' => $periodo,
+                    'estado' => $estado,
+                    'etapa' => $etapa,
+                    'detalle' => $detalle,
+                    'porcentaje' => $porcentaje,
+                    'archivo' => $archivo,
+                    'procesados' => $procesados,
+                    'total' => $total,
+                    'actualizado_at' => now()->toIso8601String(),
+                ]),
+                JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+            ).PHP_EOL
+        );
     }
 
     private function validarPeriodo(string $periodo): void

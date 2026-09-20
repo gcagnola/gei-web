@@ -103,18 +103,18 @@ def main() -> None:
         print('No se detectaron detalles DAILOC.', file=sys.stderr)
         raise SystemExit(2)
 
+    # El período solicitado por GeI-Web es autoritativo. Las fechas/períodos
+    # impresos en DAILOC se informan como advertencia, pero no bloquean.
     periodos = {x.periodo_aaaamm for x in detalles if x.periodo_aaaamm}
     if len(periodos) != 1:
-        print(f'Períodos DAILOC inconsistentes: {sorted(periodos)}', file=sys.stderr)
-        raise SystemExit(2)
-
-    periodo = next(iter(periodos))
-    if periodo != args.periodo:
+        print(f'ADVERTENCIA_PERIODO: Períodos DAILOC detectados: {sorted(periodos)}; se usa {args.periodo}.', file=sys.stderr)
+    elif next(iter(periodos)) != args.periodo:
         print(
-            f'El período solicitado ({args.periodo}) no coincide con DAILOC ({periodo}).',
+            f'ADVERTENCIA_PERIODO: DAILOC indica {next(iter(periodos))}; se usa {args.periodo}.',
             file=sys.stderr,
         )
-        raise SystemExit(2)
+
+    periodo = args.periodo
 
     validaciones = _validaciones(detalles)
     pdfdir = args.salida / 'pdf'

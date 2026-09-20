@@ -17,8 +17,8 @@
     @endif
 
     <header class="gei-page-heading">
-        <h1>Importar archivos</h1>
-        <p>Archivos COBOL y liquidaciones conservados juntos en cada período.</p>
+        <h1>Importar y procesar período</h1>
+        <p>Subí los archivos y procesá todo el período desde un único lugar: COBOL, GeI-Web, GeI-Core, liquidaciones e impuestos garantizados.</p>
     </header>
 
     <section class="gei-card p-3 mb-3">
@@ -46,8 +46,8 @@
 
             <div class="col-6 col-lg-2">
                 <label for="periodo_mes" class="form-label fw-semibold mb-1">Mes</label>
-                <select id="periodo_mes" name="periodo_mes" class="form-select">
-                    <option value="">Detectar</option>
+                <select id="periodo_mes" name="periodo_mes" class="form-select" required>
+                    <option value="">Seleccionar mes...</option>
                     @foreach ($meses as $numero => $nombre)
                         <option value="{{ $numero }}" @selected((int) old('periodo_mes') === $numero)>
                             {{ $nombre }}
@@ -64,9 +64,9 @@
                     name="periodo_anio"
                     min="2000"
                     max="2100"
-                    value="{{ old('periodo_anio') }}"
+                    value="{{ old('periodo_anio', now()->year) }}"
                     class="form-control"
-                    placeholder="Ej. {{ now()->year }}"
+                    required
                 >
             </div>
 
@@ -78,8 +78,8 @@
         </form>
 
         <p class="small text-muted mb-0 mt-2">
-            Si no indicás mes y año, el período se detecta desde PLIQLOC.
-            Si elegís un mes manualmente, ingresá también el año.
+            Seleccioná el período al que corresponden los archivos.
+            Antes de importarlos se verificará si contienen registros con fechas posteriores.
         </p>
     </section>
 
@@ -165,85 +165,33 @@
                             data-migration-ui="v7"
                             data-periodo="{{ $periodo['periodo'] }}"
                             data-etiqueta="{{ $periodo['etiqueta'] }}"
-                            onsubmit="
-                                if (this.dataset.enviando === '1') {
-                                    return false;
-                                }
-
-                                this.dataset.enviando = '1';
-
-                                const overlay = document.getElementById('migrationProgressOverlay');
-                                const periodo = overlay
-                                    ? overlay.querySelector('[data-migration-period]')
-                                    : null;
-                                const elapsed = overlay
-                                    ? overlay.querySelector('[data-migration-elapsed]')
-                                    : null;
-                                const submit = this.querySelector('[data-migration-submit]');
-                                const startedAt = Date.now();
-                                const form = this;
-
-                                if (periodo) {
-                                    periodo.textContent = 'Período: ' + (this.dataset.etiqueta || this.dataset.periodo || '');
-                                }
-
-                                if (elapsed) {
-                                    elapsed.textContent = '0 s';
-                                }
-
-                                if (submit) {
-                                    submit.disabled = true;
-                                    submit.textContent = 'Procesando...';
-                                }
-
-                                if (overlay) {
-                                    overlay.classList.add('gei-visible');
-                                    overlay.style.display = 'flex';
-                                }
-
-                                document.body.style.overflow = 'hidden';
-
-                                window.geiMigrationElapsedTimer = window.setInterval(function () {
-                                    if (elapsed) {
-                                        elapsed.textContent = Math.floor((Date.now() - startedAt) / 1000) + ' s';
-                                    }
-                                }, 1000);
-
-                                window.setTimeout(function () {
-                                    HTMLFormElement.prototype.submit.call(form);
-                                }, 150);
-
-                                return false;
-                            "
+                            data-progress-url="{{ \Illuminate\Support\Facades\URL::signedRoute('archivo.importar.progreso', ['periodo' => $periodo['periodo']]) }}"
+                            onsubmit="return window.geiIniciarMigracion(this);"
                         >
                             @csrf
                             <button
                                 type="submit"
                                 class="btn btn-sm gei-button gei-button--primary"
                                 data-migration-submit
-                                @disabled(! $estadoMigracion['disponible'])
+@disabled(
+                                    ! $estadoMigracion['disponible']
+                                    || (($estadoTablas['estado'] ?? null) === 'PROCESANDO')
+                                )
                                 title="{{ $estadoMigracion['disponible']
                                     ? $estadoMigracion['mensaje']
                                     : 'El período debe tener los 11 archivos obligatorios para poder migrarse.' }}"
                             >
                                 @if ($estadoMigracion['estado'] === 'OK' && $estadoTablas['estado'] === 'OK')
-                                    Procesar nuevamente
+                                    Procesar nuevamente todo
+                                @elseif (($estadoMigracion['estado'] ?? null) === 'MODIFICADO' || ($estadoTablas['estado'] ?? null) === 'MODIFICADO')
+                                    Procesar nuevamente todo
                                 @elseif ($estadoMigracion['estado'] === 'ERROR' || $estadoTablas['estado'] === 'ERROR')
                                     Reintentar
                                 @else
-                                    Migrar y actualizar tablas
+                                    Procesar período completo
                                 @endif
                             </button>
                         </form>
-
-                        @if (($estadoMigracion['estado'] ?? null) === 'OK')
-                            <a
-                                href="{{ route('archivo.importar.actualizar-gei', $periodo['periodo']) }}"
-                                class="btn btn-sm btn-outline-success"
-                            >
-                                Actualizar GeI-Web
-                            </a>
-                        @endif
 
                     </div>
                 </div>
@@ -410,6 +358,14 @@
             background: var(--gei-primary, #962aa8);
             animation: gei-migration-progress 1.35s ease-in-out infinite;
         }
+
+        .gei-migration-status {
+            min-height: 66px;
+            padding: 12px 14px;
+            border: 1px solid var(--gei-border);
+            border-radius: 10px;
+            background: #f8f9fa;
+        }
     </style>
 
     <div
@@ -422,21 +378,35 @@
         <div class="gei-migration-panel">
             <div class="d-flex align-items-center gap-3">
                 <div class="spinner-border text-primary" role="status" aria-hidden="true"></div>
-                <div>
+                <div class="flex-grow-1">
                     <h2 class="h5 mb-1" id="migrationProgressTitle">Migrando y actualizando PostgreSQL</h2>
-                    <p class="mb-0 text-muted" data-migration-period>
-                        Preparando el período...
-                    </p>
+                    <p class="mb-0 text-muted" data-migration-period>Preparando el período...</p>
+                </div>
+                <strong class="text-nowrap small" data-migration-elapsed>0 s</strong>
+            </div>
+
+            <div class="mt-4">
+                <div class="d-flex justify-content-between gap-3 mb-1">
+                    <strong data-migration-stage>Preparando...</strong>
+                    <span class="text-muted small" data-migration-percent>0%</span>
+                </div>
+                <div class="progress" role="progressbar" aria-label="Progreso de migración">
+                    <div
+                        class="progress-bar progress-bar-striped progress-bar-animated"
+                        style="width: 2%"
+                        data-migration-real-bar
+                    ></div>
                 </div>
             </div>
 
-            <div class="gei-migration-track" aria-label="Migración en curso">
-                <div class="gei-migration-bar"></div>
+            <div class="gei-migration-status mt-3">
+                <div data-migration-detail>Preparando la migración...</div>
+                <div class="small text-muted mt-2" data-migration-file style="display:none;"></div>
+                <div class="small text-muted" data-migration-records style="display:none;"></div>
             </div>
 
-            <div class="d-flex justify-content-between gap-3 small text-muted mt-3">
-                <span>Cargando datos crudos y actualizando clientes, inmuebles, contratos y cuentas corrientes. No cierres esta ventana.</span>
-                <strong class="text-nowrap" data-migration-elapsed>0 s</strong>
+            <div class="small text-muted mt-3">
+                Se ejecuta todo el período automáticamente. Los conflictos de clientes/inmuebles quedan para revisión posterior y no requieren intervención en este paso.
             </div>
         </div>
     </div>
@@ -498,4 +468,250 @@
             }
         }
     </style>
+@endpush
+
+
+@push('scripts')
+<script>
+    window.geiIniciarMigracion = function (form) {
+        if (form.dataset.enviando === '1') {
+            return false;
+        }
+
+        form.dataset.enviando = '1';
+
+        const overlay = document.getElementById('migrationProgressOverlay');
+        const submit = form.querySelector('[data-migration-submit]');
+        const periodo = form.dataset.periodo || '';
+        const etiqueta = form.dataset.etiqueta || periodo;
+        const startedAt = Date.now();
+
+        const elPeriodo = overlay?.querySelector('[data-migration-period]');
+        const elElapsed = overlay?.querySelector('[data-migration-elapsed]');
+        const elStage = overlay?.querySelector('[data-migration-stage]');
+        const elDetail = overlay?.querySelector('[data-migration-detail]');
+        const elFile = overlay?.querySelector('[data-migration-file]');
+        const elRecords = overlay?.querySelector('[data-migration-records]');
+        const elPercent = overlay?.querySelector('[data-migration-percent]');
+        const elBar = overlay?.querySelector('[data-migration-real-bar]');
+
+        if (elPeriodo) elPeriodo.textContent = 'Período: ' + etiqueta;
+        if (elElapsed) elElapsed.textContent = '0 s';
+        if (elStage) elStage.textContent = 'Preparando...';
+        if (elDetail) elDetail.textContent = 'Iniciando proceso...';
+        if (elPercent) elPercent.textContent = '0%';
+        if (elBar) elBar.style.width = '2%';
+
+        if (submit) {
+            submit.disabled = true;
+            submit.textContent = 'Procesando...';
+        }
+
+        if (overlay) {
+            overlay.classList.add('gei-visible');
+            overlay.style.display = 'flex';
+        }
+
+        document.body.style.overflow = 'hidden';
+
+        const etiquetasEtapa = {
+            PREPARANDO: 'Preparando',
+            MIGRACION_CRUDOS: 'Migrando archivos a PostgreSQL',
+            TABLAS_GEI_WEB: 'Actualizando GeI-Web',
+            CLIENTES: 'Actualizando clientes',
+            INMUEBLES: 'Actualizando inmuebles',
+            CONTRATOS: 'Actualizando contratos',
+            CUENTAS_CORRIENTES: 'Actualizando cuentas corrientes',
+            GEI_CORE: 'Actualizando GeI-Core',
+            GEI_CORE_PREPARAR: 'Preparando GeI-Core',
+            GEI_CORE_LIMPIAR: 'Preparando período en GeI-Core',
+            GEI_CORE_PERSONAS_FUENTE: 'Leyendo personas desde PostgreSQL',
+            GEI_CORE_PERSONAS: 'Procesando personas',
+            GEI_CORE_CONTRATOS: 'Procesando inmuebles y contratos',
+            GEI_CORE_CUENTAS: 'Procesando cuentas corrientes',
+            GEI_CORE_CONFLICTOS: 'Generando controles',
+            GEI_CORE_COMPLETO: 'GeI-Core completado',
+            LIQUIDACIONES_PROPIETARIOS: 'Liquidaciones e impuestos',
+            VALIDAR_DAILOC: 'Validando impuestos garantizados',
+            LIQUIDACIONES_IMPORTAR: 'Importando liquidaciones',
+            LIQUIDACIONES_REPARTOS: 'Sincronizando repartos',
+            LIQUIDACIONES_PDF: 'Generando PDF de propietarios',
+            IMPUESTOS_GARANTIZADOS: 'Generando impuestos garantizados',
+            LIQUIDACIONES_COMPLETO: 'Liquidaciones completadas',
+            COMPLETO: 'Finalizado'
+        };
+
+        const actualizarPantalla = function (datos) {
+            if (!datos || typeof datos !== 'object') return;
+
+            const etapa = datos.etapa || 'PROCESANDO';
+            const porcentaje = Number.isFinite(Number(datos.porcentaje))
+                ? Math.max(0, Math.min(100, Number(datos.porcentaje)))
+                : null;
+
+            if (elStage) {
+                elStage.textContent = etiquetasEtapa[etapa] || etapa.replaceAll('_', ' ');
+            }
+
+            if (elDetail && datos.detalle) {
+                elDetail.textContent = datos.detalle;
+            }
+
+            if (porcentaje !== null) {
+                if (elPercent) elPercent.textContent = Math.round(porcentaje) + '%';
+                if (elBar) elBar.style.width = Math.max(2, porcentaje) + '%';
+            }
+
+            if (elFile) {
+                if (datos.archivo) {
+                    elFile.textContent = 'Archivo: ' + datos.archivo;
+                    elFile.style.display = '';
+                } else {
+                    elFile.style.display = 'none';
+                }
+            }
+
+            if (elRecords) {
+                if (datos.procesados !== null && datos.procesados !== undefined &&
+                    datos.total !== null && datos.total !== undefined) {
+                    elRecords.textContent =
+                        'Registros: ' + Number(datos.procesados).toLocaleString('es-AR') +
+                        ' / ' + Number(datos.total).toLocaleString('es-AR');
+                    elRecords.style.display = '';
+                } else if (datos.total !== null && datos.total !== undefined) {
+                    elRecords.textContent =
+                        'Registros fuente: ' + Number(datos.total).toLocaleString('es-AR');
+                    elRecords.style.display = '';
+                } else {
+                    elRecords.style.display = 'none';
+                }
+            }
+        };
+
+        const elapsedTimer = window.setInterval(function () {
+            if (elElapsed) {
+                elElapsed.textContent = Math.floor((Date.now() - startedAt) / 1000) + ' s';
+            }
+        }, 1000);
+
+        let pollingActivo = true;
+        let procesoTerminado = false;
+
+        const consultarProgreso = async function () {
+            while (pollingActivo) {
+                try {
+                    const progressUrl = form.dataset.progressUrl;
+
+                    if (!progressUrl) {
+                        throw new Error('No está configurada la URL de progreso.');
+                    }
+
+                    const respuesta = await fetch(progressUrl, {
+                        headers: {
+                            'Accept': 'application/json',
+                            'X-Requested-With': 'XMLHttpRequest'
+                        },
+                        cache: 'no-store'
+                    });
+
+                    if (respuesta.ok) {
+                        const progreso = await respuesta.json();
+
+                        // El POST principal puede haber terminado mientras este GET
+                        // estaba en vuelo. No permitir que una respuesta vieja tape
+                        // el mensaje final (especialmente un error).
+                        if (!pollingActivo || procesoTerminado) {
+                            break;
+                        }
+
+                        if ((progreso.estado || '').toUpperCase() === 'ERROR') {
+                            procesoTerminado = true;
+                            pollingActivo = false;
+                            window.clearInterval(elapsedTimer);
+
+                            if (elStage) elStage.textContent = 'Error';
+                            if (elDetail) {
+                                elDetail.textContent = progreso.detalle || 'El proceso terminó con error.';
+                                elDetail.style.whiteSpace = 'pre-wrap';
+                            }
+                            if (elPercent) elPercent.textContent = 'Error';
+                            if (elBar) {
+                                elBar.classList.remove('progress-bar-animated');
+                                elBar.style.width = '100%';
+                            }
+                            if (submit) {
+                                submit.disabled = false;
+                                submit.textContent = 'Reintentar';
+                            }
+                            form.dataset.enviando = '0';
+                            break;
+                        }
+
+                        actualizarPantalla(progreso);
+                    }
+                } catch (_) {
+                    // El POST principal sigue siendo la fuente de verdad.
+                }
+
+                await new Promise(resolve => window.setTimeout(resolve, 1200));
+            }
+        };
+
+        consultarProgreso();
+
+        fetch(form.action, {
+            method: 'POST',
+            body: new FormData(form),
+            headers: {
+                'Accept': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        })
+        .then(async response => {
+            const datos = await response.json().catch(() => ({}));
+
+            if (!response.ok) {
+                throw new Error(datos.message || 'No se pudo completar la migración.');
+            }
+
+            procesoTerminado = true;
+            pollingActivo = false;
+            window.clearInterval(elapsedTimer);
+            actualizarPantalla({
+                etapa: 'COMPLETO',
+                detalle: datos.message || 'Proceso finalizado.',
+                porcentaje: 100
+            });
+
+            window.setTimeout(function () {
+                window.location.href = datos.redirect || window.location.pathname;
+            }, 900);
+        })
+        .catch(error => {
+            procesoTerminado = true;
+            pollingActivo = false;
+            window.clearInterval(elapsedTimer);
+
+            if (elStage) elStage.textContent = 'Error';
+            if (elDetail) {
+                elDetail.textContent = error.message;
+                elDetail.style.whiteSpace = 'pre-wrap';
+            }
+            if (elPercent) elPercent.textContent = 'Error';
+            if (elBar) {
+                elBar.classList.remove('progress-bar-animated');
+                elBar.style.width = '100%';
+            }
+
+            if (submit) {
+                submit.disabled = false;
+                submit.textContent = 'Reintentar';
+            }
+
+            form.dataset.enviando = '0';
+        });
+
+        return false;
+    };
+</script>
 @endpush

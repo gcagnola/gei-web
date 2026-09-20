@@ -22,6 +22,7 @@ class MigracionExploracionService
     ];
 
     private const ARCHIVO_ESTADO = 'migracion_gei_exploracion.json';
+    private const ARCHIVO_PROGRESO = 'progreso_migracion.json';
 
     public function estado(string $periodo): array
     {
@@ -130,6 +131,20 @@ class MigracionExploracionService
             );
         }
 
+        $lineasPorArchivo = $this->contarLineasFuentes($periodo);
+        $totalLineas = array_sum($lineasPorArchivo);
+
+        $this->guardarProgreso($periodo, [
+            'estado' => 'PROCESANDO',
+            'etapa' => 'MIGRACION_CRUDOS',
+            'detalle' => 'Migrando archivos fuente a PostgreSQL de exploración.',
+            'porcentaje' => 8,
+            'archivo' => null,
+            'procesados' => 0,
+            'total' => $totalLineas,
+            'lineas_por_archivo' => $lineasPorArchivo,
+        ]);
+
         $command = ['/bin/bash', $script, $directorio];
         $process = new Process(
             $command,
@@ -147,10 +162,48 @@ class MigracionExploracionService
         );
 
         try {
-            $process->run();
+            $ultimoDetalle = null;
+            $process->run(function (string $type, string $buffer) use ($periodo, $totalLineas, &$ultimoDetalle): void {
+                $lineas = array_values(array_filter(array_map('trim', preg_split('/\R/', $buffer) ?: [])));
+
+                if ($lineas === []) {
+                    return;
+                }
+
+                $detalle = end($lineas);
+
+                if (! is_string($detalle) || $detalle === '' || $detalle === $ultimoDetalle) {
+                    return;
+                }
+
+                $ultimoDetalle = $detalle;
+                $archivo = null;
+
+                foreach (self::ARCHIVOS as $rutaArchivo) {
+                    $nombre = basename($rutaArchivo);
+                    if (stripos($detalle, $nombre) !== false) {
+                        $archivo = $nombre;
+                        break;
+                    }
+                }
+
+                $this->guardarProgreso($periodo, [
+                    'estado' => 'PROCESANDO',
+                    'etapa' => 'MIGRACION_CRUDOS',
+                    'detalle' => mb_substr($detalle, 0, 500),
+                    'archivo' => $archivo,
+                    'total' => $totalLineas,
+                    'porcentaje' => 20,
+                ]);
+            });
         } catch (ProcessTimedOutException $exception) {
             $mensaje = "La migración superó el tiempo máximo de {$timeout} segundos.";
             $this->guardarEstado($periodo, $hash, 'ERROR', $mensaje);
+            $this->guardarProgreso($periodo, [
+                'estado' => 'ERROR',
+                'etapa' => 'MIGRACION_CRUDOS',
+                'detalle' => $mensaje,
+            ]);
 
             throw new MigracionExploracionException(
                 $mensaje,
@@ -173,6 +226,11 @@ class MigracionExploracionService
         if (! $process->isSuccessful()) {
             $mensaje = $this->mensajeError($stderr);
             $this->guardarEstado($periodo, $hash, 'ERROR', $mensaje);
+            $this->guardarProgreso($periodo, [
+                'estado' => 'ERROR',
+                'etapa' => 'MIGRACION_CRUDOS',
+                'detalle' => $mensaje,
+            ]);
 
             throw new MigracionExploracionException(
                 $mensaje,
@@ -190,6 +248,15 @@ class MigracionExploracionService
         );
 
         $this->guardarEstado($periodo, $hash, 'OK', $mensaje, $resultado);
+        $this->guardarProgreso($periodo, [
+            'estado' => 'PROCESANDO',
+            'etapa' => 'MIGRACION_CRUDOS',
+            'detalle' => $mensaje,
+            'archivo' => null,
+            'procesados' => (int) ($resultado['registros_cargados'] ?? 0),
+            'total' => $totalLineas,
+            'porcentaje' => 35,
+        ]);
 
         return $resultado;
     }
@@ -278,6 +345,58 @@ class MigracionExploracionService
                 'resultado' => $resultado,
                 'fecha' => now()->toIso8601String(),
             ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR).PHP_EOL
+        );
+    }
+
+    private function contarLineasFuentes(string $periodo): array
+    {
+        $base = "liquidaciones/periodos/{$periodo}";
+        $resultado = [];
+
+        foreach (self::ARCHIVOS as $archivo) {
+            $ruta = Storage::path("{$base}/{$archivo}");
+            $nombre = basename($archivo);
+            $cantidad = 0;
+            $fh = @fopen($ruta, 'rb');
+
+            if ($fh !== false) {
+                while (fgets($fh) !== false) {
+                    $cantidad++;
+                }
+                fclose($fh);
+            }
+
+            $resultado[$nombre] = $cantidad;
+        }
+
+        return $resultado;
+    }
+
+    private function guardarProgreso(string $periodo, array $cambios): void
+    {
+        $ruta = "liquidaciones/periodos/{$periodo}/".self::ARCHIVO_PROGRESO;
+        $actual = [];
+
+        if (Storage::exists($ruta)) {
+            try {
+                $leido = json_decode(Storage::get($ruta), true, 512, JSON_THROW_ON_ERROR);
+                if (is_array($leido)) {
+                    $actual = $leido;
+                }
+            } catch (\Throwable) {
+                $actual = [];
+            }
+        }
+
+        Storage::put(
+            $ruta,
+            json_encode(
+                array_merge($actual, $cambios, [
+                    'periodo' => $periodo,
+                    'actualizado_at' => now()->toIso8601String(),
+                ]),
+                JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+            ).PHP_EOL
         );
     }
 

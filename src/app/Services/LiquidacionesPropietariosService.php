@@ -15,6 +15,7 @@ use Throwable;
 
 final class LiquidacionesPropietariosService
 {
+    private const ARCHIVO_PROGRESO = 'progreso_migracion.json';
     private const ARCHIVOS = [
         'liquida.sf.txt',
         'liquidb.sf.txt',
@@ -229,8 +230,14 @@ final class LiquidacionesPropietariosService
         ]);
 
         try {
-            // Validar DAILOC antes de tocar liquidaciones o repartos. Si los
-            // totales no cierran, el proceso se detiene sin comenzar a aplicar.
+            $this->guardarProgreso(
+                $periodo,
+                'VALIDAR_DAILOC',
+                'Validando DAILOC antes de generar liquidaciones.',
+                85
+            );
+
+            // Validar DAILOC antes de tocar liquidaciones o repartos.
             $analisisImpuestos = app(ImpuestosGarantizadosPdfService::class)
                 ->analizar($periodo);
             if (! ($analisisImpuestos['validacion_ok'] ?? false)) {
@@ -241,10 +248,39 @@ final class LiquidacionesPropietariosService
                 ));
             }
 
+            $this->guardarProgreso(
+                $periodo,
+                'LIQUIDACIONES_IMPORTAR',
+                'Importando liquidaciones de propietarios.',
+                88
+            );
             $resultadoImportacion = $this->importar($periodo, $directorio, $numeroInicial, $timeout);
+
+            $this->guardarProgreso(
+                $periodo,
+                'LIQUIDACIONES_REPARTOS',
+                'Sincronizando repartos de propietarios.',
+                91,
+                (int) ($resultadoImportacion['detectadas'] ?? 0)
+            );
             $resultadoRepartos = app(SincronizacionRepartosPropietariosService::class)
                 ->sincronizar($periodo, true);
+
+            $this->guardarProgreso(
+                $periodo,
+                'LIQUIDACIONES_PDF',
+                'Generando PDF de liquidaciones de propietarios.',
+                94,
+                (int) DB::table('liquidaciones_propietarios')->where('periodo', $periodo)->count()
+            );
             $resultadoPdf = $this->generarPdf($periodo, $timeout);
+
+            $this->guardarProgreso(
+                $periodo,
+                'IMPUESTOS_GARANTIZADOS',
+                'Generando detalle y PDF de impuestos garantizados.',
+                97
+            );
             $resultadoImpuestos = app(ImpuestosGarantizadosPdfService::class)
                 ->generar($periodo);
 
@@ -281,6 +317,15 @@ final class LiquidacionesPropietariosService
 
             return $resultado;
         } catch (Throwable $error) {
+            $this->guardarProgreso(
+                $periodo,
+                'LIQUIDACIONES_ERROR',
+                'Error en liquidaciones/impuestos: '.$error->getMessage(),
+                99,
+                null,
+                'ERROR'
+            );
+
             DB::table('liquidaciones_propietarios_procesos')
                 ->where('id', $procesoId)
                 ->update([
@@ -294,6 +339,47 @@ final class LiquidacionesPropietariosService
         } finally {
             $lock->release();
         }
+    }
+
+    private function guardarProgreso(
+        string $periodo,
+        string $etapa,
+        string $detalle,
+        int $porcentaje,
+        ?int $total = null,
+        string $estado = 'PROCESANDO'
+    ): void {
+        $ruta = "liquidaciones/periodos/{$periodo}/".self::ARCHIVO_PROGRESO;
+        $actual = [];
+
+        if (Storage::exists($ruta)) {
+            try {
+                $leido = json_decode(Storage::get($ruta), true, 512, JSON_THROW_ON_ERROR);
+                if (is_array($leido)) {
+                    $actual = $leido;
+                }
+            } catch (Throwable) {
+                $actual = [];
+            }
+        }
+
+        Storage::put(
+            $ruta,
+            json_encode(
+                array_merge($actual, [
+                    'periodo' => $periodo,
+                    'estado' => $estado,
+                    'etapa' => $etapa,
+                    'detalle' => $detalle,
+                    'porcentaje' => $porcentaje,
+                    'archivo' => null,
+                    'procesados' => null,
+                    'total' => $total,
+                    'actualizado_at' => now()->toIso8601String(),
+                ]),
+                JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+            ).PHP_EOL
+        );
     }
 
     /** @return array<string, int> */

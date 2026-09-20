@@ -4,10 +4,12 @@ namespace App\Services;
 
 use Illuminate\Database\Connection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use RuntimeException;
 
 final class GeiCoreProcesarPeriodoService
 {
+    private const ARCHIVO_PROGRESO = 'progreso_migracion.json';
     private const CORE = 'gei_core';
     private const ROL_PROPIETARIO = 'PROPIETARIO';
     private const ROL_INQUILINO = 'INQUILINO';
@@ -15,6 +17,8 @@ final class GeiCoreProcesarPeriodoService
     public function procesar(string $periodo): array
     {
         $this->validarPeriodo($periodo);
+
+        $this->guardarProgreso($periodo, 'GEI_CORE_PREPARAR', 'Preparando estructuras de GeI-Core.', 74);
 
         $db = $this->conexionExploracion();
         $this->inicializarEstructura($db);
@@ -50,8 +54,10 @@ final class GeiCoreProcesarPeriodoService
                 $archivoInquilino,
                 $fechaLiquidacion
             ): array {
+                $this->guardarProgreso($periodo, 'GEI_CORE_LIMPIAR', 'Limpiando la foto anterior del período.', 75);
                 $this->limpiarPeriodo($db, $periodo);
 
+                $this->guardarProgreso($periodo, 'GEI_CORE_PERSONAS_FUENTE', 'Preparando propietarios e inquilinos desde PostgreSQL.', 76);
                 $this->crearTemporalPersonas(
                     $db,
                     $schema,
@@ -61,7 +67,37 @@ final class GeiCoreProcesarPeriodoService
                     $fechaLiquidacion
                 );
 
+                $totalPersonasFuente = (int) ($db->selectOne('select count(*) as total from tmp_gei_personas_fuente')->total ?? 0);
+                $this->guardarProgreso(
+                    $periodo,
+                    'GEI_CORE_PERSONAS',
+                    'Procesando personas y cuentas COBOL.',
+                    83,
+                    0,
+                    $totalPersonasFuente
+                );
                 $personas = $this->procesarPersonas($db, $periodo);
+                $this->guardarProgreso(
+                    $periodo,
+                    'GEI_CORE_PERSONAS',
+                    'Personas procesadas.',
+                    86,
+                    $totalPersonasFuente,
+                    $totalPersonasFuente
+                );
+
+                $totalContratosFuente = (int) ($db->selectOne(
+                    "select count(*) as total from {$schema}.inquilino where archivo_id = ?",
+                    [$archivoInquilino]
+                )->total ?? 0);
+                $this->guardarProgreso(
+                    $periodo,
+                    'GEI_CORE_CONTRATOS',
+                    'Procesando inmuebles y contratos.',
+                    88,
+                    0,
+                    $totalContratosFuente
+                );
                 $modelo = $this->procesarContratosEInmuebles(
                     $db,
                     $schema,
@@ -69,12 +105,30 @@ final class GeiCoreProcesarPeriodoService
                     $archivoInquilino
                 );
 
+                $this->guardarProgreso(
+                    $periodo,
+                    'GEI_CORE_CONTRATOS',
+                    'Inmuebles y contratos procesados.',
+                    91,
+                    $totalContratosFuente,
+                    $totalContratosFuente
+                );
+
+                $this->guardarProgreso(
+                    $periodo,
+                    'GEI_CORE_CUENTAS',
+                    'Preparando cuentas corrientes y movimientos.',
+                    78,
+                    0,
+                    null
+                );
                 $cuentasCorrientes = $this->procesarCuentasCorrientes(
                     $db,
                     $schema,
                     $periodo
                 );
 
+                $this->guardarProgreso($periodo, 'GEI_CORE_CONFLICTOS', 'Generando controles y conflictos básicos.', 82);
                 $this->generarConflictosBasicos($db, $periodo);
 
                 $conflictos = (int) ($db->selectOne(
@@ -99,6 +153,8 @@ final class GeiCoreProcesarPeriodoService
                     [$estado, $periodo]
                 );
 
+                $this->guardarProgreso($periodo, 'GEI_CORE_COMPLETO', 'GeI-Core actualizado.', 83);
+
                 return [
                     'periodo' => $periodo,
                     'estado' => $estado,
@@ -116,6 +172,8 @@ final class GeiCoreProcesarPeriodoService
 
             return $resultado;
         } catch (\Throwable $e) {
+            $this->guardarProgreso($periodo, 'GEI_CORE_ERROR', 'Error en GeI-Core: '.$e->getMessage(), 83, null, null, 'ERROR');
+
             $db->update(
                 "update gei_core.periodos
                     set estado = 'ERROR',
@@ -1098,157 +1156,60 @@ final class GeiCoreProcesarPeriodoService
                 updated_at = now()
         SQL, [$periodo, $periodo, $archivoInq]);
 
-        // CTACTEPRO: clave COBOL = cuenta + fecha + codigo + numero.
-        // No se duplica el movimiento al aparecer nuevamente en snapshots futuros:
-        // primer_periodo/ultimo_periodo registran su presencia histórica.
-        $db->statement(<<<SQL
-            insert into gei_core.cuentas_corrientes_movimientos (
-                cuenta_corriente_id,
-                primer_periodo,
-                ultimo_periodo,
-                periodo_origen,
-                fecha_original,
-                codigo,
-                numero,
-                fecha_vencimiento_original,
-                importe,
-                importe_penal,
-                importe_abonado,
-                descripcion,
-                cuenta_inquilino_relacionada,
-                liquidado,
-                iva,
-                no_iva,
-                archivo_id,
-                registro_origen_id,
-                numero_linea,
-                sha256_registro,
-                created_at,
-                updated_at
-            )
-            select
-                cc.id,
-                ?,
-                ?,
-                ?,
-                btrim(c.fecha::text),
-                btrim(c.codigo::text),
-                btrim(c.numero::text),
-                null,
-                {$this->sqlNumero('c.importe')},
-                null,
-                null,
-                nullif(btrim(c.descripcion::text), ''),
-                nullif(btrim(c.inquilino::text), ''),
-                nullif(btrim(c.liquidado::text), ''),
-                {$this->sqlNumero('c.iva')},
-                {$this->sqlNumero('c.no_iva')},
-                c.archivo_id,
-                c.id,
-                c.numero_linea,
-                c.sha256_registro,
-                now(),
-                now()
-            from {$schema}.ctactepro c
-            join gei_core.cuentas_corrientes cc
-              on cc.tipo = 'PROPIETARIO'
-             and cc.cuenta_cobol = btrim(c.cuenta::text)
-            where c.archivo_id = ?
-              and nullif(btrim(c.fecha::text), '') is not null
-              and nullif(btrim(c.codigo::text), '') is not null
-              and nullif(btrim(c.numero::text), '') is not null
-            on conflict (cuenta_corriente_id, fecha_original, codigo, numero)
-            do update set
-                ultimo_periodo = greatest(gei_core.cuentas_corrientes_movimientos.ultimo_periodo, excluded.ultimo_periodo),
-                periodo_origen = excluded.periodo_origen,
-                importe = excluded.importe,
-                descripcion = excluded.descripcion,
-                cuenta_inquilino_relacionada = excluded.cuenta_inquilino_relacionada,
-                liquidado = excluded.liquidado,
-                iva = excluded.iva,
-                no_iva = excluded.no_iva,
-                archivo_id = excluded.archivo_id,
-                registro_origen_id = excluded.registro_origen_id,
-                numero_linea = excluded.numero_linea,
-                sha256_registro = excluded.sha256_registro,
-                updated_at = now()
-        SQL, [$periodo, $periodo, $periodo, $archivoProp]);
+        // Los movimientos se procesan por lotes para que el progreso sea real y visible.
+        $propMov = $this->totalMovimientosValidos($db, $schema, 'ctactepro', $archivoProp);
+        $inqMov = $this->totalMovimientosValidos($db, $schema, 'inqctacte', $archivoInq);
+        $totalMov = $propMov + $inqMov;
+        $procesados = 0;
 
-        // INQCTACTE.
-        $db->statement(<<<SQL
-            insert into gei_core.cuentas_corrientes_movimientos (
-                cuenta_corriente_id,
-                primer_periodo,
-                ultimo_periodo,
-                periodo_origen,
-                fecha_original,
-                codigo,
-                numero,
-                fecha_vencimiento_original,
-                importe,
-                importe_penal,
-                importe_abonado,
-                descripcion,
-                cuenta_inquilino_relacionada,
-                liquidado,
-                iva,
-                no_iva,
-                archivo_id,
-                registro_origen_id,
-                numero_linea,
-                sha256_registro,
-                created_at,
-                updated_at
-            )
-            select
-                cc.id,
-                ?,
-                ?,
-                ?,
-                btrim(c.fecha::text),
-                btrim(c.codigo::text),
-                btrim(c.numero::text),
-                nullif(btrim(c.fecha_vencimiento::text), ''),
-                {$this->sqlNumero('c.importe')},
-                {$this->sqlNumero('c.importe_penalidad')},
-                {$this->sqlNumero('c.importe_abonado')},
-                nullif(btrim(c.descripcion::text), ''),
-                null,
-                nullif(btrim(c.liquidado::text), ''),
-                {$this->sqlNumero('c.iva')},
-                {$this->sqlNumero('c.no_iva')},
-                c.archivo_id,
-                c.id,
-                c.numero_linea,
-                c.sha256_registro,
-                now(),
-                now()
-            from {$schema}.inqctacte c
-            join gei_core.cuentas_corrientes cc
-              on cc.tipo = 'INQUILINO'
-             and cc.cuenta_cobol = btrim(c.cuenta::text)
-            where c.archivo_id = ?
-              and nullif(btrim(c.fecha::text), '') is not null
-              and nullif(btrim(c.codigo::text), '') is not null
-              and nullif(btrim(c.numero::text), '') is not null
-            on conflict (cuenta_corriente_id, fecha_original, codigo, numero)
-            do update set
-                ultimo_periodo = greatest(gei_core.cuentas_corrientes_movimientos.ultimo_periodo, excluded.ultimo_periodo),
-                periodo_origen = excluded.periodo_origen,
-                fecha_vencimiento_original = excluded.fecha_vencimiento_original,
-                importe = excluded.importe,
-                importe_penal = excluded.importe_penal,
-                importe_abonado = excluded.importe_abonado,
-                descripcion = excluded.descripcion,
-                liquidado = excluded.liquidado,
-                iva = excluded.iva,
-                no_iva = excluded.no_iva,
-                archivo_id = excluded.archivo_id,
-                registro_origen_id = excluded.registro_origen_id,
-                numero_linea = excluded.numero_linea,
-                sha256_registro = excluded.sha256_registro,
-                updated_at = now()
-        SQL, [$periodo, $periodo, $periodo, $archivoInq]);
+        $this->guardarProgreso(
+            $periodo,
+            'GEI_CORE_CUENTAS',
+            'Procesando CTACTEPRO.',
+            78,
+            0,
+            $totalMov,
+            'PROCESANDO',
+            'CTACTEPRO'
+        );
+
+        $procesados += $this->procesarMovimientosCtacteproPorLotes(
+            $db,
+            $schema,
+            $periodo,
+            $archivoProp,
+            $procesados,
+            $totalMov
+        );
+
+        $this->guardarProgreso(
+            $periodo,
+            'GEI_CORE_CUENTAS',
+            'Procesando INQCTACTE.',
+            80,
+            $procesados,
+            $totalMov,
+            'PROCESANDO',
+            'INQCTACTE'
+        );
+
+        $procesados += $this->procesarMovimientosInqctactePorLotes(
+            $db,
+            $schema,
+            $periodo,
+            $archivoInq,
+            $procesados,
+            $totalMov
+        );
+
+        $this->guardarProgreso(
+            $periodo,
+            'GEI_CORE_CUENTAS',
+            'Cuentas corrientes y movimientos procesados.',
+            82,
+            $procesados,
+            $totalMov
+        );
 
         $propCuentas = (int) ($db->selectOne(
             "select count(distinct btrim(cuenta::text)) as total
@@ -1264,20 +1225,6 @@ final class GeiCoreProcesarPeriodoService
             [$archivoInq]
         )->total ?? 0);
 
-        $propMov = (int) ($db->selectOne(
-            "select count(*) as total
-             from {$schema}.ctactepro
-             where archivo_id = ?",
-            [$archivoProp]
-        )->total ?? 0);
-
-        $inqMov = (int) ($db->selectOne(
-            "select count(*) as total
-             from {$schema}.inqctacte
-             where archivo_id = ?",
-            [$archivoInq]
-        )->total ?? 0);
-
         return [
             'archivo_ctactepro' => $archivoProp,
             'archivo_inqctacte' => $archivoInq,
@@ -1286,6 +1233,205 @@ final class GeiCoreProcesarPeriodoService
             'movimientos_ctactepro_fuente' => $propMov,
             'movimientos_inqctacte_fuente' => $inqMov,
         ];
+    }
+
+    private function totalMovimientosValidos(
+        Connection $db,
+        string $schema,
+        string $tabla,
+        int $archivoId
+    ): int {
+        return (int) ($db->selectOne(
+            "select count(*) as total
+               from {$schema}.{$tabla}
+              where archivo_id = ?
+                and nullif(btrim(fecha::text), '') is not null
+                and nullif(btrim(codigo::text), '') is not null
+                and nullif(btrim(numero::text), '') is not null",
+            [$archivoId]
+        )->total ?? 0);
+    }
+
+    private function procesarMovimientosCtacteproPorLotes(
+        Connection $db,
+        string $schema,
+        string $periodo,
+        int $archivoId,
+        int $procesadosPrevios,
+        int $totalGlobal
+    ): int {
+        return $this->procesarRangosFuente(
+            $db,
+            $schema,
+            'ctactepro',
+            $archivoId,
+            function (int $desde, int $hasta) use ($db, $schema, $periodo, $archivoId): void {
+                $db->statement(<<<SQL
+                    insert into gei_core.cuentas_corrientes_movimientos (
+                        cuenta_corriente_id, primer_periodo, ultimo_periodo, periodo_origen,
+                        fecha_original, codigo, numero, fecha_vencimiento_original,
+                        importe, importe_penal, importe_abonado, descripcion,
+                        cuenta_inquilino_relacionada, liquidado, iva, no_iva,
+                        archivo_id, registro_origen_id, numero_linea, sha256_registro,
+                        created_at, updated_at
+                    )
+                    select
+                        cc.id, ?, ?, ?, btrim(c.fecha::text), btrim(c.codigo::text),
+                        btrim(c.numero::text), null, {$this->sqlNumero('c.importe')},
+                        null, null, nullif(btrim(c.descripcion::text), ''),
+                        nullif(btrim(c.inquilino::text), ''), nullif(btrim(c.liquidado::text), ''),
+                        {$this->sqlNumero('c.iva')}, {$this->sqlNumero('c.no_iva')},
+                        c.archivo_id, c.id, c.numero_linea, c.sha256_registro, now(), now()
+                    from {$schema}.ctactepro c
+                    join gei_core.cuentas_corrientes cc
+                      on cc.tipo = 'PROPIETARIO'
+                     and cc.cuenta_cobol = btrim(c.cuenta::text)
+                    where c.archivo_id = ?
+                      and c.id between ? and ?
+                      and nullif(btrim(c.fecha::text), '') is not null
+                      and nullif(btrim(c.codigo::text), '') is not null
+                      and nullif(btrim(c.numero::text), '') is not null
+                    on conflict (cuenta_corriente_id, fecha_original, codigo, numero)
+                    do update set
+                        ultimo_periodo = greatest(gei_core.cuentas_corrientes_movimientos.ultimo_periodo, excluded.ultimo_periodo),
+                        periodo_origen = excluded.periodo_origen,
+                        importe = excluded.importe,
+                        descripcion = excluded.descripcion,
+                        cuenta_inquilino_relacionada = excluded.cuenta_inquilino_relacionada,
+                        liquidado = excluded.liquidado,
+                        iva = excluded.iva,
+                        no_iva = excluded.no_iva,
+                        archivo_id = excluded.archivo_id,
+                        registro_origen_id = excluded.registro_origen_id,
+                        numero_linea = excluded.numero_linea,
+                        sha256_registro = excluded.sha256_registro,
+                        updated_at = now()
+                SQL, [$periodo, $periodo, $periodo, $archivoId, $desde, $hasta]);
+            },
+            function (int $procesadosTabla) use ($periodo, $procesadosPrevios, $totalGlobal): void {
+                $hechos = $procesadosPrevios + $procesadosTabla;
+                $porcentaje = $totalGlobal > 0 ? 78 + (int) floor(($hechos / $totalGlobal) * 4) : 78;
+                $this->guardarProgreso(
+                    $periodo, 'GEI_CORE_CUENTAS', 'Procesando CTACTEPRO.',
+                    min(82, $porcentaje), $hechos, $totalGlobal, 'PROCESANDO', 'CTACTEPRO'
+                );
+            }
+        );
+    }
+
+    private function procesarMovimientosInqctactePorLotes(
+        Connection $db,
+        string $schema,
+        string $periodo,
+        int $archivoId,
+        int $procesadosPrevios,
+        int $totalGlobal
+    ): int {
+        return $this->procesarRangosFuente(
+            $db,
+            $schema,
+            'inqctacte',
+            $archivoId,
+            function (int $desde, int $hasta) use ($db, $schema, $periodo, $archivoId): void {
+                $db->statement(<<<SQL
+                    insert into gei_core.cuentas_corrientes_movimientos (
+                        cuenta_corriente_id, primer_periodo, ultimo_periodo, periodo_origen,
+                        fecha_original, codigo, numero, fecha_vencimiento_original,
+                        importe, importe_penal, importe_abonado, descripcion,
+                        cuenta_inquilino_relacionada, liquidado, iva, no_iva,
+                        archivo_id, registro_origen_id, numero_linea, sha256_registro,
+                        created_at, updated_at
+                    )
+                    select
+                        cc.id, ?, ?, ?, btrim(c.fecha::text), btrim(c.codigo::text),
+                        btrim(c.numero::text), nullif(btrim(c.fecha_vencimiento::text), ''),
+                        {$this->sqlNumero('c.importe')}, {$this->sqlNumero('c.importe_penalidad')},
+                        {$this->sqlNumero('c.importe_abonado')}, nullif(btrim(c.descripcion::text), ''),
+                        null, nullif(btrim(c.liquidado::text), ''),
+                        {$this->sqlNumero('c.iva')}, {$this->sqlNumero('c.no_iva')},
+                        c.archivo_id, c.id, c.numero_linea, c.sha256_registro, now(), now()
+                    from {$schema}.inqctacte c
+                    join gei_core.cuentas_corrientes cc
+                      on cc.tipo = 'INQUILINO'
+                     and cc.cuenta_cobol = btrim(c.cuenta::text)
+                    where c.archivo_id = ?
+                      and c.id between ? and ?
+                      and nullif(btrim(c.fecha::text), '') is not null
+                      and nullif(btrim(c.codigo::text), '') is not null
+                      and nullif(btrim(c.numero::text), '') is not null
+                    on conflict (cuenta_corriente_id, fecha_original, codigo, numero)
+                    do update set
+                        ultimo_periodo = greatest(gei_core.cuentas_corrientes_movimientos.ultimo_periodo, excluded.ultimo_periodo),
+                        periodo_origen = excluded.periodo_origen,
+                        fecha_vencimiento_original = excluded.fecha_vencimiento_original,
+                        importe = excluded.importe,
+                        importe_penal = excluded.importe_penal,
+                        importe_abonado = excluded.importe_abonado,
+                        descripcion = excluded.descripcion,
+                        liquidado = excluded.liquidado,
+                        iva = excluded.iva,
+                        no_iva = excluded.no_iva,
+                        archivo_id = excluded.archivo_id,
+                        registro_origen_id = excluded.registro_origen_id,
+                        numero_linea = excluded.numero_linea,
+                        sha256_registro = excluded.sha256_registro,
+                        updated_at = now()
+                SQL, [$periodo, $periodo, $periodo, $archivoId, $desde, $hasta]);
+            },
+            function (int $procesadosTabla) use ($periodo, $procesadosPrevios, $totalGlobal): void {
+                $hechos = $procesadosPrevios + $procesadosTabla;
+                $porcentaje = $totalGlobal > 0 ? 78 + (int) floor(($hechos / $totalGlobal) * 4) : 80;
+                $this->guardarProgreso(
+                    $periodo, 'GEI_CORE_CUENTAS', 'Procesando INQCTACTE.',
+                    min(82, $porcentaje), $hechos, $totalGlobal, 'PROCESANDO', 'INQCTACTE'
+                );
+            }
+        );
+    }
+
+    private function procesarRangosFuente(
+        Connection $db,
+        string $schema,
+        string $tabla,
+        int $archivoId,
+        callable $procesarRango,
+        callable $avance
+    ): int {
+        $limites = $db->selectOne(
+            "select min(id) as minimo, max(id) as maximo
+               from {$schema}.{$tabla}
+              where archivo_id = ?",
+            [$archivoId]
+        );
+
+        if ($limites === null || $limites->minimo === null || $limites->maximo === null) {
+            return 0;
+        }
+
+        $tamanoLote = 20000;
+        $minimo = (int) $limites->minimo;
+        $maximo = (int) $limites->maximo;
+        $procesados = 0;
+
+        for ($desde = $minimo; $desde <= $maximo; $desde += $tamanoLote) {
+            $hasta = min($maximo, $desde + $tamanoLote - 1);
+            $procesarRango($desde, $hasta);
+
+            $procesados += (int) ($db->selectOne(
+                "select count(*) as total
+                   from {$schema}.{$tabla}
+                  where archivo_id = ?
+                    and id between ? and ?
+                    and nullif(btrim(fecha::text), '') is not null
+                    and nullif(btrim(codigo::text), '') is not null
+                    and nullif(btrim(numero::text), '') is not null",
+                [$archivoId, $desde, $hasta]
+            )->total ?? 0);
+
+            $avance($procesados);
+        }
+
+        return $procesados;
     }
 
     private function generarConflictosBasicos(Connection $db, string $periodo): void
@@ -1994,6 +2140,49 @@ final class GeiCoreProcesarPeriodoService
 
             else null
         end";
+    }
+
+    private function guardarProgreso(
+        string $periodo,
+        string $etapa,
+        string $detalle,
+        int $porcentaje,
+        ?int $procesados = null,
+        ?int $total = null,
+        string $estado = 'PROCESANDO',
+        ?string $archivo = null
+    ): void {
+        $ruta = "liquidaciones/periodos/{$periodo}/".self::ARCHIVO_PROGRESO;
+        $actual = [];
+
+        if (Storage::exists($ruta)) {
+            try {
+                $leido = json_decode(Storage::get($ruta), true, 512, JSON_THROW_ON_ERROR);
+                if (is_array($leido)) {
+                    $actual = $leido;
+                }
+            } catch (\Throwable) {
+                $actual = [];
+            }
+        }
+
+        Storage::put(
+            $ruta,
+            json_encode(
+                array_merge($actual, [
+                    'periodo' => $periodo,
+                    'estado' => $estado,
+                    'etapa' => $etapa,
+                    'detalle' => $detalle,
+                    'porcentaje' => $porcentaje,
+                    'archivo' => $archivo,
+                    'procesados' => $procesados,
+                    'total' => $total,
+                    'actualizado_at' => now()->toIso8601String(),
+                ]),
+                JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+            ).PHP_EOL
+        );
     }
 
     private function validarPeriodo(string $periodo): void

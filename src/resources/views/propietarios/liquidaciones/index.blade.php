@@ -324,15 +324,27 @@
                                             @php
                                                 $comprobanteArca = $comprobantesArca->first();
                                             @endphp
-                                            <a
-                                                class="btn btn-sm btn-outline-primary"
-                                                href="{{ route('comprobantes-arca.ver', ['periodo' => $periodo, 'archivo' => $comprobanteArca->nombre_archivo]) }}"
-                                                target="_blank"
-                                                rel="noopener"
-                                                title="{{ $comprobanteArca->nombre_archivo }}"
-                                            >
-                                                {{ $comprobanteArca->tipo_codigo }}-{{ $comprobanteArca->punto_venta }}-{{ $comprobanteArca->numero_comprobante }}
-                                            </a>
+
+                                            @if (! empty($comprobanteArca->nombre_archivo) && ($comprobanteArca->pdf_disponible ?? false))
+                                                <a
+                                                    class="btn btn-sm btn-outline-primary"
+                                                    href="{{ route('comprobantes-arca.ver', ['periodo' => $periodo, 'archivo' => $comprobanteArca->nombre_archivo]) }}"
+                                                    target="_blank"
+                                                    rel="noopener"
+                                                    title="{{ $comprobanteArca->nombre_archivo }}"
+                                                >
+                                                    {{ $comprobanteArca->tipo_codigo }}-{{ $comprobanteArca->punto_venta }}-{{ $comprobanteArca->numero_comprobante }}
+                                                </a>
+                                            @else
+                                                <button
+                                                    type="button"
+                                                    class="btn btn-sm btn-outline-secondary"
+                                                    disabled
+                                                    title="El comprobante existe en KNG pero no se encontró el PDF físico."
+                                                >
+                                                    {{ $comprobanteArca->tipo_codigo }}-{{ $comprobanteArca->punto_venta }}-{{ $comprobanteArca->numero_comprobante }} · Sin PDF
+                                                </button>
+                                            @endif
                                         @elseif ($cantidadArca > 1)
                                             <div class="dropdown">
                                                 <button
@@ -346,19 +358,32 @@
                                                 <ul class="dropdown-menu dropdown-menu-end" style="min-width: 300px;">
                                                     @foreach ($comprobantesArca as $comprobanteArca)
                                                         <li>
-                                                            <a
-                                                                class="dropdown-item d-flex justify-content-between gap-3"
-                                                                href="{{ route('comprobantes-arca.ver', ['periodo' => $periodo, 'archivo' => $comprobanteArca->nombre_archivo]) }}"
-                                                                target="_blank"
-                                                                rel="noopener"
-                                                                title="{{ $comprobanteArca->nombre_archivo }}"
-                                                            >
-                                                                <span>
-                                                                    {{ $comprobanteArca->tipo_codigo }}
-                                                                    {{ $comprobanteArca->punto_venta }}-{{ $comprobanteArca->numero_comprobante }}
+                                                            @if (! empty($comprobanteArca->nombre_archivo) && ($comprobanteArca->pdf_disponible ?? false))
+                                                                <a
+                                                                    class="dropdown-item d-flex justify-content-between gap-3"
+                                                                    href="{{ route('comprobantes-arca.ver', ['periodo' => $periodo, 'archivo' => $comprobanteArca->nombre_archivo]) }}"
+                                                                    target="_blank"
+                                                                    rel="noopener"
+                                                                    title="{{ $comprobanteArca->nombre_archivo }}"
+                                                                >
+                                                                    <span>
+                                                                        {{ $comprobanteArca->tipo_codigo }}
+                                                                        {{ $comprobanteArca->punto_venta }}-{{ $comprobanteArca->numero_comprobante }}
+                                                                    </span>
+                                                                    <small class="text-muted">Ver</small>
+                                                                </a>
+                                                            @else
+                                                                <span
+                                                                    class="dropdown-item d-flex justify-content-between gap-3 text-muted"
+                                                                    title="El comprobante existe en KNG pero no se encontró el PDF físico."
+                                                                >
+                                                                    <span>
+                                                                        {{ $comprobanteArca->tipo_codigo }}
+                                                                        {{ $comprobanteArca->punto_venta }}-{{ $comprobanteArca->numero_comprobante }}
+                                                                    </span>
+                                                                    <small>Sin PDF</small>
                                                                 </span>
-                                                                <small class="text-muted">Ver</small>
-                                                            </a>
+                                                            @endif
                                                         </li>
                                                     @endforeach
                                                 </ul>
