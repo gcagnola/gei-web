@@ -37,6 +37,7 @@ class GenerarIncidenciasPeriodo extends Command
             $db = $this->conexionExploracion();
             $schema = $this->schemaOrigen();
             $archivoId = $this->archivoInqctacteDelPeriodo($db, $schema, $periodo);
+            $yaInformadas = $this->incidenciasYaInformadas($periodo);
 
             $filas = $db->select(
                 "select
@@ -52,8 +53,8 @@ class GenerarIncidenciasPeriodo extends Command
                 [$archivoId]
             );
 
-            $incidencias = [];
-            $invalidas = [];
+            $incidenciasDetectadas = [];
+            $invalidasDetectadas = [];
 
             foreach ($filas as $fila) {
                 $vencimiento = trim((string) ($fila->fecha_vencimiento ?? ''));
@@ -63,7 +64,7 @@ class GenerarIncidenciasPeriodo extends Command
                 }
 
                 if (! $this->esFechaCobolValida($vencimiento)) {
-                    $invalidas[] = [
+                    $invalidasDetectadas[] = [
                         'linea' => isset($fila->numero_linea) ? (int) $fila->numero_linea : null,
                         'cuenta_cobol' => trim((string) ($fila->cuenta ?? '')),
                         'fecha_movimiento' => trim((string) ($fila->fecha ?? '')),
@@ -81,7 +82,7 @@ class GenerarIncidenciasPeriodo extends Command
                     continue;
                 }
 
-                $incidencias[] = [
+                $incidenciasDetectadas[] = [
                     'linea' => isset($fila->numero_linea) ? (int) $fila->numero_linea : null,
                     'cuenta_cobol' => trim((string) ($fila->cuenta ?? '')),
                     'fecha_movimiento' => trim((string) ($fila->fecha ?? '')),
@@ -92,9 +93,23 @@ class GenerarIncidenciasPeriodo extends Command
                 ];
             }
 
-            $cuentas = count(array_unique(array_filter(array_column(
-                $incidencias,
-                'cuenta_cobol'
+            $incidencias = array_values(array_filter(
+                $incidenciasDetectadas,
+                fn (array $fila): bool => ! isset(
+                    $yaInformadas[$this->fingerprintIncidencia($fila)]
+                )
+            ));
+
+            $invalidas = array_values(array_filter(
+                $invalidasDetectadas,
+                fn (array $fila): bool => ! isset(
+                    $yaInformadas[$this->fingerprintIncidencia($fila)]
+                )
+            ));
+
+            $cuentas = count(array_unique(array_filter(array_merge(
+                array_column($incidencias, 'cuenta_cobol'),
+                array_column($invalidas, 'cuenta_cobol')
             ))));
 
             $contenido = [
@@ -102,10 +117,17 @@ class GenerarIncidenciasPeriodo extends Command
                 'generado_desde' => 'cobol_staging.inqctacte',
                 'archivo_id' => $archivoId,
                 'generado_en' => now()->toIso8601String(),
+                'criterio' => 'Sólo incidencias nuevas respecto de períodos anteriores ya informados.',
                 'resumen' => [
-                    'fechas_futuras_validas' => count($incidencias),
-                    'cuentas_con_incidencias' => $cuentas,
-                    'fechas_invalidas' => count($invalidas),
+                    'fechas_futuras_detectadas' => count($incidenciasDetectadas),
+                    'fechas_futuras_nuevas' => count($incidencias),
+                    'fechas_futuras_repetidas_omitidas' =>
+                        count($incidenciasDetectadas) - count($incidencias),
+                    'fechas_invalidas_detectadas' => count($invalidasDetectadas),
+                    'fechas_invalidas_nuevas' => count($invalidas),
+                    'fechas_invalidas_repetidas_omitidas' =>
+                        count($invalidasDetectadas) - count($invalidas),
+                    'cuentas_con_incidencias_nuevas' => $cuentas,
                 ],
                 'fechas_futuras_inqctacte' => $incidencias,
                 'fechas_invalidas_inqctacte' => $invalidas,
@@ -130,9 +152,19 @@ class GenerarIncidenciasPeriodo extends Command
 
             $this->info("Incidencias regeneradas para {$periodo}.");
             $this->line("Archivo INQCTACTE: {$archivoId}");
-            $this->line('Fechas futuras válidas: '.count($incidencias));
-            $this->line("Cuentas con incidencias: {$cuentas}");
-            $this->line('Fechas inválidas registradas: '.count($invalidas));
+            $this->line('Fechas futuras detectadas: '.count($incidenciasDetectadas));
+            $this->line('Fechas futuras nuevas: '.count($incidencias));
+            $this->line(
+                'Fechas futuras repetidas omitidas: '.
+                (count($incidenciasDetectadas) - count($incidencias))
+            );
+            $this->line('Fechas inválidas detectadas: '.count($invalidasDetectadas));
+            $this->line('Fechas inválidas nuevas: '.count($invalidas));
+            $this->line(
+                'Fechas inválidas repetidas omitidas: '.
+                (count($invalidasDetectadas) - count($invalidas))
+            );
+            $this->line("Cuentas con incidencias nuevas: {$cuentas}");
             $this->line('Destino: '.Storage::path($ruta));
 
             return self::SUCCESS;
@@ -206,6 +238,72 @@ class GenerarIncidenciasPeriodo extends Command
         return $archivoId;
     }
 
+
+    /**
+     * @return array<string,true>
+     */
+    private function incidenciasYaInformadas(string $periodo): array
+    {
+        $base = 'liquidaciones/periodos';
+        $fingerprints = [];
+
+        foreach (Storage::directories($base) as $directorio) {
+            $periodoAnterior = basename($directorio);
+
+            if (
+                preg_match('/^(19|20)\d{2}(0[1-9]|1[0-2])$/', $periodoAnterior) !== 1
+                || $periodoAnterior >= $periodo
+            ) {
+                continue;
+            }
+
+            $ruta = "{$directorio}/incidencias_importacion.json";
+
+            if (! Storage::exists($ruta)) {
+                continue;
+            }
+
+            try {
+                $contenido = json_decode(
+                    Storage::get($ruta),
+                    true,
+                    512,
+                    JSON_THROW_ON_ERROR
+                );
+            } catch (\Throwable) {
+                continue;
+            }
+
+            foreach (['fechas_futuras_inqctacte', 'fechas_invalidas_inqctacte'] as $clave) {
+                $filas = $contenido[$clave] ?? [];
+
+                if (! is_array($filas)) {
+                    continue;
+                }
+
+                foreach ($filas as $fila) {
+                    if (! is_array($fila)) {
+                        continue;
+                    }
+
+                    $fingerprints[$this->fingerprintIncidencia($fila)] = true;
+                }
+            }
+        }
+
+        return $fingerprints;
+    }
+
+    private function fingerprintIncidencia(array $fila): string
+    {
+        return implode('|', [
+            trim((string) ($fila['cuenta_cobol'] ?? '')),
+            trim((string) ($fila['fecha_movimiento'] ?? '')),
+            trim((string) ($fila['codigo'] ?? '')),
+            trim((string) ($fila['numero_cobol'] ?? '')),
+            trim((string) ($fila['fecha_vencimiento'] ?? '')),
+        ]);
+    }
 
     private function motivoFechaInvalida(string $fecha): string
     {
