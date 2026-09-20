@@ -860,13 +860,17 @@ final class GeiCoreClienteService
             return collect();
         }
 
-        $filas = $contenido['fechas_futuras_inqctacte'] ?? [];
+        $futuras = $contenido['fechas_futuras_inqctacte'] ?? [];
+        $invalidas = $contenido['fechas_invalidas_inqctacte'] ?? [];
 
-        if (! is_array($filas)) {
-            return collect();
+        if (! is_array($futuras)) {
+            $futuras = [];
+        }
+        if (! is_array($invalidas)) {
+            $invalidas = [];
         }
 
-        return collect($filas)
+        $futuras = collect($futuras)
             ->filter(static function ($fila) use ($cuentas, $mes): bool {
                 if (! is_array($fila)) {
                     return false;
@@ -881,6 +885,7 @@ final class GeiCoreClienteService
             })
             ->map(static function (array $fila): object {
                 return (object) [
+                    'tipo_incidencia' => 'FECHA_FUTURA',
                     'linea' => (int) ($fila['linea'] ?? 0),
                     'cuenta_cobol' => trim((string) ($fila['cuenta_cobol'] ?? '')),
                     'fecha_movimiento' => trim((string) ($fila['fecha_movimiento'] ?? '')),
@@ -888,12 +893,37 @@ final class GeiCoreClienteService
                     'numero_cobol' => trim((string) ($fila['numero_cobol'] ?? '')),
                     'fecha_vencimiento' => trim((string) ($fila['fecha_vencimiento'] ?? '')),
                     'periodo_vencimiento' => trim((string) ($fila['periodo_vencimiento'] ?? '')),
+                    'motivo' => 'Vencimiento posterior al período',
                 ];
+            });
+
+        $invalidas = collect($invalidas)
+            ->filter(static function ($fila) use ($cuentas): bool {
+                if (! is_array($fila)) {
+                    return false;
+                }
+
+                return $cuentas->contains(trim((string) ($fila['cuenta_cobol'] ?? '')));
             })
+            ->map(static function (array $fila): object {
+                return (object) [
+                    'tipo_incidencia' => 'FECHA_INVALIDA',
+                    'linea' => (int) ($fila['linea'] ?? 0),
+                    'cuenta_cobol' => trim((string) ($fila['cuenta_cobol'] ?? '')),
+                    'fecha_movimiento' => trim((string) ($fila['fecha_movimiento'] ?? '')),
+                    'codigo' => trim((string) ($fila['codigo'] ?? '')),
+                    'numero_cobol' => trim((string) ($fila['numero_cobol'] ?? '')),
+                    'fecha_vencimiento' => trim((string) ($fila['fecha_vencimiento'] ?? '')),
+                    'periodo_vencimiento' => '',
+                    'motivo' => trim((string) ($fila['motivo'] ?? 'Fecha de vencimiento inválida')),
+                ];
+            });
+
+        return $futuras
+            ->concat($invalidas)
             ->sortBy([
                 ['cuenta_cobol', 'asc'],
-                ['fecha_vencimiento', 'asc'],
-                ['numero_cobol', 'asc'],
+                ['linea', 'asc'],
             ])
             ->values();
     }

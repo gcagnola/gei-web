@@ -39,11 +39,11 @@
             <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
                 <div>
                     <div class="fw-semibold text-danger">
-                        Fechas posteriores al período mostrado
+                        Incidencias detectadas en INQCTACTE
                     </div>
                     <div class="small text-danger-emphasis">
-                        Estas incidencias pertenecen a {{ substr($mes,4,2) }}/{{ substr($mes,0,4) }}
-                        pero contienen fecha de movimiento o vencimiento en un mes posterior.
+                        Estas incidencias pertenecen a {{ substr($mes,4,2) }}/{{ substr($mes,0,4) }}.
+                        Se muestran tanto fechas futuras como fechas inválidas para que puedan corregirse en el origen COBOL.
                         Son informativas y no bloquean la importación.
                     </div>
                 </div>
@@ -77,13 +77,23 @@
                                         <td>{{ number_format((int) $i->linea, 0, ',', '.') }}</td>
                                         <td>{{ $fechaCobolActividad($i->fecha_movimiento) }}</td>
                                         <td class="fw-semibold text-danger">
-                                            {{ $fechaCobolActividad($i->fecha_vencimiento) }}
+                                            @if(($i->tipo_incidencia ?? '') === 'FECHA_INVALIDA')
+                                                {{ $i->fecha_vencimiento ?: '—' }}
+                                            @else
+                                                {{ $fechaCobolActividad($i->fecha_vencimiento) }}
+                                            @endif
                                         </td>
                                         <td>{{ $i->codigo ?: '—' }}</td>
                                         <td>{{ $i->numero_cobol ?: '—' }}</td>
                                         <td>
-                                            Vencimiento posterior al período
-                                            ({{ substr($i->periodo_vencimiento,4,2) }}/{{ substr($i->periodo_vencimiento,0,4) }})
+                                            @if(($i->tipo_incidencia ?? '') === 'FECHA_INVALIDA')
+                                                <span class="badge text-bg-warning me-1">Fecha inválida</span>
+                                                {{ $i->motivo ?: 'Revisar fecha de vencimiento en COBOL' }}
+                                            @else
+                                                <span class="badge text-bg-danger me-1">Fecha futura</span>
+                                                Vencimiento posterior al período
+                                                ({{ substr($i->periodo_vencimiento,4,2) }}/{{ substr($i->periodo_vencimiento,0,4) }})
+                                            @endif
                                         </td>
                                     </tr>
                                 @endforeach
