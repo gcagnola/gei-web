@@ -403,6 +403,10 @@ final class GeiCoreClienteService
             ? $this->movimientosMes($personaId, $mesActividad)
             : collect();
 
+        $incidenciasFechasFuturas = $tab === 'cuenta-corriente'
+            ? $this->incidenciasFechasFuturasMes($personaId, $mesActividad)
+            : collect();
+
         $cuentasPropietario = $cuentas
             ->where('rol', 'PROPIETARIO')
             ->pluck('cuenta_cobol')
@@ -434,6 +438,7 @@ final class GeiCoreClienteService
             'partidasPorInmueble',
             'cuentasCorrientes',
             'ultimosMovimientos',
+            'incidenciasFechasFuturas',
             'liquidaciones',
             'impuestos',
             'facturas',
@@ -811,6 +816,86 @@ final class GeiCoreClienteService
         return $tipo === 'impuestos'
             ? $liquidaciones->filter(fn ($l): bool => (bool) $l->impuestos_pdf_disponible)->values()
             : $liquidaciones;
+    }
+
+    /**
+     * Movimientos del período importado cuyo movimiento o vencimiento apunta
+     * a un mes posterior. Se atan al período de origen, no al mes futuro:
+     *
+     * - al mirar 09/2026 muestra incidencias cargadas con periodo_origen=202609;
+     * - al mirar 11/2026 no muestra las incidencias originadas en septiembre;
+     * - al mirar 06/2026 tampoco.
+     */
+    public function incidenciasFechasFuturasMes(int $personaId, string $mes): Collection
+    {
+        if (! preg_match('/^(19|20)\d{2}(0[1-9]|1[0-2])$/', $mes)) {
+            return collect();
+        }
+
+        $cuentas = collect($this->core()->select(
+            "select cuenta_cobol
+               from gei_core.personas_cuentas_cobol
+              where persona_id = ?",
+            [$personaId]
+        ))
+            ->pluck('cuenta_cobol')
+            ->map(fn ($cuenta) => trim((string) $cuenta))
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($cuentas->isEmpty()) {
+            return collect();
+        }
+
+        $ruta = "liquidaciones/periodos/{$mes}/incidencias_importacion.json";
+
+        if (! Storage::exists($ruta)) {
+            return collect();
+        }
+
+        try {
+            $contenido = json_decode(Storage::get($ruta), true, 512, JSON_THROW_ON_ERROR);
+        } catch (Throwable) {
+            return collect();
+        }
+
+        $filas = $contenido['fechas_futuras_inqctacte'] ?? [];
+
+        if (! is_array($filas)) {
+            return collect();
+        }
+
+        return collect($filas)
+            ->filter(static function ($fila) use ($cuentas, $mes): bool {
+                if (! is_array($fila)) {
+                    return false;
+                }
+
+                $cuenta = trim((string) ($fila['cuenta_cobol'] ?? ''));
+                $periodoVencimiento = trim((string) ($fila['periodo_vencimiento'] ?? ''));
+
+                return $cuentas->contains($cuenta)
+                    && preg_match('/^(19|20)\d{4}$/', $periodoVencimiento) === 1
+                    && $periodoVencimiento > $mes;
+            })
+            ->map(static function (array $fila): object {
+                return (object) [
+                    'linea' => (int) ($fila['linea'] ?? 0),
+                    'cuenta_cobol' => trim((string) ($fila['cuenta_cobol'] ?? '')),
+                    'fecha_movimiento' => trim((string) ($fila['fecha_movimiento'] ?? '')),
+                    'codigo' => trim((string) ($fila['codigo'] ?? '')),
+                    'numero_cobol' => trim((string) ($fila['numero_cobol'] ?? '')),
+                    'fecha_vencimiento' => trim((string) ($fila['fecha_vencimiento'] ?? '')),
+                    'periodo_vencimiento' => trim((string) ($fila['periodo_vencimiento'] ?? '')),
+                ];
+            })
+            ->sortBy([
+                ['cuenta_cobol', 'asc'],
+                ['fecha_vencimiento', 'asc'],
+                ['numero_cobol', 'asc'],
+            ])
+            ->values();
     }
 
     private function movimientosMes(int $personaId, string $mes): Collection

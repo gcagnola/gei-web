@@ -426,7 +426,14 @@
                 </div>
             </div>
             <div id="actividad-contenido">
-                @include('core-clientes.partials.actividad', ['tipo' => $tab, 'mes' => $mesActividad, 'data' => $actividadInicial])
+                @include('core-clientes.partials.actividad', [
+                    'tipo' => $tab,
+                    'mes' => $mesActividad,
+                    'data' => $actividadInicial,
+                    'incidencias' => $tab === 'cuenta-corriente'
+                        ? ($detalle['incidenciasFechasFuturas'] ?? collect())
+                        : collect(),
+                ])
             </div>
             <div class="card-footer bg-white small text-muted" id="actividad-estado">
                 Mes mostrado: {{ substr($mesActividad,4,2) }}/{{ substr($mesActividad,0,4) }}

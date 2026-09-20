@@ -105,6 +105,11 @@
                     'estado' => 'PENDIENTE',
                     'mensaje' => 'Las tablas definitivas todavía no fueron actualizadas.',
                 ], $periodo['tablas'] ?? []);
+                $progresoPeriodo = $periodo['progreso'] ?? [];
+                $incidenciasPeriodo = $periodo['incidencias'] ?? [];
+                $fechasFuturas = $incidenciasPeriodo['fechas_futuras_inqctacte'] ?? [];
+                $tieneResumen = ($progresoPeriodo['estado'] ?? null) === 'FINALIZADO';
+                $tieneIncidencias = count($fechasFuturas) > 0;
             @endphp
             <div class="gei-periodo">
                 <div class="gei-periodo__encabezado">
@@ -256,6 +261,82 @@
                         </div>
                     </div>
                 </details>
+
+                @if ($tieneResumen || $tieneIncidencias)
+                    <details class="gei-periodo__detalle gei-periodo__resultado">
+                        <summary class="gei-periodo__summary">
+                            Ver resumen e incidencias
+                            @if ($tieneIncidencias)
+                                <span class="badge text-bg-warning">{{ count($fechasFuturas) }}</span>
+                            @endif
+                        </summary>
+
+                        <div class="pb-3">
+                            @if ($tieneResumen)
+                                <h3 class="h6 mb-2">Último procesamiento</h3>
+                                <p class="small mb-2">
+                                    {{ $progresoPeriodo['resumen_mensaje'] ?? 'Proceso finalizado correctamente.' }}
+                                </p>
+
+                                @php
+                                    $liq = $progresoPeriodo['resumen']['liquidaciones'] ?? [];
+                                @endphp
+
+                                @if ($liq !== [])
+                                    <div class="small mb-3">
+                                        <strong>Liquidaciones:</strong>
+                                        {{ number_format((int) ($liq['detectadas'] ?? 0), 0, ',', '.') }}
+                                        · <strong>PDF propietarios:</strong>
+                                        {{ number_format((int) ($liq['pdf_propietarios'] ?? 0), 0, ',', '.') }}
+                                        · <strong>PDF impuestos:</strong>
+                                        {{ number_format((int) ($liq['pdf_impuestos'] ?? 0), 0, ',', '.') }}
+                                    </div>
+                                @endif
+                            @endif
+
+                            @if ($tieneIncidencias)
+                                <h3 class="h6 mb-2">
+                                    Incidencias informativas
+                                    <span class="badge text-bg-warning">{{ count($fechasFuturas) }}</span>
+                                </h3>
+                                <p class="small text-muted mb-2">
+                                    No bloquearon la importación. Se muestran para revisión.
+                                </p>
+
+                                <div class="table-responsive">
+                                    <table class="table table-sm align-middle mb-0">
+                                        <thead>
+                                            <tr>
+                                                <th>Línea</th>
+                                                <th>Cuenta COBOL</th>
+                                                <th>Nº COBOL</th>
+                                                <th>Fecha mov.</th>
+                                                <th>Vencimiento futuro</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            @foreach ($fechasFuturas as $incidencia)
+                                                @php
+                                                    $fm = $incidencia['fecha_movimiento'] ?? null;
+                                                    $fv = $incidencia['fecha_vencimiento'] ?? null;
+                                                @endphp
+                                                <tr>
+                                                    <td>{{ $incidencia['linea'] ?? '—' }}</td>
+                                                    <td>{{ $incidencia['cuenta_cobol'] ?? '—' }}</td>
+                                                    <td>{{ $incidencia['numero_cobol'] ?? '—' }}</td>
+                                                    <td>{{ $fm && strlen($fm) === 8 ? substr($fm, 6, 2).'/'.substr($fm, 4, 2).'/'.substr($fm, 0, 4) : ($fm ?? '—') }}</td>
+                                                    <td>{{ $fv && strlen($fv) === 8 ? substr($fv, 6, 2).'/'.substr($fv, 4, 2).'/'.substr($fv, 0, 4) : ($fv ?? '—') }}</td>
+                                                </tr>
+                                            @endforeach
+                                        </tbody>
+                                    </table>
+                                </div>
+                            @elseif ($tieneResumen)
+                                <div class="small text-success">Sin incidencias informativas registradas.</div>
+                            @endif
+                        </div>
+                    </details>
+                @endif
             </div>
         @empty
             <div class="gei-empty-state gei-empty-state--large">
@@ -408,6 +489,12 @@
             <div class="small text-muted mt-3">
                 Se ejecuta todo el período automáticamente. Los conflictos de clientes/inmuebles quedan para revisión posterior y no requieren intervención en este paso.
             </div>
+
+            <div class="d-flex justify-content-end mt-3" data-migration-finished-actions style="display:none !important;">
+                <button type="button" class="btn btn-primary" data-migration-close>
+                    Cerrar y actualizar
+                </button>
+            </div>
         </div>
     </div>
 
@@ -494,13 +581,21 @@
         const elRecords = overlay?.querySelector('[data-migration-records]');
         const elPercent = overlay?.querySelector('[data-migration-percent]');
         const elBar = overlay?.querySelector('[data-migration-real-bar]');
+        const elFinishedActions = overlay?.querySelector('[data-migration-finished-actions]');
+        const elClose = overlay?.querySelector('[data-migration-close]');
 
         if (elPeriodo) elPeriodo.textContent = 'Período: ' + etiqueta;
         if (elElapsed) elElapsed.textContent = '0 s';
         if (elStage) elStage.textContent = 'Preparando...';
         if (elDetail) elDetail.textContent = 'Iniciando proceso...';
         if (elPercent) elPercent.textContent = '0%';
-        if (elBar) elBar.style.width = '2%';
+        if (elBar) {
+            elBar.style.width = '2%';
+            elBar.classList.add('progress-bar-animated');
+        }
+        if (elFinishedActions) {
+            elFinishedActions.style.setProperty('display', 'none', 'important');
+        }
 
         if (submit) {
             submit.disabled = true;
@@ -683,9 +778,26 @@
                 porcentaje: 100
             });
 
-            window.setTimeout(function () {
-                window.location.href = datos.redirect || window.location.pathname;
-            }, 900);
+            if (elBar) {
+                elBar.classList.remove('progress-bar-animated');
+            }
+
+            if (elFinishedActions) {
+                elFinishedActions.style.setProperty('display', 'flex', 'important');
+            }
+
+            if (elClose) {
+                elClose.onclick = function () {
+                    window.location.href = datos.redirect || window.location.pathname;
+                };
+            }
+
+            if (submit) {
+                submit.disabled = false;
+                submit.textContent = 'Procesar nuevamente todo';
+            }
+
+            form.dataset.enviando = '0';
         })
         .catch(error => {
             procesoTerminado = true;

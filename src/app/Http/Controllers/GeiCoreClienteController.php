@@ -86,12 +86,16 @@ final class GeiCoreClienteController extends Controller
         }
 
         $data = $this->service->actividad($persona, $tipo, $mes);
+        $incidencias = $tipo === 'cuenta-corriente'
+            ? $this->service->incidenciasFechasFuturasMes($persona, $mes)
+            : collect();
 
         return response(
             view('core-clientes.partials.actividad', [
                 'tipo' => $tipo,
                 'mes' => $mes,
                 'data' => $data,
+                'incidencias' => $incidencias,
             ])->render()
         );
     }

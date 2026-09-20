@@ -28,6 +28,72 @@
             </tbody>
         </table>
     </div>
+
+    @php
+        $incidenciasActividad = collect($incidencias ?? []);
+        $incidenciasPorCuenta = $incidenciasActividad->groupBy('cuenta_cobol');
+    @endphp
+
+    @if($incidenciasActividad->isNotEmpty())
+        <div class="border-top border-danger-subtle bg-danger-subtle p-3">
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+                <div>
+                    <div class="fw-semibold text-danger">
+                        Fechas posteriores al período mostrado
+                    </div>
+                    <div class="small text-danger-emphasis">
+                        Estas incidencias pertenecen a {{ substr($mes,4,2) }}/{{ substr($mes,0,4) }}
+                        pero contienen fecha de movimiento o vencimiento en un mes posterior.
+                        Son informativas y no bloquean la importación.
+                    </div>
+                </div>
+                <span class="badge text-bg-danger">
+                    {{ number_format($incidenciasActividad->count(), 0, ',', '.') }}
+                </span>
+            </div>
+
+            @foreach($incidenciasPorCuenta as $cuentaCobol => $incidenciasCuenta)
+                <details class="bg-white border rounded mb-2" @if($incidenciasPorCuenta->count() === 1) open @endif>
+                    <summary class="px-3 py-2 fw-semibold" style="cursor:pointer">
+                        Cuenta COBOL {{ $cuentaCobol }}
+                        <span class="badge text-bg-danger ms-1">{{ $incidenciasCuenta->count() }}</span>
+                    </summary>
+
+                    <div class="table-responsive border-top">
+                        <table class="table table-sm table-hover align-middle mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Línea</th>
+                                    <th>Fecha mov.</th>
+                                    <th>Vencimiento</th>
+                                    <th>Cód.</th>
+                                    <th>Nº COBOL</th>
+                                    <th>Incidencia</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach($incidenciasCuenta as $i)
+                                    <tr>
+                                        <td>{{ number_format((int) $i->linea, 0, ',', '.') }}</td>
+                                        <td>{{ $fechaCobolActividad($i->fecha_movimiento) }}</td>
+                                        <td class="fw-semibold text-danger">
+                                            {{ $fechaCobolActividad($i->fecha_vencimiento) }}
+                                        </td>
+                                        <td>{{ $i->codigo ?: '—' }}</td>
+                                        <td>{{ $i->numero_cobol ?: '—' }}</td>
+                                        <td>
+                                            Vencimiento posterior al período
+                                            ({{ substr($i->periodo_vencimiento,4,2) }}/{{ substr($i->periodo_vencimiento,0,4) }})
+                                        </td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
+                </details>
+            @endforeach
+        </div>
+    @endif
 @elseif($tipo === 'liquidaciones')
     <div class="table-responsive">
         <table class="table table-hover align-middle mb-0">

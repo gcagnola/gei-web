@@ -225,6 +225,10 @@ class ImportacionArchivosController extends Controller
                 }
             }
 
+            $this->guardarIncidenciasImportacion($periodo, [
+                'fechas_futuras_inqctacte' => $fechasPosteriores,
+            ]);
+
             Log::info('Importación de archivos GeI completada', [
                 'periodo' => $periodo,
                 'cobol' => count($cobol),
@@ -473,6 +477,17 @@ class ImportacionArchivosController extends Controller
             'archivo' => null,
             'procesados' => null,
             'total' => null,
+            'resumen_mensaje' => $mensaje,
+            'resumen' => [
+                'liquidaciones' => [
+                    'detectadas' => (int) ($resultadoLiquidaciones['detectadas'] ?? 0),
+                    'insertadas' => (int) ($resultadoLiquidaciones['insertadas'] ?? 0),
+                    'actualizadas' => (int) ($resultadoLiquidaciones['actualizadas'] ?? 0),
+                    'omitidas' => (int) ($resultadoLiquidaciones['omitidas'] ?? 0),
+                    'pdf_propietarios' => (int) ($resultadoLiquidaciones['pdf_generados'] ?? 0),
+                    'pdf_impuestos' => (int) ($resultadoLiquidaciones['pdf_impuestos_garantizados_generados'] ?? 0),
+                ],
+            ],
         ]);
 
         if ($request->expectsJson()) {
@@ -780,6 +795,8 @@ class ImportacionArchivosController extends Controller
                 $completo = $cantidadObligatorios === $archivosObligatorios->count();
                 $estadoMigracion = $migracion->estado($periodo);
                 $estadoTablas = $transformacion->estado($periodo);
+                $progreso = $this->leerJsonStorage($this->rutaProgreso($periodo));
+                $incidencias = $this->leerJsonStorage($this->rutaIncidencias($periodo));
 
                 return [
                     'periodo' => $periodo,
@@ -801,11 +818,48 @@ class ImportacionArchivosController extends Controller
                             && ($estadoMigracion['disponible'] ?? false),
                     ],
                     'tablas' => $estadoTablas,
+                    'progreso' => $progreso,
+                    'incidencias' => $incidencias,
                 ];
             })
             ->sortByDesc('periodo')
             ->values()
             ->all();
+    }
+
+    private function rutaIncidencias(string $periodo): string
+    {
+        return "liquidaciones/periodos/{$periodo}/incidencias_importacion.json";
+    }
+
+    private function guardarIncidenciasImportacion(string $periodo, array $incidencias): void
+    {
+        $fechasFuturas = array_values($incidencias['fechas_futuras_inqctacte'] ?? []);
+
+        Storage::put(
+            $this->rutaIncidencias($periodo),
+            json_encode([
+                'periodo' => $periodo,
+                'actualizado_at' => now()->toIso8601String(),
+                'total' => count($fechasFuturas),
+                'fechas_futuras_inqctacte' => $fechasFuturas,
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES).PHP_EOL
+        );
+    }
+
+    private function leerJsonStorage(string $ruta): array
+    {
+        if (! Storage::exists($ruta)) {
+            return [];
+        }
+
+        try {
+            $datos = json_decode(Storage::get($ruta), true, 512, JSON_THROW_ON_ERROR);
+
+            return is_array($datos) ? $datos : [];
+        } catch (\Throwable) {
+            return [];
+        }
     }
 
     private function archivosObligatoriosFaltantes(string $periodo): array
