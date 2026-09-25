@@ -83,6 +83,106 @@
         </p>
     </section>
 
+    <section class="gei-card p-3 mb-3">
+        <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+            <div>
+                <h2 class="h5 mb-1">Comprobantes ARCA — KNG</h2>
+                <p class="text-muted mb-0">
+                    Actualiza la copia local de <strong>facturas.DBF</strong> y <strong>LOTES.DBF</strong> para consultas rápidas desde GeI-Core.
+                </p>
+            </div>
+            <span class="badge text-bg-secondary">Importación complementaria</span>
+        </div>
+
+        <div class="row g-3 mb-3">
+            <div class="col-lg-7">
+                <div class="border rounded p-3 h-100">
+                    <div class="small text-muted mb-2">Origen configurado</div>
+                    <div class="text-break mb-3"><strong>{{ $kng['root'] }}</strong></div>
+
+                    <div class="d-flex flex-wrap gap-3">
+                        <div>
+                            <strong>facturas.DBF:</strong>
+                            @if($kng['facturas']['legible'])
+                                <span class="badge text-bg-success">Disponible</span>
+                                <span class="text-muted small">{{ number_format($kng['facturas']['tamano'] / 1024 / 1024, 1, ',', '.') }} MB · {{ $kng['facturas']['modificado'] }}</span>
+                            @else
+                                <span class="badge text-bg-danger">No disponible</span>
+                            @endif
+                        </div>
+                        <div>
+                            <strong>LOTES.DBF:</strong>
+                            @if($kng['lotes']['legible'])
+                                <span class="badge text-bg-success">Disponible</span>
+                                <span class="text-muted small">{{ number_format($kng['lotes']['tamano'] / 1024, 1, ',', '.') }} KB · {{ $kng['lotes']['modificado'] }}</span>
+                            @else
+                                <span class="badge text-bg-danger">No disponible</span>
+                            @endif
+                        </div>
+                        <div class="d-flex flex-wrap align-items-center gap-2">
+                            <strong>Facturas/:</strong>
+                            @if($kng['pdf_dir']['escribible'])
+                                <span class="badge text-bg-success">Lectura / escritura</span>
+                            @elseif($kng['pdf_dir']['legible'])
+                                <span class="badge text-bg-warning">Sólo lectura</span>
+                            @else
+                                <span class="badge text-bg-danger">No disponible</span>
+                            @endif
+
+                            <div class="form-check form-check-inline mb-0 ms-1">
+                                <input
+                                    class="form-check-input"
+                                    type="checkbox"
+                                    name="organizar_pdfs"
+                                    value="1"
+                                    id="kng-organizar-pdfs"
+                                    form="kng-import-form"
+                                    @disabled(!$kng['pdf_dir']['escribible'])
+                                >
+                                <label class="form-check-label" for="kng-organizar-pdfs">
+                                    Organizar PDFs por lote
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-lg-5">
+                <div class="border rounded p-3 h-100">
+                    <div class="fw-semibold mb-2">Última importación</div>
+                    @if($kng['ultima'])
+                        <div><strong>FACTURAS:</strong> {{ number_format($kng['ultima']->facturas_registros, 0, ',', '.') }} registros</div>
+                        <div><strong>LOTES:</strong> {{ number_format($kng['ultima']->lotes_registros, 0, ',', '.') }} registros</div>
+                        <div class="text-muted small mt-2">
+                            {{ $kng['ultima']->finalizado_at ? \Illuminate\Support\Carbon::parse($kng['ultima']->finalizado_at)->timezone('America/Argentina/Buenos_Aires')->format('d/m/Y H:i:s') : '—' }}
+                        </div>
+                    @else
+                        <div class="text-muted">Todavía no se realizó ninguna importación.</div>
+                    @endif
+                </div>
+            </div>
+        </div>
+
+        <form
+            id="kng-import-form"
+            method="POST"
+            action="{{ route('archivo.importar.kng') }}"
+            data-progress-url="{{ route('archivo.importar.kng.progreso') }}"
+            onsubmit="return window.geiIniciarImportacionKng(this);"
+        >
+            @csrf
+            <button type="submit" class="btn gei-button gei-button--primary" data-kng-submit
+                    @disabled(!$kng['facturas']['legible'] || !$kng['lotes']['legible'])>
+                Importar FACTURAS y LOTES
+            </button>
+        </form>
+
+        <p class="small text-muted mb-0 mt-2">
+            Esta importación es independiente del período COBOL. Se ejecuta cuando KNG haya actualizado sus tablas.
+        </p>
+    </section>
+
     <section class="gei-card p-4">
         <div class="gei-section-title mb-3">
             <div>
@@ -416,6 +516,21 @@
             display: flex;
         }
 
+        #kngProgressOverlay {
+            position: fixed;
+            inset: 0;
+            z-index: 2050;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            background: rgba(15, 23, 42, .62);
+        }
+
+        #kngProgressOverlay.gei-visible {
+            display: flex;
+        }
+
         .gei-migration-panel {
             width: min(100%, 520px);
             padding: 26px;
@@ -498,6 +613,50 @@
         </div>
     </div>
 
+    <div
+        id="kngProgressOverlay"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="kngProgressTitle"
+        aria-live="polite"
+    >
+        <div class="gei-migration-panel">
+            <div class="d-flex align-items-center gap-3">
+                <div class="spinner-border text-primary" role="status" aria-hidden="true" data-kng-spinner></div>
+                <div class="flex-grow-1">
+                    <h2 class="h5 mb-1" id="kngProgressTitle">Importando comprobantes ARCA — KNG</h2>
+                    <p class="mb-0 text-muted" data-kng-stage>Preparando...</p>
+                </div>
+                <strong class="text-nowrap small" data-kng-elapsed>0 s</strong>
+            </div>
+
+            <div class="mt-4">
+                <div class="d-flex justify-content-between gap-3 mb-1">
+                    <strong data-kng-detail>Preparando importación...</strong>
+                    <span class="text-muted small" data-kng-percent>0%</span>
+                </div>
+                <div class="progress" role="progressbar" aria-label="Progreso de importación KNG">
+                    <div
+                        class="progress-bar progress-bar-striped progress-bar-animated"
+                        style="width: 2%"
+                        data-kng-bar
+                    ></div>
+                </div>
+            </div>
+
+            <div class="gei-migration-status mt-3">
+                <div class="fw-semibold" data-kng-records>Registro 0 / 0</div>
+                <div class="small text-muted mt-2" data-kng-message>Los DBF originales se abren únicamente en lectura.</div>
+            </div>
+
+            <div class="d-flex justify-content-end mt-3" data-kng-finished style="display:none !important;">
+                <button type="button" class="btn btn-primary" data-kng-close>
+                    Cerrar y actualizar
+                </button>
+            </div>
+        </div>
+    </div>
+
 @endsection
 
 @push('styles')
@@ -560,6 +719,176 @@
 
 @push('scripts')
 <script>
+    window.geiIniciarImportacionKng = function (form) {
+        if (form.dataset.enviando === '1') {
+            return false;
+        }
+
+        const organizar = document.getElementById('kng-organizar-pdfs')?.checked === true;
+        const confirmar = organizar
+            ? 'Se actualizará la copia local de FACTURAS.DBF y LOTES.DBF y se organizarán los PDFs dentro de Facturas/lote_N. Los DBF originales no se modifican. ¿Continuar?'
+            : 'Se actualizará la copia local de FACTURAS.DBF y LOTES.DBF. Los PDFs no se moverán. Los DBF originales no se modifican. ¿Continuar?';
+
+        if (!window.confirm(confirmar)) {
+            return false;
+        }
+
+        form.dataset.enviando = '1';
+        const overlay = document.getElementById('kngProgressOverlay');
+        const submit = form.querySelector('[data-kng-submit]');
+        const stage = overlay?.querySelector('[data-kng-stage]');
+        const detail = overlay?.querySelector('[data-kng-detail]');
+        const records = overlay?.querySelector('[data-kng-records]');
+        const percent = overlay?.querySelector('[data-kng-percent]');
+        const bar = overlay?.querySelector('[data-kng-bar]');
+        const elapsed = overlay?.querySelector('[data-kng-elapsed]');
+        const message = overlay?.querySelector('[data-kng-message]');
+        const spinner = overlay?.querySelector('[data-kng-spinner]');
+        const finished = overlay?.querySelector('[data-kng-finished]');
+        const close = overlay?.querySelector('[data-kng-close]');
+        const startedAt = Date.now();
+
+        const etiquetas = {
+            PREPARANDO: 'Preparando',
+            EXPORTANDO_FACTURAS: 'Leyendo FACTURAS.DBF',
+            EXPORTANDO_LOTES: 'Leyendo LOTES.DBF',
+            PREPARANDO_BASE: 'Preparando PostgreSQL',
+            CARGANDO_FACTURAS: 'Importando FACTURAS',
+            CARGANDO_LOTES: 'Importando LOTES',
+            ORGANIZANDO_PDFS: 'Organizando PDFs',
+            COMPLETO: 'Finalizado',
+            ERROR: 'Error'
+        };
+
+        const actualizar = function (p) {
+            if (!p || typeof p !== 'object') return;
+            const etapa = p.etapa || 'PREPARANDO';
+            const procesados = p.procesados;
+            const total = p.total;
+            const valor = Number.isFinite(Number(p.porcentaje))
+                ? Math.max(0, Math.min(100, Number(p.porcentaje)))
+                : null;
+
+            if (stage) stage.textContent = etiquetas[etapa] || etapa.replaceAll('_', ' ');
+            if (detail) detail.textContent = p.detalle || 'Procesando...';
+            if (records) {
+                if (procesados !== null && procesados !== undefined && total !== null && total !== undefined) {
+                    records.textContent = 'Registro ' + Number(procesados).toLocaleString('es-AR') +
+                        ' / ' + Number(total).toLocaleString('es-AR');
+                } else {
+                    records.textContent = 'Preparando datos...';
+                }
+            }
+            if (valor !== null) {
+                if (percent) percent.textContent = Math.round(valor) + '%';
+                if (bar) bar.style.width = Math.max(2, valor) + '%';
+            }
+        };
+
+        if (submit) {
+            submit.disabled = true;
+            submit.textContent = 'Importando...';
+        }
+        if (finished) finished.style.setProperty('display', 'none', 'important');
+        if (spinner) spinner.style.display = '';
+        if (message) message.textContent = 'Los DBF originales se abren únicamente en lectura.';
+        if (bar) {
+            bar.style.width = '2%';
+            bar.classList.add('progress-bar-animated');
+        }
+        if (percent) percent.textContent = '0%';
+        if (records) records.textContent = 'Registro 0 / 0';
+        if (overlay) {
+            overlay.classList.add('gei-visible');
+            overlay.style.display = 'flex';
+        }
+        document.body.style.overflow = 'hidden';
+
+        const elapsedTimer = window.setInterval(function () {
+            if (elapsed) elapsed.textContent = Math.floor((Date.now() - startedAt) / 1000) + ' s';
+        }, 1000);
+
+        let polling = true;
+        const poll = async function () {
+            while (polling) {
+                try {
+                    const r = await fetch(form.dataset.progressUrl, {
+                        headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                        cache: 'no-store'
+                    });
+                    if (r.ok) actualizar(await r.json());
+                } catch (_) {
+                    // El POST principal continúa; reintentamos el progreso.
+                }
+                await new Promise(resolve => setTimeout(resolve, 700));
+            }
+        };
+        poll();
+
+        fetch(form.action, {
+            method: 'POST',
+            body: new FormData(form),
+            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+        })
+        .then(async response => {
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || data.ok === false) {
+                throw new Error(data.message || 'No se pudo completar la importación KNG.');
+            }
+            return data;
+        })
+        .then(data => {
+            polling = false;
+            window.clearInterval(elapsedTimer);
+            actualizar({
+                etapa: 'COMPLETO',
+                detalle: 'Importación KNG completada.',
+                porcentaje: 100,
+                procesados: null,
+                total: null
+            });
+            if (message) message.textContent = data.message || 'Importación completada.';
+            if (spinner) spinner.style.display = 'none';
+            if (bar) {
+                bar.classList.remove('progress-bar-animated');
+                bar.style.width = '100%';
+            }
+            if (finished) finished.style.removeProperty('display');
+            if (submit) {
+                submit.disabled = false;
+                submit.textContent = 'Importar FACTURAS y LOTES';
+            }
+            form.dataset.enviando = '0';
+            if (close) close.onclick = () => window.location.reload();
+        })
+        .catch(error => {
+            polling = false;
+            window.clearInterval(elapsedTimer);
+            if (stage) stage.textContent = 'Error';
+            if (detail) detail.textContent = error.message;
+            if (percent) percent.textContent = 'Error';
+            if (spinner) spinner.style.display = 'none';
+            if (bar) {
+                bar.classList.remove('progress-bar-animated');
+                bar.style.width = '100%';
+            }
+            if (message) message.textContent = 'La importación fue interrumpida. La transacción de PostgreSQL no queda a mitad de carga.';
+            if (finished) finished.style.removeProperty('display');
+            if (submit) {
+                submit.disabled = false;
+                submit.textContent = 'Reintentar';
+            }
+            form.dataset.enviando = '0';
+            if (close) close.onclick = function () {
+                overlay?.classList.remove('gei-visible');
+                if (overlay) overlay.style.display = 'none';
+                document.body.style.overflow = '';
+            };
+        });
+
+        return false;
+    };
+
     window.geiIniciarMigracion = function (form) {
         if (form.dataset.enviando === '1') {
             return false;

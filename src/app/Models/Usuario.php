@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 
@@ -40,6 +41,34 @@ class Usuario extends Authenticatable
     public function perfil(): BelongsTo
     {
         return $this->belongsTo(Perfil::class);
+    }
+
+    public function sucursales(): BelongsToMany
+    {
+        return $this->belongsToMany(
+            Sucursal::class,
+            'usuarios_sucursales',
+            'usuario_id',
+            'sucursal_id'
+        )->withTimestamps();
+    }
+
+    /** @return array<int, string> */
+    public function codigosSucursales(): array
+    {
+        return $this->sucursales()
+            ->where('sucursales.activa', true)
+            ->orderBy('sucursales.codigo')
+            ->pluck('sucursales.codigo')
+            ->map(static fn ($codigo): string => strtoupper(trim((string) $codigo)))
+            ->filter()
+            ->values()
+            ->all();
+    }
+
+    public function puedeVerSucursal(string $codigo): bool
+    {
+        return in_array(strtoupper(trim($codigo)), $this->codigosSucursales(), true);
     }
 
     public function getNombreLimpioAttribute(): string

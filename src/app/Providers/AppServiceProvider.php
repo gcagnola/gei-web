@@ -29,5 +29,11 @@ class AppServiceProvider extends ServiceProvider
                 && $usuario->perfil?->activo
                 && $usuario->perfil?->codigo === 'ADMINISTRADOR';
         });
+
+        Gate::define('administrar-usuarios', static function (Usuario $usuario): bool {
+            return $usuario->activo
+                && $usuario->perfil?->activo
+                && $usuario->perfil?->codigo === 'ADMINISTRADOR';
+        });
     }
 }

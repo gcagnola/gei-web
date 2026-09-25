@@ -18,12 +18,19 @@
             <h1 class="h4 mb-1">Inmuebles</h1>
             <div class="text-muted small">Fincas de GeI-Core reconstruidas desde contratos, dirección de finca y partidas. No desde el domicilio del propietario.</div>
         </div>
-        <div class="d-flex align-items-center gap-2">
-            <a href="{{ route('inmuebles.index', ['periodo'=>$periodo, 'estado'=>'duplicados']) }}"
-               class="btn btn-sm {{ ($duplicadosResumen['inmuebles_pendientes'] ?? 0) > 0 ? 'btn-warning' : 'btn-outline-secondary' }}">
+        <div class="d-flex flex-wrap align-items-center gap-2">
+            <a href="{{ route('inmuebles.index', array_merge(request()->query(), ['revision'=>'duplicados', 'seleccionar'=>null])) }}"
+               class="btn btn-sm {{ $modoDuplicados ? 'btn-warning' : (($duplicadosResumen['inmuebles_pendientes'] ?? 0) > 0 ? 'btn-outline-warning' : 'btn-outline-secondary') }}">
                 Posibles duplicados
                 <span class="badge text-bg-dark ms-1">{{ $duplicadosResumen['inmuebles_pendientes'] ?? 0 }}</span>
             </a>
+            @if($puedeRevisarSinSede)
+                <a href="{{ route('inmuebles.index', array_merge(request()->query(), ['sede'=>'sin_sede', 'revision'=>null, 'seleccionar'=>null])) }}"
+                   class="btn btn-sm {{ $sede === 'sin_sede' && !$modoDuplicados ? 'btn-danger' : (($sinSedeResumen ?? 0) > 0 ? 'btn-outline-danger' : 'btn-outline-secondary') }}">
+                    Sin sede
+                    <span class="badge text-bg-dark ms-1">{{ $sinSedeResumen ?? 0 }}</span>
+                </a>
+            @endif
             <span class="badge text-bg-success">GeI-Core</span>
         </div>
     </div>
@@ -52,7 +59,39 @@
     </div>
 
     <form method="GET" action="{{ route('inmuebles.index') }}" class="card card-body shadow-sm border-0 mb-3">
+        @if($modoDuplicados)
+            <input type="hidden" name="revision" value="duplicados">
+        @endif
         <div class="row g-2 align-items-end">
+            <div class="col-md-2">
+                <label class="form-label small">Estado</label>
+                <select name="estado" class="form-select" onchange="this.form.submit()">
+                    <option value="activos" @selected($estado==='activos')>Activos</option>
+                    <option value="todos" @selected($estado==='todos')>Todos</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label small">Sede</label>
+                @if(count($sedesPermitidas) === 1)
+                    <input type="hidden" name="sede" value="{{ $sedesPermitidas[0] }}">
+                    <div class="form-control bg-light">
+                        {{ $sedesPermitidas[0] === 'SF' ? 'Santa Fe' : ($sedesPermitidas[0] === 'ST' ? 'Santo Tomé' : $sedesPermitidas[0]) }}
+                    </div>
+                @else
+                    <select name="sede" class="form-select" onchange="this.form.submit()">
+                        <option value="todas" @selected($sede==='todas')>Todas las permitidas</option>
+                        @if(in_array('SF', $sedesPermitidas, true))
+                            <option value="SF" @selected($sede==='SF')>Santa Fe</option>
+                        @endif
+                        @if(in_array('ST', $sedesPermitidas, true))
+                            <option value="ST" @selected($sede==='ST')>Santo Tomé</option>
+                        @endif
+                        @if($puedeRevisarSinSede)
+                            <option value="sin_sede" @selected($sede==='sin_sede')>Sin sede / Revisar</option>
+                        @endif
+                    </select>
+                @endif
+            </div>
             <div class="col-md-2">
                 <label class="form-label small">Período</label>
                 <select name="periodo" class="form-select" onchange="this.form.submit()">
@@ -61,20 +100,14 @@
                     @endforeach
                 </select>
             </div>
-            <div class="col-md-2">
-                <label class="form-label small">Estado</label>
-                <select name="estado" class="form-select" onchange="this.form.submit()">
-                    <option value="activos" @selected($estado==='activos')>Activos</option>
-                    <option value="todos" @selected($estado==='todos')>Todos</option>
-                    <option value="duplicados" @selected($estado==='duplicados')>Posibles duplicados</option>
-                </select>
-            </div>
             <div class="col-md">
                 <label class="form-label small">Buscar</label>
                 <input name="buscar" value="{{ $buscar }}" class="form-control" placeholder="Dirección, partida, cuenta de propietario o inquilino">
             </div>
             <div class="col-md-auto"><button class="btn btn-primary w-100">Buscar</button></div>
-            <div class="col-md-auto"><a href="{{ route('inmuebles.index',['periodo'=>$periodo]) }}" class="btn btn-outline-secondary w-100">Limpiar</a></div>
+            <div class="col-md-auto">
+                <a href="{{ route('inmuebles.index',['periodo'=>$periodo]) }}" class="btn btn-outline-secondary w-100">Limpiar</a>
+            </div>
         </div>
     </form>
 
@@ -83,8 +116,8 @@
             @if ($modoDuplicados)
                 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
                     <div>
-                        <h2 class="h6 mb-1">Posibles inmuebles duplicados activos</h2>
-                        <div class="small text-muted">Período {{ $pv($periodo) }} · coincidencias por domicilio comparable. Es una sugerencia de revisión: no modifica ni unifica datos.</div>
+                        <h2 class="h6 mb-1">Posibles inmuebles duplicados</h2>
+                        <div class="small text-muted">Período {{ $pv($periodo) }} · Estado {{ $estado === 'activos' ? 'Activos' : 'Todos' }} · Sede {{ $sede === 'todas' ? 'Todas' : ($sede === 'sin_sede' ? 'Sin sede' : $sede) }} · coincidencias por domicilio comparable.</div>
                     </div>
                     <div class="d-flex gap-2">
                         <span class="badge text-bg-warning">{{ $duplicadosResumen['inmuebles_pendientes'] ?? 0 }} inmueble(s) pendiente(s)</span>
@@ -144,6 +177,8 @@
                                                         @csrf
                                                         @method('DELETE')
                                                         <input type="hidden" name="periodo" value="{{ $periodo }}">
+                                                        <input type="hidden" name="estado" value="{{ $estado }}">
+                                                        <input type="hidden" name="sede" value="{{ $sede }}">
                                                         <input type="hidden" name="buscar" value="{{ $buscar }}">
                                                         <button type="submit" class="btn btn-sm btn-outline-secondary">Deshacer</button>
                                                     </form>
@@ -151,6 +186,8 @@
                                                     <form method="POST" action="{{ route('inmuebles.validar-unico', ['inmueble'=>$i->id]) }}" class="d-inline">
                                                         @csrf
                                                         <input type="hidden" name="periodo" value="{{ $periodo }}">
+                                                        <input type="hidden" name="estado" value="{{ $estado }}">
+                                                        <input type="hidden" name="sede" value="{{ $sede }}">
                                                         <input type="hidden" name="buscar" value="{{ $buscar }}">
                                                         <button type="submit" class="btn btn-sm btn-outline-success"
                                                                 onclick="return confirm('¿Validar el inmueble #{{ $i->id }} como inmueble único frente a los candidatos actuales?')">
@@ -169,7 +206,7 @@
                 @empty
                     <div class="card shadow-sm border-0">
                         <div class="card-body text-center text-muted py-5">
-                            No se encontraron posibles duplicados entre los inmuebles activos del período.
+                            No se encontraron posibles duplicados con los filtros seleccionados.
                         </div>
                     </div>
                 @endforelse
@@ -178,20 +215,27 @@
                     <div class="table-responsive">
                         <table class="table table-hover align-middle mb-0">
                             <thead class="table-light"><tr>
-                                <th>Finca</th><th>Cuenta propietario</th><th>Cuenta inquilino</th><th>Contratos</th><th>Estado</th>
+                                <th>Finca</th><th>Sede</th><th>Cuenta propietario</th><th>Cuenta inquilino</th><th>Contratos</th><th>Estado</th>
                             </tr></thead>
                             <tbody>
                             @forelse ($inmuebles as $i)
                                 @php $url = route('inmuebles.index', array_merge(request()->query(), ['seleccionar'=>$i->id])); @endphp
                                 <tr role="button" style="cursor:pointer" onclick="window.location.href=@js($url)">
                                     <td class="fw-semibold">{{ $valor($i->domicilio_actual) }}</td>
+                                    <td>
+                                        @if($i->sede_codigo)
+                                            <span class="badge {{ $i->sede_codigo === 'SF' ? 'text-bg-primary' : 'text-bg-info' }}">{{ $i->sede_codigo }}</span>
+                                        @else
+                                            <span class="badge text-bg-danger">Sin sede</span>
+                                        @endif
+                                    </td>
                                     <td class="small">{{ $valor($i->cuentas_propietario) }}</td>
                                     <td class="small">{{ $valor($i->cuentas_inquilino) }}</td>
                                     <td>{{ $i->contratos_activos }} activos / {{ $i->cantidad_contratos }} presentes</td>
                                     <td><span class="badge {{ $i->activo ? 'text-bg-success' : 'text-bg-secondary' }}">{{ $i->activo ? 'Activo' : 'Histórico' }}</span></td>
                                 </tr>
                             @empty
-                                <tr><td colspan="5" class="text-center text-muted py-4">No se encontraron inmuebles.</td></tr>
+                                <tr><td colspan="6" class="text-center text-muted py-4">No se encontraron inmuebles.</td></tr>
                             @endforelse
                             </tbody>
                         </table>
@@ -214,6 +258,68 @@
                         <span class="badge {{ $detalle['inmueble']->activo_periodo ? 'text-bg-success' : 'text-bg-secondary' }}">
                             {{ $detalle['inmueble']->activo_periodo ? 'Activo' : 'Histórico' }}
                         </span>
+                    </div>
+
+                    <div class="border rounded p-3 mb-3">
+                        <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+                            <div>
+                                <h3 class="h6 mb-1">Sede</h3>
+                                <div class="small text-muted">
+                                    Período: {{ $detalle['inmueble']->sede_periodo ?: 'Sin sede' }}
+                                    @if($detalle['inmueble']->sede_origen)
+                                        · Origen maestro: {{ $detalle['inmueble']->sede_origen }}
+                                    @endif
+                                </div>
+                            </div>
+                            @if($detalle['inmueble']->sede_codigo)
+                                <span class="badge {{ $detalle['inmueble']->sede_codigo === 'SF' ? 'text-bg-primary' : 'text-bg-info' }}">
+                                    {{ $detalle['inmueble']->sede_codigo }}
+                                </span>
+                            @else
+                                <span class="badge text-bg-danger">Sin sede</span>
+                            @endif
+                        </div>
+
+                        <form method="POST" action="{{ route('inmuebles.sede.update', ['inmueble'=>$detalle['inmueble']->id]) }}">
+                            @csrf
+                            @method('PUT')
+                            <input type="hidden" name="periodo" value="{{ $periodo }}">
+                            <input type="hidden" name="estado" value="{{ $estado }}">
+                            <input type="hidden" name="sede" value="{{ $sede }}">
+                            <input type="hidden" name="revision" value="{{ $revision }}">
+                            <input type="hidden" name="buscar" value="{{ $buscar }}">
+                            <div class="input-group input-group-sm">
+                                <select name="sede_codigo"
+                                        class="form-select"
+                                        @disabled(!($detalle['puedeCambiarSede'] ?? false))>
+                                    @if(in_array('SF', $sedesPermitidas, true))
+                                        <option value="SF" @selected($detalle['inmueble']->sede_codigo === 'SF')>Santa Fe</option>
+                                    @endif
+                                    @if(in_array('ST', $sedesPermitidas, true))
+                                        <option value="ST" @selected($detalle['inmueble']->sede_codigo === 'ST')>Santo Tomé</option>
+                                    @endif
+                                </select>
+                                <button class="btn btn-outline-primary"
+                                        type="submit"
+                                        @disabled(!($detalle['puedeCambiarSede'] ?? false))>
+                                    {{ $detalle['inmueble']->sede_codigo ? 'Cambiar' : 'Asignar' }}
+                                </button>
+                            </div>
+                        </form>
+
+                        @if(!($detalle['puedeCambiarSede'] ?? false))
+                            <div class="small text-danger mt-2">
+                                {{ $detalle['motivoBloqueoSede'] ?? 'La sede de este inmueble no puede modificarse.' }}
+                            </div>
+                        @elseif($detalle['inmueble']->sede_codigo)
+                            <div class="small text-muted mt-2">
+                                Este inmueble no tiene actividad ni datos relacionados; la sede puede modificarse.
+                            </div>
+                        @else
+                            <div class="small text-muted mt-2">
+                                La asignación manual queda persistida y no será pisada por el próximo procesamiento COBOL.
+                            </div>
+                        @endif
                     </div>
 
                     <h3 class="h6">Partidas</h3>

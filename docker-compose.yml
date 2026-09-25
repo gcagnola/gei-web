@@ -12,8 +12,9 @@ services:
       - "80:80"
     volumes:
       - ./src:/var/www/html
-      - ../../dockers/samba-server/archivos/KNG/Facturas:/archivo-kng/facturas:ro
-      - ./kng-dbf-reader/cache:/kng-cache:ro
+      - ${KNG_FACTURAS_DBF_HOST:-../../dockers/samba-server/archivos/KNG/facturas.DBF}:/archivo-kng/facturas.DBF:ro
+      - ${KNG_LOTES_DBF_HOST:-../../dockers/samba-server/archivos/KNG/LOTES.DBF}:/archivo-kng/LOTES.DBF:ro
+      - ${KNG_FACTURAS_DIR_HOST:-../../dockers/samba-server/archivos/KNG/Facturas}:/archivo-kng/Facturas:rw
       - ./docker/php/php.ini:/usr/local/etc/php/conf.d/gei.ini:ro
     networks:
       - gei-network

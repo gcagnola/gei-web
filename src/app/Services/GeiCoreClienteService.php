@@ -9,7 +9,6 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use RuntimeException;
-use PDO;
 use Throwable;
 
 final class GeiCoreClienteService
@@ -42,11 +41,12 @@ final class GeiCoreClienteService
         return (string) $periodo;
     }
 
-    public function resumen(string $periodo, string $rol): array
+    public function resumen(string $periodo, string $rol, array $sedesPermitidas = []): array
     {
         $rol = $this->rol($rol);
         $bindings = [$periodo];
         $filtroRol = '';
+        [$filtroSede, $bindingsSede] = $this->sqlFiltroCuentaPorSedes('po.cuenta_cobol', $sedesPermitidas);
 
         if ($rol !== 'TODOS') {
             $filtroRol = ' and pp.rol = ?';
@@ -58,8 +58,12 @@ final class GeiCoreClienteService
                 count(distinct pp.persona_id) as personas,
                 count(distinct pp.persona_id) filter (where pp.activo) as activas
              from gei_core.personas_periodos pp
-             where pp.periodo = ? {$filtroRol}",
-            $bindings
+             join gei_core.personas_origenes po
+               on po.persona_id = pp.persona_id
+              and po.periodo = pp.periodo
+              and po.rol = pp.rol
+             where pp.periodo = ? {$filtroRol} {$filtroSede}",
+            [...$bindings, ...$bindingsSede]
         );
 
         return [
@@ -77,7 +81,7 @@ final class GeiCoreClienteService
      *
      * @return array{grupos: array<int, array<string,mixed>>, total_grupos:int, total_personas:int}
      */
-    public function duplicadosActivos(string $periodo, string $buscar = ''): array
+    public function duplicadosActivos(string $periodo, string $buscar = '', array $sedesPermitidas = []): array
     {
         $filas = collect($this->core()->select(
             "select
@@ -99,11 +103,12 @@ final class GeiCoreClienteService
                on pc.persona_id = p.id
              where pp.periodo = ?
                and pp.activo = true
+               {$this->sqlFiltroCuentaPorSedesTexto('pc.cuenta_cobol', $sedesPermitidas)}
              group by
                 p.id, p.nombre, p.nro_iva, p.nro_documento,
                 p.domicilio, p.localidad, p.provincia
              order by p.nombre nulls last, p.id",
-            [$periodo]
+            [$periodo, ...$this->prefijosCuentaPorSedes($sedesPermitidas)]
         ));
 
         $porCuit = [];
@@ -252,11 +257,13 @@ final class GeiCoreClienteService
         string $rol,
         string $estado,
         string $buscar,
-        int $porPagina = 50
+        int $porPagina = 50,
+        array $sedesPermitidas = []
     ): LengthAwarePaginator {
         $rol = $this->rol($rol);
         $estado = in_array($estado, ['activos', 'todos'], true) ? $estado : 'activos';
         $buscar = trim($buscar);
+        $prefijosSede = $this->prefijosCuentaPorSedes($sedesPermitidas);
 
         $q = $this->core()->table('gei_core.personas_periodos as pp')
             ->join('gei_core.personas as p', 'p.id', '=', 'pp.persona_id')
@@ -268,6 +275,10 @@ final class GeiCoreClienteService
             ->where('pp.periodo', $periodo)
             ->when($rol !== 'TODOS', fn ($x) => $x->where('pp.rol', $rol))
             ->when($estado === 'activos', fn ($x) => $x->where('pp.activo', true))
+            ->when($prefijosSede !== [], fn ($x) => $x->whereIn(
+                DB::raw("left(regexp_replace(coalesce(po.cuenta_cobol, ''), '[^0-9]', '', 'g'), 4)"),
+                $prefijosSede
+            ))
             ->when($buscar !== '', function ($x) use ($buscar): void {
                 $like = '%'.$buscar.'%';
                 $x->where(function ($s) use ($like): void {
@@ -298,7 +309,7 @@ final class GeiCoreClienteService
         return $q->paginate($porPagina)->withQueryString();
     }
 
-    public function detalle(int $personaId, string $periodo, string $tab = 'datos', ?string $mesActividad = null): array
+    public function detalle(int $personaId, string $periodo, string $tab = 'datos', ?string $mesActividad = null, array $sedesPermitidas = []): array
     {
         $core = $this->core();
 
@@ -322,13 +333,19 @@ final class GeiCoreClienteService
             [$personaId]
         ));
 
+        [$filtroCuenta, $bindingsCuenta] = $this->sqlFiltroCuentaPorSedes('cuenta_cobol', $sedesPermitidas);
         $cuentas = collect($core->select(
             "select id, rol, cuenta_cobol, activa, primer_periodo, ultimo_periodo
                from gei_core.personas_cuentas_cobol
-              where persona_id = ?
+              where persona_id = ? {$filtroCuenta}
               order by rol, cuenta_cobol",
-            [$personaId]
+            [$personaId, ...$bindingsCuenta]
         ));
+
+        $rolesPermitidos = $cuentas->pluck('rol')->filter()->unique()->values();
+        $roles = $roles->filter(fn ($fila) => $rolesPermitidos->contains($fila->rol))->values();
+
+        [$filtroSedeContrato, $bindingsSedeContrato] = $this->sqlFiltroSedeInmueblePorSedes('ip.sede_codigo', $sedesPermitidas);
 
         $contratos = collect($core->select(
             "select
@@ -339,6 +356,9 @@ final class GeiCoreClienteService
                 pprop.nombre as propietario_nombre
              from gei_core.contratos_periodos cp
              join gei_core.inmuebles im on im.id = cp.inmueble_id
+             join gei_core.inmuebles_periodos ip
+               on ip.inmueble_id = cp.inmueble_id
+              and ip.periodo = cp.periodo
              left join gei_core.personas pinq on pinq.id = cp.persona_inquilino_id
              left join gei_core.personas pprop on pprop.id = cp.persona_propietario_id
              where cp.periodo = ?
@@ -346,8 +366,9 @@ final class GeiCoreClienteService
                     cp.persona_inquilino_id = ?
                     or cp.persona_propietario_id = ?
                )
+               {$filtroSedeContrato}
              order by cp.activo desc, im.domicilio_actual nulls last, cp.contrato_id",
-            [$periodo, $personaId, $personaId]
+            [$periodo, $personaId, $personaId, ...$bindingsSedeContrato]
         ));
 
         $idsContratos = $contratos->pluck('contrato_id')->unique()->values()->all();
@@ -390,21 +411,21 @@ final class GeiCoreClienteService
              from gei_core.cuentas_corrientes cc
              left join gei_core.cuentas_corrientes_movimientos m
                on m.cuenta_corriente_id = cc.id
-             where cc.persona_id = ?
+             where cc.persona_id = ? {$filtroCuenta}
              group by
                 cc.id, cc.tipo, cc.cuenta_cobol, cc.activa,
                 cc.primer_periodo, cc.ultimo_periodo
              order by cc.tipo, cc.cuenta_cobol",
-            [$personaId]
+            [$personaId, ...$bindingsCuenta]
         ));
 
         $mesActividad = $mesActividad ?: now()->format('Ym');
         $ultimosMovimientos = $tab === 'cuenta-corriente'
-            ? $this->movimientosMes($personaId, $mesActividad)
+            ? $this->movimientosMes($personaId, $mesActividad, $sedesPermitidas)
             : collect();
 
         $incidenciasFechasFuturas = $tab === 'cuenta-corriente'
-            ? $this->incidenciasFechasFuturasMes($personaId, $mesActividad)
+            ? $this->incidenciasFechasFuturasMes($personaId, $mesActividad, $sedesPermitidas)
             : collect();
 
         $cuentasPropietario = $cuentas
@@ -517,104 +538,154 @@ final class GeiCoreClienteService
             return collect();
         }
 
-        $dbPath = (string) config('kng.cache_db');
-
-        if ($dbPath === '' || ! is_file($dbPath) || ! is_readable($dbPath)) {
-            return collect();
-        }
-
-        try {
-            $pdo = new PDO('sqlite:'.$dbPath, null, null, [
-                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_OBJ,
-            ]);
-        } catch (Throwable) {
+        $db = DB::connection();
+        if (! Schema::connection($db->getName())->hasTable('kng_facturas')) {
             return collect();
         }
 
         $placeholders = implode(',', array_fill(0, count($cuentas), '?'));
+        $params = [...$cuentas, ...$cuentas];
+        $filtroMes = '';
 
-        /*
-         * Importante:
-         * - no recorremos el filesystem en cada request;
-         * - archivos_pdf fue indexado previamente por el proceso KNG;
-         * - el mes visible se filtra en SQLite; otros meses se piden por AJAX;
-         * - evitamos cargar todo el historial al abrir Cliente 360.
-         */
+        if ($mes !== null) {
+            $filtroMes = "and left(coalesce(kf.datos->>'FECHA', ''), 7) = ?";
+            $params[] = substr($mes, 0, 4).'-'.substr($mes, 4, 2);
+        }
+
         $sql = "
             select
-                f.p_venta,
-                f.id_factura,
-                f.fecha,
-                f.total,
-                f.gravado,
-                f.no_gravado,
-                f.iva,
-                f.lote,
-                f.id_inq,
-                f.percepcion,
-                f.tipo,
-                f.cae,
-                f.vto_cae,
-                f.propieta,
-                f.cta_orig,
-                l.detalle as detalle_lote,
-                l.desde as lote_desde,
-                l.hasta as lote_hasta,
-                p.archivo as archivo_pdf,
-                p.tipo_archivo,
-                p.numero as numero_comprobante
-            from facturas f
-            left join lotes l
-              on l.id_lote = f.lote
-            left join archivos_pdf p
-              on p.lote = f.lote
-             and p.cuenta_cobol = cast(
-                    case
-                        when f.id_inq is not null and f.id_inq <> 0 then f.id_inq
-                        else f.cta_orig
-                    end
-                    as text
-                 )
-             and p.punto_venta = f.p_venta
-            where (cast(f.id_inq as text) in ({$placeholders})
-               or cast(f.cta_orig as text) in ({$placeholders}))
-            %MES_FILTRO%
+                kf.datos->>'P_VENTA' as p_venta,
+                kf.datos->>'ID_FACTURA' as id_factura,
+                nullif(kf.datos->>'FECHA', '') as fecha,
+                nullif(kf.datos->>'TOTAL', '') as total,
+                nullif(kf.datos->>'GRAVADO', '') as gravado,
+                nullif(kf.datos->>'NO_GRAVADO', '') as no_gravado,
+                nullif(kf.datos->>'IVA', '') as iva,
+                kf.datos->>'LOTE' as lote,
+                nullif(kf.datos->>'ID_INQ', '') as id_inq,
+                nullif(kf.datos->>'PERCEPCION', '') as percepcion,
+                nullif(kf.datos->>'TIPO', '') as tipo,
+                nullif(kf.datos->>'CAE', '') as cae,
+                nullif(kf.datos->>'VTO_CAE', '') as vto_cae,
+                nullif(kf.datos->>'PROPIETA', '') as propieta,
+                nullif(kf.datos->>'CTA_ORIG', '') as cta_orig,
+                coalesce(
+                    nullif(kl.datos->>'DETALLE', ''),
+                    nullif(kl.datos->>'DESCRIPCION', ''),
+                    nullif(kl.datos->>'DESCRI', '')
+                ) as detalle_lote,
+                nullif(kl.datos->>'DESDE', '') as lote_desde,
+                nullif(kl.datos->>'HASTA', '') as lote_hasta
+            from kng_facturas kf
+            left join kng_lotes kl
+              on kl.eliminado = false
+             and coalesce(kl.datos->>'ID_LOTE', kl.datos->>'LOTE') = kf.datos->>'LOTE'
+            where kf.eliminado = false
+              and (
+                    kf.datos->>'ID_INQ' in ({$placeholders})
+                 or kf.datos->>'CTA_ORIG' in ({$placeholders})
+              )
+              {$filtroMes}
             order by
-                case when f.fecha is null then '' else f.fecha end desc,
-                f.lote desc,
-                f.id_factura desc,
-                p.numero desc
+                coalesce(kf.datos->>'FECHA', '') desc,
+                nullif(regexp_replace(coalesce(kf.datos->>'LOTE', ''), '[^0-9]', '', 'g'), '')::bigint desc nulls last,
+                nullif(regexp_replace(coalesce(kf.datos->>'ID_FACTURA', ''), '[^0-9]', '', 'g'), '')::bigint desc nulls last
             limit 1000
         ";
 
-        $mesFiltro = '';
-        $params = [...$cuentas, ...$cuentas];
-        if ($mes !== null) {
-            $mesSqlite = substr($mes, 0, 4).'-'.substr($mes, 4, 2);
-            $mesFiltro = "and substr(coalesce(f.fecha,''),1,7) = ?";
-            $params[] = $mesSqlite;
-        }
-        $sql = str_replace('%MES_FILTRO%', $mesFiltro, $sql);
-
         try {
-            $stmt = $pdo->prepare($sql);
-            $stmt->execute($params);
+            $filas = collect($db->select($sql, $params));
+            $pdfPorLote = [];
 
-            return collect($stmt->fetchAll())->map(function ($f): object {
-                $f->comprobante = $f->archivo_pdf
-                    ? preg_replace('/-\d{11}\.pdf$/i', '', (string) $f->archivo_pdf)
-                    : null;
-
-                return $f;
+            return $filas->map(function (object $f) use (&$pdfPorLote): object {
+                return $this->asociarPdfKng($f, $pdfPorLote);
             });
         } catch (Throwable) {
             return collect();
         }
     }
 
+    /**
+     * Vincula una fila de FACTURAS.DBF con el PDF físico ya organizado en lote_*.
+     * No usa ID_FACTURA para formar el nombre: ese campo es el identificador interno
+     * de KNG, no el número fiscal. El PDF se identifica igual que en el cache viejo:
+     * lote + cuenta COBOL + punto de venta, usando TIPO sólo para desempatar.
+     *
+     * @param array<string, array<string, list<string>>> $cache
+     */
+    private function asociarPdfKng(object $f, array &$cache): object
+    {
+        $f->archivo_pdf = null;
+        $f->numero_comprobante = null;
+        $f->comprobante = null;
+        $f->pdf_en_raiz = false;
 
-    public function resolverMesActividad(int $personaId, string $tipo, ?string $mesPreferido = null): string
+        $lote = preg_replace('/\\D+/', '', (string) ($f->lote ?? '')) ?: '';
+        $puntoVenta = preg_replace('/\\D+/', '', (string) ($f->p_venta ?? '')) ?: '';
+        $numero = preg_replace('/\\D+/', '', (string) ($f->id_factura ?? '')) ?: '';
+        $cuenta = $this->normalizarCuenta((string) (($f->id_inq ?? '') ?: ($f->cta_orig ?? '')));
+
+        if ($puntoVenta === '' || $numero === '' || $cuenta === '') {
+            return $f;
+        }
+
+        $prefijo = match ((int) ($f->tipo ?? 0)) {
+            1 => 'FA',
+            3 => 'CA',
+            6 => 'FB',
+            8 => 'CB',
+            default => null,
+        };
+
+        if ($prefijo === null) {
+            return $f;
+        }
+
+        $archivo = sprintf(
+            '%s-%04d-%08d-%011d.pdf',
+            $prefijo,
+            (int) $puntoVenta,
+            (int) $numero,
+            (int) $cuenta
+        );
+
+        // El nombre sale de FACTURAS.DBF. No ocultamos el enlace por una
+        // comprobación de filesystem aquí: el controlador resuelve si está
+        // en lote_<nro>/ o todavía suelto en Facturas/.
+        $f->archivo_pdf = $archivo;
+        $f->comprobante = preg_replace('/-\\d{11}\\.pdf$/i', '', $archivo);
+        $f->numero_comprobante = str_pad($numero, 8, '0', STR_PAD_LEFT);
+
+        return $f;
+    }
+
+    /** @return array<string, list<string>> */
+    private function indexarPdfsLoteKng(string $lote): array
+    {
+        $root = rtrim((string) config('gei.kng.root', '/archivo-kng'), DIRECTORY_SEPARATOR);
+        $dirNombre = (string) config('gei.kng.facturas_dir', 'Facturas');
+        $directorio = $root.DIRECTORY_SEPARATOR.$dirNombre.DIRECTORY_SEPARATOR.'lote_'.$lote;
+
+        if (! is_dir($directorio) || ! is_readable($directorio)) {
+            return [];
+        }
+
+        $indice = [];
+        foreach (scandir($directorio, SCANDIR_SORT_ASCENDING) ?: [] as $archivo) {
+            if (preg_match('/^([A-Z]{2})-(\d{4})-(\d{8})-(\d{11})\.pdf$/i', $archivo, $m) !== 1) {
+                continue;
+            }
+
+            $pv = (string) ((int) $m[2]);
+            $cuenta = $this->normalizarCuenta($m[4]);
+            $indice[$pv.'|'.$cuenta][] = $archivo;
+        }
+
+        return $indice;
+    }
+
+
+    public function resolverMesActividad(int $personaId, string $tipo, ?string $mesPreferido = null, array $sedesPermitidas = []): string
     {
         $mesPreferido = $mesPreferido ?: now()->format('Ym');
 
@@ -623,7 +694,7 @@ final class GeiCoreClienteService
         }
 
         // Si el mes actual/solicitado tiene datos, lo usamos tal cual.
-        if ($this->actividad($personaId, $tipo, $mesPreferido)->isNotEmpty()) {
+        if ($this->actividad($personaId, $tipo, $mesPreferido, $sedesPermitidas)->isNotEmpty()) {
             return $mesPreferido;
         }
 
@@ -647,24 +718,26 @@ final class GeiCoreClienteService
                 else ''
             end";
 
+            [$filtroCuentaMes, $bindingsCuentaMes] = $this->sqlFiltroCuentaPorSedes('cc.cuenta_cobol', $sedesPermitidas);
             $fila = $core->selectOne(
                 "select max(substr(({$fechaNormalizada}),1,6)) as mes
                    from gei_core.cuentas_corrientes cc
                    join gei_core.cuentas_corrientes_movimientos m
                      on m.cuenta_corriente_id = cc.id
-                  where cc.persona_id = ?
+                  where cc.persona_id = ? {$filtroCuentaMes}
                     and substr(({$fechaNormalizada}),1,6) <= ?",
-                [$personaId, $mesPreferido]
+                [$personaId, ...$bindingsCuentaMes, $mesPreferido]
             );
 
             return (string) ($fila->mes ?: $mesPreferido);
         }
 
+        [$filtroCuenta, $bindingsCuenta] = $this->sqlFiltroCuentaPorSedes('cuenta_cobol', $sedesPermitidas);
         $cuentas = collect($core->select(
             "select rol, cuenta_cobol
                from gei_core.personas_cuentas_cobol
-              where persona_id = ?",
-            [$personaId]
+              where persona_id = ? {$filtroCuenta}",
+            [$personaId, ...$bindingsCuenta]
         ));
 
         if ($tipo === 'facturas') {
@@ -737,37 +810,29 @@ final class GeiCoreClienteService
             return null;
         }
 
-        $dbPath = (string) config('kng.cache_db');
-        if ($dbPath === '' || ! is_file($dbPath) || ! is_readable($dbPath)) {
-            return null;
-        }
-
-        try {
-            $pdo = new PDO('sqlite:'.$dbPath, null, null, [
-                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_OBJ,
-            ]);
-        } catch (Throwable) {
+        $db = DB::connection();
+        if (! Schema::connection($db->getName())->hasTable('kng_facturas')) {
             return null;
         }
 
         $placeholders = implode(',', array_fill(0, count($cuentas), '?'));
-        $hastaSqlite = substr($hastaMes, 0, 4).'-'.substr($hastaMes, 4, 2);
-        $params = [...$cuentas, ...$cuentas, $hastaSqlite];
+        $hasta = substr($hastaMes, 0, 4).'-'.substr($hastaMes, 4, 2);
+        $params = [...$cuentas, ...$cuentas, $hasta];
 
         $sql = "
-            select max(substr(coalesce(fecha,''),1,7)) as mes
-              from facturas
-             where (cast(id_inq as text) in ({$placeholders})
-                or cast(cta_orig as text) in ({$placeholders}))
-               and substr(coalesce(fecha,''),1,7) <= ?
+            select max(left(coalesce(datos->>'FECHA', ''), 7)) as mes
+              from kng_facturas
+             where eliminado = false
+               and (
+                    datos->>'ID_INQ' in ({$placeholders})
+                 or datos->>'CTA_ORIG' in ({$placeholders})
+               )
+               and left(coalesce(datos->>'FECHA', ''), 7) <= ?
         ";
 
         try {
-            $stmt = $pdo->prepare($sql);
-            $stmt->execute($params);
-            $fila = $stmt->fetch();
-            $mes = is_object($fila) ? (string) ($fila->mes ?? '') : '';
+            $fila = $db->selectOne($sql, $params);
+            $mes = (string) ($fila->mes ?? '');
 
             return preg_match('/^(19|20)\d{2}-\d{2}$/', $mes)
                 ? str_replace('-', '', $mes)
@@ -777,7 +842,8 @@ final class GeiCoreClienteService
         }
     }
 
-    public function actividad(int $personaId, string $tipo, string $mes): Collection
+
+    public function actividad(int $personaId, string $tipo, string $mes, array $sedesPermitidas = []): Collection
     {
         $core = $this->core();
         $persona = $core->selectOne(
@@ -790,14 +856,15 @@ final class GeiCoreClienteService
         }
 
         if ($tipo === 'cuenta-corriente') {
-            return $this->movimientosMes($personaId, $mes);
+            return $this->movimientosMes($personaId, $mes, $sedesPermitidas);
         }
 
+        [$filtroCuenta, $bindingsCuenta] = $this->sqlFiltroCuentaPorSedes('cuenta_cobol', $sedesPermitidas);
         $cuentas = collect($core->select(
             "select rol, cuenta_cobol
                from gei_core.personas_cuentas_cobol
-              where persona_id = ?",
-            [$personaId]
+              where persona_id = ? {$filtroCuenta}",
+            [$personaId, ...$bindingsCuenta]
         ));
 
         if ($tipo === 'facturas') {
@@ -826,17 +893,18 @@ final class GeiCoreClienteService
      * - al mirar 11/2026 no muestra las incidencias originadas en septiembre;
      * - al mirar 06/2026 tampoco.
      */
-    public function incidenciasFechasFuturasMes(int $personaId, string $mes): Collection
+    public function incidenciasFechasFuturasMes(int $personaId, string $mes, array $sedesPermitidas = []): Collection
     {
         if (! preg_match('/^(19|20)\d{2}(0[1-9]|1[0-2])$/', $mes)) {
             return collect();
         }
 
+        [$filtroCuenta, $bindingsCuenta] = $this->sqlFiltroCuentaPorSedes('cuenta_cobol', $sedesPermitidas);
         $cuentas = collect($this->core()->select(
             "select cuenta_cobol
                from gei_core.personas_cuentas_cobol
-              where persona_id = ?",
-            [$personaId]
+              where persona_id = ? {$filtroCuenta}",
+            [$personaId, ...$bindingsCuenta]
         ))
             ->pluck('cuenta_cobol')
             ->map(fn ($cuenta) => trim((string) $cuenta))
@@ -928,7 +996,7 @@ final class GeiCoreClienteService
             ->values();
     }
 
-    private function movimientosMes(int $personaId, string $mes): Collection
+    private function movimientosMes(int $personaId, string $mes, array $sedesPermitidas = []): Collection
     {
         $fechaNormalizada = "case
             when m.fecha_original ~ '^(19|20)[0-9]{6}$' then m.fecha_original
@@ -938,6 +1006,8 @@ final class GeiCoreClienteService
                   || substr(m.fecha_original,1,2)
             else ''
         end";
+
+        [$filtroCuenta, $bindingsCuenta] = $this->sqlFiltroCuentaPorSedes('cc.cuenta_cobol', $sedesPermitidas);
 
         return collect($this->core()->select(
             "select
@@ -952,12 +1022,103 @@ final class GeiCoreClienteService
              from gei_core.cuentas_corrientes cc
              join gei_core.cuentas_corrientes_movimientos m
                on m.cuenta_corriente_id = cc.id
-             where cc.persona_id = ?
+             where cc.persona_id = ? {$filtroCuenta}
                and substr(({$fechaNormalizada}),1,6) = ?
              order by ({$fechaNormalizada}), m.codigo, m.numero
              limit 500",
-            [$personaId, $mes]
+            [$personaId, ...$bindingsCuenta, $mes]
         ));
+    }
+
+    /** @param array<int, string> $sedesPermitidas */
+    public function personaVisibleEnSedes(int $personaId, string $periodo, array $sedesPermitidas): bool
+    {
+        $prefijos = $this->prefijosCuentaPorSedes($sedesPermitidas);
+        if ($prefijos === []) {
+            return false;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($prefijos), '?'));
+
+        return $this->core()->selectOne(
+            "select exists (
+                select 1
+                  from gei_core.personas_origenes po
+                 where po.persona_id = ?
+                   and po.periodo = ?
+                   and left(regexp_replace(coalesce(po.cuenta_cobol, ''), '[^0-9]', '', 'g'), 4)
+                       in ({$placeholders})
+            ) as visible",
+            [$personaId, $periodo, ...$prefijos]
+        )?->visible === true;
+    }
+
+    /** @param array<int, string> $sedesPermitidas
+     *  @return array<int, string>
+     */
+    private function prefijosCuentaPorSedes(array $sedesPermitidas): array
+    {
+        $prefijos = [];
+
+        foreach ($sedesPermitidas as $sede) {
+            switch (strtoupper(trim((string) $sede))) {
+                case 'SF':
+                    $prefijos[] = '1103';
+                    $prefijos[] = '1202';
+                    break;
+                case 'ST':
+                    $prefijos[] = '2103';
+                    $prefijos[] = '2202';
+                    break;
+            }
+        }
+
+        return array_values(array_unique($prefijos));
+    }
+
+    /** @param array<int, string> $sedesPermitidas
+     *  @return array{0:string,1:array<int,string>}
+     */
+    private function sqlFiltroCuentaPorSedes(string $columna, array $sedesPermitidas): array
+    {
+        $prefijos = $this->prefijosCuentaPorSedes($sedesPermitidas);
+        if ($prefijos === []) {
+            return [' and 1 = 0', []];
+        }
+
+        $placeholders = implode(',', array_fill(0, count($prefijos), '?'));
+
+        return [
+            " and left(regexp_replace(coalesce({$columna}, ''), '[^0-9]', '', 'g'), 4) in ({$placeholders})",
+            $prefijos,
+        ];
+    }
+
+    /** @param array<int, string> $sedesPermitidas */
+    private function sqlFiltroCuentaPorSedesTexto(string $columna, array $sedesPermitidas): string
+    {
+        [$sql] = $this->sqlFiltroCuentaPorSedes($columna, $sedesPermitidas);
+
+        return $sql;
+    }
+
+    /** @param array<int, string> $sedesPermitidas
+     *  @return array{0:string,1:array<int,string>}
+     */
+    private function sqlFiltroSedeInmueblePorSedes(string $columna, array $sedesPermitidas): array
+    {
+        $sedes = array_values(array_unique(array_filter(array_map(
+            static fn ($sede): string => strtoupper(trim((string) $sede)),
+            $sedesPermitidas
+        ), static fn (string $sede): bool => in_array($sede, ['SF', 'ST'], true))));
+
+        if ($sedes === []) {
+            return [' and 1 = 0', []];
+        }
+
+        $placeholders = implode(',', array_fill(0, count($sedes), '?'));
+
+        return [" and {$columna} in ({$placeholders})", $sedes];
     }
 
     private function rol(string $rol): string

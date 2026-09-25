@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Services\KngDbfImportService;
 use App\Exceptions\MigracionExploracionException;
 use App\Services\GeiCoreProcesarPeriodoService;
 use App\Services\LiquidacionesPropietariosService;
@@ -58,7 +59,8 @@ class ImportacionArchivosController extends Controller
 
     public function index(
         MigracionExploracionService $migracion,
-        TransformacionCobolService $transformacion
+        TransformacionCobolService $transformacion,
+        KngDbfImportService $kngService
     ): View
     {
         $this->crearDirectoriosBase();
@@ -66,6 +68,7 @@ class ImportacionArchivosController extends Controller
         return view('importaciones.index', [
             'periodos' => $this->periodosImportaciones($migracion, $transformacion),
             'meses' => $this->mesesFormulario(),
+            'kng' => $kngService->estado(),
         ]);
     }
 

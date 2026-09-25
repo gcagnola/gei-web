@@ -99,6 +99,17 @@
 @endphp
 
 <div class="container-fluid py-3">
+    @if(session('estado'))
+        <div class="alert alert-success py-2">{{ session('estado') }}</div>
+    @endif
+    @if($errors->any())
+        <div class="alert alert-danger py-2">
+            @foreach($errors->all() as $error)
+                <div>{{ $error }}</div>
+            @endforeach
+        </div>
+    @endif
+
     <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
         <div>
             <a href="{{ route('core-clientes.index',['periodo'=>$periodo]) }}" class="small text-decoration-none">&larr; Volver a Clientes</a>
@@ -140,6 +151,26 @@
                     <dt class="col-sm-4">Localidad</dt><dd class="col-sm-8">{{ $v($p->localidad) }}</dd>
                     <dt class="col-sm-4">Provincia</dt><dd class="col-sm-8">{{ $v($p->provincia) }}</dd>
                     <dt class="col-sm-4">Teléfono</dt><dd class="col-sm-8">{{ $v($p->telefono_1) }}</dd>
+                    <dt class="col-sm-4">Email</dt>
+                    <dd class="col-sm-8">
+                        <form method="POST" action="{{ route('core-clientes.email.update', ['persona' => $p->id]) }}" class="d-flex flex-wrap gap-2 align-items-start">
+                            @csrf
+                            @method('PUT')
+                            <input type="hidden" name="periodo" value="{{ $periodo }}">
+                            <input
+                                type="email"
+                                name="email"
+                                value="{{ old('email', $p->email ?? '') }}"
+                                class="form-control form-control-sm @error('email') is-invalid @enderror"
+                                maxlength="180"
+                                placeholder="cliente@ejemplo.com"
+                                autocomplete="email"
+                                style="max-width: 360px"
+                            >
+                            <button type="submit" class="btn btn-sm btn-outline-primary">Guardar email</button>
+                        </form>
+                        <div class="form-text">Es el único dato del cliente habilitado para modificación por ahora.</div>
+                    </dd>
                 </dl>
             </div></div></div>
 
@@ -416,12 +447,50 @@
                     <div class="fw-semibold">{{ $tituloActividad }}</div>
                     <div class="small text-muted">Se muestra el mes actual si tiene actividad; si no, el último mes disponible. Podés pedir cualquier otro mes.</div>
                 </div>
-                <div class="d-flex align-items-center gap-2">
-                    <input type="month"
-                           class="form-control form-control-sm"
-                           id="actividad-mes"
-                           value="{{ substr($mesActividad,0,4) }}-{{ substr($mesActividad,4,2) }}"
-                           max="{{ now()->format('Y-m') }}">
+                <div class="d-flex align-items-center gap-2 position-relative">
+                    <div class="input-group input-group-sm" style="width: 180px;">
+                        <input
+                            type="text"
+                            class="form-control"
+                            id="actividad-mes-display"
+                            value="{{ substr($mesActividad,4,2) }}/{{ substr($mesActividad,0,4) }}"
+                            readonly
+                            aria-label="Mes seleccionado"
+                        >
+                        <input
+                            type="hidden"
+                            id="actividad-mes"
+                            value="{{ substr($mesActividad,0,4) }}-{{ substr($mesActividad,4,2) }}"
+                        >
+                        <button
+                            type="button"
+                            class="btn btn-outline-secondary"
+                            id="actividad-mes-picker"
+                            aria-label="Elegir mes"
+                            title="Elegir mes"
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"
+                                 viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                                <path d="M3.5 0a.5.5 0 0 1 .5.5V1h8V.5a.5.5 0 0 1 1 0V1h.5A1.5 1.5 0 0 1 15 2.5v11A1.5 1.5 0 0 1 13.5 15h-11A1.5 1.5 0 0 1 1 13.5v-11A1.5 1.5 0 0 1 2.5 1H3V.5a.5.5 0 0 1 .5-.5ZM2 4v9.5a.5.5 0 0 0 .5.5h11a.5.5 0 0 0 .5-.5V4H2Z"/>
+                            </svg>
+                        </button>
+                    </div>
+
+                    <div
+                        id="actividad-mes-panel"
+                        class="card shadow position-absolute d-none"
+                        style="z-index: 1080; top: 100%; right: 0; width: 260px; margin-top: 4px;"
+                    >
+                        <div class="card-body p-2">
+                            <div class="d-flex align-items-center justify-content-between mb-2">
+                                <button type="button" class="btn btn-sm btn-light" id="actividad-anio-anterior">&lsaquo;</button>
+                                <strong id="actividad-anio"></strong>
+                                <button type="button" class="btn btn-sm btn-light" id="actividad-anio-siguiente">&rsaquo;</button>
+                            </div>
+                            <div class="row g-1" id="actividad-meses"></div>
+                        </div>
+                    </div>
+
                     <button type="button" class="btn btn-sm btn-outline-primary" id="actividad-cargar">Cargar mes</button>
                 </div>
             </div>
@@ -444,10 +513,97 @@
         document.addEventListener('DOMContentLoaded', () => {
             const card = document.getElementById('actividad-cliente');
             const input = document.getElementById('actividad-mes');
+            const display = document.getElementById('actividad-mes-display');
+            const picker = document.getElementById('actividad-mes-picker');
+            const panel = document.getElementById('actividad-mes-panel');
+            const anioLabel = document.getElementById('actividad-anio');
+            const mesesContenedor = document.getElementById('actividad-meses');
+            const anioAnterior = document.getElementById('actividad-anio-anterior');
+            const anioSiguiente = document.getElementById('actividad-anio-siguiente');
             const button = document.getElementById('actividad-cargar');
             const contenido = document.getElementById('actividad-contenido');
             const estado = document.getElementById('actividad-estado');
-            if (!card || !input || !button || !contenido || !estado) return;
+
+            if (!card || !input || !display || !picker || !panel || !anioLabel || !mesesContenedor || !button || !contenido || !estado) return;
+
+            const nombresMeses = [
+                'Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun',
+                'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'
+            ];
+
+            const ahora = new Date();
+            const maxAnio = ahora.getFullYear();
+            const maxMes = ahora.getMonth() + 1;
+
+            let [anioSeleccionado, mesSeleccionado] = (input.value || '').split('-').map(Number);
+            if (!anioSeleccionado || !mesSeleccionado) {
+                anioSeleccionado = maxAnio;
+                mesSeleccionado = maxMes;
+            }
+            let anioVisible = anioSeleccionado;
+
+            const renderMeses = () => {
+                anioLabel.textContent = anioVisible;
+                mesesContenedor.innerHTML = '';
+
+                nombresMeses.forEach((nombre, indice) => {
+                    const mes = indice + 1;
+                    const futuro = anioVisible > maxAnio || (anioVisible === maxAnio && mes > maxMes);
+                    const activo = anioVisible === anioSeleccionado && mes === mesSeleccionado;
+
+                    const col = document.createElement('div');
+                    col.className = 'col-3';
+
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = 'btn btn-sm w-100 ' + (activo ? 'btn-primary' : 'btn-outline-secondary');
+                    btn.textContent = nombre;
+                    btn.disabled = futuro;
+
+                    btn.addEventListener('click', () => {
+                        anioSeleccionado = anioVisible;
+                        mesSeleccionado = mes;
+
+                        const mm = String(mes).padStart(2, '0');
+                        input.value = `${anioSeleccionado}-${mm}`;
+                        display.value = `${mm}/${anioSeleccionado}`;
+                        panel.classList.add('d-none');
+                        renderMeses();
+                    });
+
+                    col.appendChild(btn);
+                    mesesContenedor.appendChild(col);
+                });
+
+                anioSiguiente.disabled = anioVisible >= maxAnio;
+            };
+
+            picker.addEventListener('click', (event) => {
+                event.stopPropagation();
+                panel.classList.toggle('d-none');
+                if (!panel.classList.contains('d-none')) {
+                    anioVisible = anioSeleccionado;
+                    renderMeses();
+                }
+            });
+
+            anioAnterior.addEventListener('click', () => {
+                anioVisible--;
+                renderMeses();
+            });
+
+            anioSiguiente.addEventListener('click', () => {
+                if (anioVisible < maxAnio) {
+                    anioVisible++;
+                    renderMeses();
+                }
+            });
+
+            document.addEventListener('click', (event) => {
+                if (!panel.contains(event.target) && event.target !== picker) {
+                    panel.classList.add('d-none');
+                }
+            });
 
             const cargar = async () => {
                 const mes = (input.value || '').replace('-', '');
@@ -477,7 +633,6 @@
             };
 
             button.addEventListener('click', cargar);
-            input.addEventListener('change', cargar);
         });
         </script>
     @endif

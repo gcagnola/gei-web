@@ -15,6 +15,13 @@ use App\Http\Controllers\LiquidacionPropietarioController;
 use App\Http\Controllers\UnificacionInmuebleController;
 use App\Http\Controllers\UnificacionClienteController;
 use App\Http\Controllers\FacturaController;
+use App\Http\Controllers\SucursalController;
+use App\Http\Controllers\PermisoPerfilController;
+use App\Http\Controllers\UsuarioController;
+use App\Http\Controllers\PerfilController;
+use App\Http\Controllers\Api\CobolImpresionController;
+use App\Http\Controllers\CobolImpresionListadoController;
+use App\Http\Controllers\KngImportacionController;
 use Illuminate\Support\Facades\Route;
 
 Route::middleware('guest')->group(function () {
@@ -58,8 +65,31 @@ Route::get(
     ->middleware('signed')
     ->name('archivo.importar.progreso');
 
+Route::post(
+    '/cobol/impresion',
+    [CobolImpresionController::class, 'store']
+)->name('cobol.impresion.store');
+
 Route::middleware('auth')->group(function () {
     Route::view('/', 'inicio')->name('inicio');
+
+    Route::get('/parametros/sedes', [SucursalController::class, 'index'])
+        ->name('parametros.sedes.index');
+
+    Route::get('/archivo/impresiones-cobol', [CobolImpresionListadoController::class, 'index'])
+        ->name('archivo.impresiones-cobol.index');
+    Route::get('/archivo/impresiones-cobol/datos', [CobolImpresionListadoController::class, 'datos'])
+        ->name('archivo.impresiones-cobol.datos');
+    Route::get('/archivo/impresiones-cobol/{impresion}/raw', [CobolImpresionListadoController::class, 'raw'])
+        ->whereNumber('impresion')
+        ->name('archivo.impresiones-cobol.raw');
+
+    Route::post('/archivo/impresiones-cobol/{impresion}/pdf/generar', [CobolImpresionListadoController::class, 'generarPdf'])
+        ->whereNumber('impresion')
+        ->name('archivo.impresiones-cobol.pdf.generar');
+    Route::get('/archivo/impresiones-cobol/{impresion}/pdf', [CobolImpresionListadoController::class, 'pdf'])
+        ->whereNumber('impresion')
+        ->name('archivo.impresiones-cobol.pdf');
 
     $modulo = static function (string $titulo, string $seccion) {
         return static fn () => view('modulo-en-construccion', [
@@ -77,6 +107,9 @@ Route::middleware('auth')->group(function () {
     Route::get('/archivo/clientes-core/{persona}', [GeiCoreClienteController::class, 'show'])
         ->whereNumber('persona')
         ->name('core-clientes.show');
+    Route::put('/archivo/clientes-core/{persona}/email', [GeiCoreClienteController::class, 'updateEmail'])
+        ->whereNumber('persona')
+        ->name('core-clientes.email.update');
     Route::get('/archivo/clientes-core/{persona}/actividad', [GeiCoreClienteController::class, 'actividad'])
         ->whereNumber('persona')
         ->name('core-clientes.actividad');
@@ -171,6 +204,9 @@ Route::middleware('auth')->group(function () {
     Route::get('/archivo/inmuebles/{inmueble}', [InmuebleExploracionController::class, 'show'])
         ->whereNumber('inmueble')
         ->name('inmuebles.show');
+    Route::put('/archivo/inmuebles/{inmueble}/sede', [InmuebleExploracionController::class, 'actualizarSede'])
+        ->whereNumber('inmueble')
+        ->name('inmuebles.sede.update');
     Route::post('/archivo/inmuebles/{inmueble}/validar-unico', [InmuebleExploracionController::class, 'validarUnico'])
         ->whereNumber('inmueble')
         ->name('inmuebles.validar-unico');
@@ -271,12 +307,50 @@ Route::get('/archivo/unificacion', [UnificacionInmuebleController::class, 'index
     Route::get('/contabilidad/libro-iva-ventas', $modulo('Libro de IVA Ventas', 'Contabilidad'))
         ->name('contabilidad.iva-ventas');
 
-    Route::get('/opciones/usuarios', $modulo('Usuarios', 'Opciones'))
+    Route::get('/opciones/usuarios', [UsuarioController::class, 'index'])
         ->name('usuarios.index');
+    Route::post('/opciones/usuarios', [UsuarioController::class, 'store'])
+        ->name('usuarios.store');
+    Route::put('/opciones/usuarios/{usuario}', [UsuarioController::class, 'update'])
+        ->name('usuarios.update');
+    Route::put('/opciones/usuarios/{usuario}/sucursales', [UsuarioController::class, 'actualizarSucursales'])
+        ->whereNumber('usuario')
+        ->name('usuarios.sucursales.update');
+    Route::delete('/opciones/usuarios/{usuario}', [UsuarioController::class, 'destroy'])
+        ->whereNumber('usuario')
+        ->name('usuarios.destroy');
+
+
+    Route::get('/opciones/permisos', [PermisoPerfilController::class, 'index'])
+        ->name('permisos.index');
+    Route::put('/opciones/permisos', [PermisoPerfilController::class, 'update'])
+        ->name('permisos.update');
+
+    Route::get('/opciones/perfiles', [PerfilController::class, 'index'])
+        ->name('perfiles.index');
+    Route::post('/opciones/perfiles', [PerfilController::class, 'store'])
+        ->name('perfiles.store');
+    Route::put('/opciones/perfiles/{perfil}', [PerfilController::class, 'update'])
+        ->whereNumber('perfil')
+        ->name('perfiles.update');
+    Route::delete('/opciones/perfiles/{perfil}', [PerfilController::class, 'destroy'])
+        ->whereNumber('perfil')
+        ->name('perfiles.destroy');
     Route::get(
         '/opciones/seteos',
         [ConfiguracionFacturacionController::class, 'index']
     )->name('seteos.index');
+
+
+    Route::get(
+        '/archivo/importar/kng/progreso',
+        [KngImportacionController::class, 'progreso']
+    )->name('archivo.importar.kng.progreso');
+
+    Route::post(
+        '/archivo/importar/kng',
+        [KngImportacionController::class, 'importar']
+    )->name('archivo.importar.kng');
 
     Route::put(
         '/opciones/seteos/facturacion/general',

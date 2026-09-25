@@ -213,45 +213,60 @@ final class GeiCoreConsultaService
         return compact('persona', 'roles', 'cuentas', 'contratos');
     }
 
-    public function inmueblesResumen(string $periodo): array
+    /** @param array<int, string> $sedesPermitidas */
+    public function inmueblesResumen(string $periodo, array $sedesPermitidas = []): array
     {
         $db = $this->conexion();
+        $sedesPermitidas = array_values(array_unique(array_filter(array_map(
+            static fn ($codigo): string => strtoupper(trim((string) $codigo)),
+            $sedesPermitidas
+        ))));
 
-        $fila = $db->selectOne(
-            "select
-                count(*) as inmuebles,
-                count(*) filter (where ip.activo) as activos,
-                sum(ip.cantidad_contratos)::bigint as contratos
-             from gei_core.inmuebles_periodos ip
-             where ip.periodo = ?",
-            [$periodo]
-        );
+        $q = $db->table('gei_core.inmuebles_periodos as ip')
+            ->where('ip.periodo', $periodo);
 
-        $partidas = $db->selectOne(
-            "select count(distinct p.inmueble_id) as con_partidas
-               from gei_core.inmuebles_periodos ip
-               join gei_core.inmuebles_partidas p on p.inmueble_id = ip.inmueble_id
-              where ip.periodo = ?",
-            [$periodo]
-        );
+        if ($sedesPermitidas !== []) {
+            $q->whereIn('ip.sede_codigo', $sedesPermitidas);
+        }
+
+        $fila = $q->selectRaw(
+            'count(*) as inmuebles, '
+            .'count(*) filter (where ip.activo) as activos, '
+            .'coalesce(sum(ip.cantidad_contratos), 0)::bigint as contratos'
+        )->first();
+
+        $partidasQ = $db->table('gei_core.inmuebles_periodos as ip')
+            ->join('gei_core.inmuebles_partidas as p', 'p.inmueble_id', '=', 'ip.inmueble_id')
+            ->where('ip.periodo', $periodo);
+
+        if ($sedesPermitidas !== []) {
+            $partidasQ->whereIn('ip.sede_codigo', $sedesPermitidas);
+        }
 
         return [
             'inmuebles' => (int) ($fila->inmuebles ?? 0),
             'activos' => (int) ($fila->activos ?? 0),
             'contratos' => (int) ($fila->contratos ?? 0),
-            'con_partidas' => (int) ($partidas->con_partidas ?? 0),
+            'con_partidas' => (int) $partidasQ->distinct('ip.inmueble_id')->count('ip.inmueble_id'),
         ];
     }
 
     public function inmuebles(
         string $periodo,
         string $estado,
+        string $sede,
         string $buscar,
-        int $porPagina = 50
+        int $porPagina = 50,
+        array $sedesPermitidas = []
     ): LengthAwarePaginator {
         $db = $this->conexion();
         $estado = in_array($estado, ['activos', 'todos'], true) ? $estado : 'activos';
+        $sede = in_array($sede, ['todas', 'SF', 'ST', 'sin_sede'], true) ? $sede : 'todas';
         $buscar = trim($buscar);
+        $sedesPermitidas = array_values(array_unique(array_filter(array_map(
+            static fn ($codigo): string => strtoupper(trim((string) $codigo)),
+            $sedesPermitidas
+        ))));
 
         $q = $db->table('gei_core.inmuebles_periodos as ip')
             ->join('gei_core.inmuebles as i', 'i.id', '=', 'ip.inmueble_id')
@@ -260,7 +275,11 @@ final class GeiCoreConsultaService
                     ->where('cp.periodo', '=', $periodo);
             })
             ->where('ip.periodo', $periodo)
+            ->when($sedesPermitidas !== [] && $sede !== 'sin_sede', fn ($x) => $x->whereIn('ip.sede_codigo', $sedesPermitidas))
             ->when($estado === 'activos', fn ($x) => $x->where('ip.activo', true))
+            ->when($sede === 'SF', fn ($x) => $x->where('ip.sede_codigo', 'SF'))
+            ->when($sede === 'ST', fn ($x) => $x->where('ip.sede_codigo', 'ST'))
+            ->when($sede === 'sin_sede', fn ($x) => $x->whereNull('ip.sede_codigo'))
             ->when($buscar !== '', function ($x) use ($buscar): void {
                 $like = '%'.$buscar.'%';
                 $x->where(function ($s) use ($like): void {
@@ -276,11 +295,15 @@ final class GeiCoreConsultaService
                 });
             })
             ->groupBy([
-                'i.id', 'i.domicilio_actual', 'ip.activo', 'ip.cantidad_contratos',
+                'i.id', 'i.domicilio_actual', 'i.sede_codigo', 'i.sede_origen',
+                'ip.sede_codigo', 'ip.activo', 'ip.cantidad_contratos',
             ])
             ->selectRaw(
                 "i.id,
                  i.domicilio_actual,
+                 i.sede_codigo as sede_maestra,
+                 i.sede_origen,
+                 ip.sede_codigo,
                  ip.activo,
                  ip.cantidad_contratos,
                  count(distinct cp.contrato_id) filter (where cp.activo)::integer as contratos_activos,
@@ -299,21 +322,26 @@ final class GeiCoreConsultaService
         return $q->paginate($porPagina)->withQueryString();
     }
 
-
-
     /**
-     * Posibles inmuebles duplicados presentes y activos en un período.
-     *
-     * Cada inmueble puede validarse individualmente como único frente al
-     * conjunto actual de candidatos. La validación permanece mientras ese
-     * conjunto no cambie; si aparece otro candidato, vuelve a quedar pendiente.
+     * Posibles inmuebles duplicados del período, respetando Estado/Sede/Buscar.
      *
      * @return array<int, array<string, mixed>>
      */
-    public function inmueblesDuplicados(string $periodo, string $buscar = ''): array
-    {
+    public function inmueblesDuplicados(
+        string $periodo,
+        string $estado = 'activos',
+        string $sede = 'todas',
+        string $buscar = '',
+        array $sedesPermitidas = []
+    ): array {
         $db = $this->conexion();
+        $estado = in_array($estado, ['activos', 'todos'], true) ? $estado : 'activos';
+        $sede = in_array($sede, ['todas', 'SF', 'ST', 'sin_sede'], true) ? $sede : 'todas';
         $buscar = trim($buscar);
+        $sedesPermitidas = array_values(array_unique(array_filter(array_map(
+            static fn ($codigo): string => strtoupper(trim((string) $codigo)),
+            $sedesPermitidas
+        ))));
 
         $filas = $db->table('gei_core.inmuebles_periodos as ip')
             ->join('gei_core.inmuebles as i', 'i.id', '=', 'ip.inmueble_id')
@@ -323,7 +351,11 @@ final class GeiCoreConsultaService
             })
             ->leftJoin('gei_core.inmuebles_partidas as pt', 'pt.inmueble_id', '=', 'i.id')
             ->where('ip.periodo', $periodo)
-            ->where('ip.activo', true)
+            ->when($sedesPermitidas !== [] && $sede !== 'sin_sede', fn ($q) => $q->whereIn('ip.sede_codigo', $sedesPermitidas))
+            ->when($estado === 'activos', fn ($q) => $q->where('ip.activo', true))
+            ->when($sede === 'SF', fn ($q) => $q->where('ip.sede_codigo', 'SF'))
+            ->when($sede === 'ST', fn ($q) => $q->where('ip.sede_codigo', 'ST'))
+            ->when($sede === 'sin_sede', fn ($q) => $q->whereNull('ip.sede_codigo'))
             ->when($buscar !== '', function ($q) use ($buscar): void {
                 $like = '%'.$buscar.'%';
                 $q->where(function ($s) use ($like): void {
@@ -333,10 +365,13 @@ final class GeiCoreConsultaService
                         ->orWhereRaw("coalesce(pt.partida, '') ilike ?", [$like]);
                 });
             })
-            ->groupBy(['i.id', 'i.domicilio_actual', 'ip.cantidad_contratos'])
+            ->groupBy([
+                'i.id', 'i.domicilio_actual', 'ip.sede_codigo', 'ip.cantidad_contratos',
+            ])
             ->selectRaw(
                 "i.id,
                  i.domicilio_actual,
+                 ip.sede_codigo,
                  ip.cantidad_contratos,
                  count(distinct cp.contrato_id) filter (where cp.activo)::integer as contratos_activos,
                  string_agg(distinct cp.cuenta_propietario_cobol, ', ' order by cp.cuenta_propietario_cobol)
@@ -453,9 +488,14 @@ final class GeiCoreConsultaService
     }
 
     /** @return array{grupos:int,grupos_pendientes:int,inmuebles_pendientes:int} */
-    public function inmueblesDuplicadosResumen(string $periodo): array
-    {
-        $grupos = $this->inmueblesDuplicados($periodo);
+    public function inmueblesDuplicadosResumen(
+        string $periodo,
+        string $estado = 'activos',
+        string $sede = 'todas',
+        string $buscar = '',
+        array $sedesPermitidas = []
+    ): array {
+        $grupos = $this->inmueblesDuplicados($periodo, $estado, $sede, $buscar, $sedesPermitidas);
 
         return [
             'grupos' => count($grupos),
@@ -468,6 +508,124 @@ final class GeiCoreConsultaService
                 $grupos
             )),
         ];
+    }
+
+    public function inmueblesSinSedeResumen(
+        string $periodo,
+        string $estado = 'activos',
+        string $buscar = ''
+    ): int {
+        $db = $this->conexion();
+        $estado = in_array($estado, ['activos', 'todos'], true) ? $estado : 'activos';
+        $buscar = trim($buscar);
+
+        $q = $db->table('gei_core.inmuebles_periodos as ip')
+            ->join('gei_core.inmuebles as i', 'i.id', '=', 'ip.inmueble_id')
+            ->where('ip.periodo', $periodo)
+            ->whereNull('ip.sede_codigo')
+            ->when($estado === 'activos', fn ($x) => $x->where('ip.activo', true))
+            ->when($buscar !== '', function ($x) use ($buscar, $periodo): void {
+                $like = '%'.$buscar.'%';
+                $x->where(function ($s) use ($like, $periodo): void {
+                    $s->whereRaw("coalesce(i.domicilio_actual, '') ilike ?", [$like])
+                        ->orWhereExists(function ($sq) use ($like, $periodo): void {
+                            $sq->selectRaw('1')
+                                ->from('gei_core.contratos_periodos as cp')
+                                ->whereColumn('cp.inmueble_id', 'i.id')
+                                ->where('cp.periodo', $periodo)
+                                ->where(function ($c) use ($like): void {
+                                    $c->whereRaw("coalesce(cp.cuenta_inquilino_cobol, '') ilike ?", [$like])
+                                        ->orWhereRaw("coalesce(cp.cuenta_propietario_cobol, '') ilike ?", [$like]);
+                                });
+                        })
+                        ->orWhereExists(function ($sq) use ($like): void {
+                            $sq->selectRaw('1')
+                                ->from('gei_core.inmuebles_partidas as pt')
+                                ->whereColumn('pt.inmueble_id', 'i.id')
+                                ->whereRaw('pt.partida ilike ?', [$like]);
+                        });
+                });
+            });
+
+        return (int) $q->distinct('ip.inmueble_id')->count('ip.inmueble_id');
+    }
+
+    public function actualizarSedeInmueble(int $inmuebleId, string $sedeCodigo, ?int $usuarioId): void
+    {
+        $sedeCodigo = strtoupper(trim($sedeCodigo));
+        if (! in_array($sedeCodigo, ['SF', 'ST'], true)) {
+            throw new RuntimeException('La sede indicada no es válida.');
+        }
+
+        $db = $this->conexion();
+
+        $db->transaction(function () use ($db, $inmuebleId, $sedeCodigo, $usuarioId): void {
+            $inmueble = $db->table('gei_core.inmuebles')
+                ->where('id', $inmuebleId)
+                ->lockForUpdate()
+                ->first();
+
+            if ($inmueble === null) {
+                throw new RuntimeException('No existe el inmueble solicitado.');
+            }
+
+            $anterior = trim((string) ($inmueble->sede_codigo ?? ''));
+            $anterior = $anterior !== '' ? $anterior : null;
+
+            if ($anterior === $sedeCodigo) {
+                return;
+            }
+
+            if ($anterior !== null) {
+                $contratos = (int) $db->table('gei_core.contratos')
+                    ->where('inmueble_id', $inmuebleId)
+                    ->count();
+
+                $partidas = (int) $db->table('gei_core.inmuebles_partidas')
+                    ->where('inmueble_id', $inmuebleId)
+                    ->count();
+
+                $cuentas = (int) $db->table('gei_core.cuentas_corrientes as cc')
+                    ->join('gei_core.contratos as c', 'c.id', '=', 'cc.contrato_id')
+                    ->where('c.inmueble_id', $inmuebleId)
+                    ->count();
+
+                if ((bool) $inmueble->activo || $contratos > 0 || $partidas > 0 || $cuentas > 0) {
+                    throw new RuntimeException(
+                        'La sede ya está definida y el inmueble está activo o posee datos relacionados. '
+                        .'No se permite cambiarla para evitar inconsistencias operativas.'
+                    );
+                }
+            }
+
+            $db->table('gei_core.inmuebles')
+                ->where('id', $inmuebleId)
+                ->update([
+                    'sede_codigo' => $sedeCodigo,
+                    'sede_origen' => 'MANUAL',
+                    'sede_usuario_id' => $usuarioId,
+                    'sede_actualizada_at' => now(),
+                    'updated_at' => now(),
+                ]);
+
+            $periodos = $db->table('gei_core.inmuebles_periodos')
+                ->where('inmueble_id', $inmuebleId);
+
+            if ($anterior === null) {
+                $periodos->whereNull('sede_codigo');
+            }
+
+            $periodos->update(['sede_codigo' => $sedeCodigo]);
+
+            $db->table('gei_core.inmuebles_sedes_historial')->insert([
+                'inmueble_id' => $inmuebleId,
+                'sede_anterior' => $anterior,
+                'sede_nueva' => $sedeCodigo,
+                'origen' => 'MANUAL',
+                'usuario_id' => $usuarioId,
+                'created_at' => now(),
+            ]);
+        });
     }
 
     public function validarInmuebleComoUnico(int $inmuebleId, string $periodo, ?int $usuarioId): void
@@ -554,7 +712,11 @@ final class GeiCoreConsultaService
         $db = $this->conexion();
 
         $inmueble = $db->selectOne(
-            "select i.*, ip.activo as activo_periodo, ip.cantidad_contratos
+            "select
+                i.*,
+                ip.sede_codigo as sede_periodo,
+                ip.activo as activo_periodo,
+                ip.cantidad_contratos
                from gei_core.inmuebles i
                join gei_core.inmuebles_periodos ip
                  on ip.inmueble_id = i.id
@@ -596,7 +758,23 @@ final class GeiCoreConsultaService
             [$periodo, $id]
         );
 
-        return compact('inmueble', 'partidas', 'contratos');
+        $puedeCambiarSede = true;
+        $motivoBloqueoSede = null;
+
+        if (! empty($inmueble->sede_codigo)) {
+            if ((bool) $inmueble->activo || count($contratos) > 0 || count($partidas) > 0) {
+                $puedeCambiarSede = false;
+                $motivoBloqueoSede = 'La sede está bloqueada porque el inmueble está activo o posee datos relacionados.';
+            }
+        }
+
+        return compact(
+            'inmueble',
+            'partidas',
+            'contratos',
+            'puedeCambiarSede',
+            'motivoBloqueoSede'
+        );
     }
 
     public function cuentasResumen(string $tipo): array

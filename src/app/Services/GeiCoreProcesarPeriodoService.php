@@ -846,6 +846,10 @@ final class GeiCoreProcesarPeriodoService
               on im.clave_identidad = f.clave_inmueble
         SQL, [$periodo]);
 
+        // La sede se obtiene del snapshot COBOL del período.
+        // Una resolución manual del inmueble siempre tiene prioridad.
+        $this->actualizarSedesPeriodo($db, $periodo);
+
         // Partidas históricas del inmueble.
         for ($n = 1; $n <= 6; $n++) {
             $db->statement(<<<SQL
@@ -1079,6 +1083,90 @@ final class GeiCoreProcesarPeriodoService
             'inmuebles_activos' => (int) ($fila->inmuebles_activos ?? 0),
             'cuentas_propietario_con_contrato_activo' => (int) ($fila->cuentas_prop_activo ?? 0),
         ];
+    }
+
+    private function actualizarSedesPeriodo(Connection $db, string $periodo): void
+    {
+        /*
+         * Sedes históricas COBOL:
+         *   INQ 1103 / PROP 1202 -> SF
+         *   INQ 2103 / PROP 2202 -> ST
+         *
+         * Si las cuentas presentes en un inmueble dan una única sede,
+         * esa sede queda en el snapshot del período.
+         *
+         * Si el inmueble fue resuelto manualmente, esa resolución tiene
+         * prioridad y no se pisa al reprocesar meses posteriores.
+         */
+        $db->statement(<<<'SQL'
+            with cuentas as (
+                select
+                    io.inmueble_id,
+                    io.periodo,
+                    case
+                        when left(regexp_replace(coalesce(io.cuenta_inquilino_cobol, ''), '[^0-9]', '', 'g'), 4) = '1103' then 'SF'
+                        when left(regexp_replace(coalesce(io.cuenta_inquilino_cobol, ''), '[^0-9]', '', 'g'), 4) = '2103' then 'ST'
+                    end as sede
+                from gei_core.inmuebles_origenes io
+                where io.periodo = ?
+
+                union all
+
+                select
+                    io.inmueble_id,
+                    io.periodo,
+                    case
+                        when left(regexp_replace(coalesce(io.cuenta_propietario_cobol, ''), '[^0-9]', '', 'g'), 4) = '1202' then 'SF'
+                        when left(regexp_replace(coalesce(io.cuenta_propietario_cobol, ''), '[^0-9]', '', 'g'), 4) = '2202' then 'ST'
+                    end as sede
+                from gei_core.inmuebles_origenes io
+                where io.periodo = ?
+            ),
+            resueltas as (
+                select
+                    inmueble_id,
+                    periodo,
+                    case
+                        when count(distinct sede) filter (where sede is not null) = 1
+                            then min(sede) filter (where sede is not null)
+                        else null
+                    end as sede_codigo
+                from cuentas
+                group by inmueble_id, periodo
+            )
+            update gei_core.inmuebles_periodos ip
+               set sede_codigo = case
+                    when i.sede_origen = 'MANUAL' then i.sede_codigo
+                    else r.sede_codigo
+                end
+              from gei_core.inmuebles i
+              left join resueltas r
+                on r.inmueble_id = i.id
+               and r.periodo = ?
+             where ip.inmueble_id = i.id
+               and ip.periodo = ?
+        SQL, [$periodo, $periodo, $periodo, $periodo]);
+
+        // El maestro conserva la última sede COBOL conocida.
+        // Nunca se pisa una resolución manual.
+        $db->statement(<<<'SQL'
+            with ultima as (
+                select distinct on (ip.inmueble_id)
+                    ip.inmueble_id,
+                    ip.sede_codigo
+                from gei_core.inmuebles_periodos ip
+                where ip.sede_codigo is not null
+                order by ip.inmueble_id, ip.periodo desc
+            )
+            update gei_core.inmuebles i
+               set sede_codigo = u.sede_codigo,
+                   sede_origen = 'COBOL',
+                   sede_actualizada_at = now(),
+                   updated_at = now()
+              from ultima u
+             where u.inmueble_id = i.id
+               and coalesce(i.sede_origen, '') <> 'MANUAL'
+        SQL);
     }
 
     private function procesarCuentasCorrientes(
@@ -1649,6 +1737,7 @@ final class GeiCoreProcesarPeriodoService
                 nro_iva text,
                 telefono_1 text,
                 telefono_2 text,
+                email varchar(180),
                 fusionada_en_id bigint references gei_core.personas(id),
                 created_at timestamptz not null default now(),
                 updated_at timestamptz not null default now(),
@@ -1929,6 +2018,39 @@ final class GeiCoreProcesarPeriodoService
         foreach ($sentencias as $sql) {
             $db->statement($sql);
         }
+
+        // Evolución de GeI-Core: datos editables de la persona.
+        // El email es un dato manual y no se sobrescribe al reprocesar COBOL.
+        $db->statement('alter table gei_core.personas add column if not exists email varchar(180)');
+
+        // Evolución de GeI-Core: sede operativa del inmueble.
+        // Se usa ALTER IF NOT EXISTS para instalaciones ya creadas.
+        $db->statement('alter table gei_core.inmuebles add column if not exists sede_codigo char(2)');
+        $db->statement('alter table gei_core.inmuebles add column if not exists sede_origen text');
+        $db->statement('alter table gei_core.inmuebles add column if not exists sede_usuario_id bigint');
+        $db->statement('alter table gei_core.inmuebles add column if not exists sede_actualizada_at timestamptz');
+        $db->statement('alter table gei_core.inmuebles_periodos add column if not exists sede_codigo char(2)');
+
+        $db->statement(<<<'SQL'
+            create table if not exists gei_core.inmuebles_sedes_historial (
+                id bigserial primary key,
+                inmueble_id bigint not null references gei_core.inmuebles(id),
+                sede_anterior char(2),
+                sede_nueva char(2) not null,
+                origen text not null,
+                usuario_id bigint,
+                created_at timestamptz not null default now()
+            )
+        SQL);
+
+        $db->statement(
+            'create index if not exists gei_core_inmuebles_sede_idx
+             on gei_core.inmuebles (sede_codigo)'
+        );
+        $db->statement(
+            'create index if not exists gei_core_inmuebles_periodos_sede_idx
+             on gei_core.inmuebles_periodos (periodo, sede_codigo)'
+        );
 
         // Evolución del snapshot contractual: conserva todos los datos operativos
         // del INQUILINO por período, sin duplicar el contrato maestro.
