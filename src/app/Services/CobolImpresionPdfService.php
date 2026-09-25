@@ -19,7 +19,7 @@ class CobolImpresionPdfService
             throw new RuntimeException('No se encontró el archivo RAW de la impresión.');
         }
 
-        $python = (string) config('gei.importador.python_bin', '/usr/bin/python3');
+        $python = base_path('python/.venv/bin/python');
         $script = base_path('python/cobol_impresion_pdf.py');
         $logo = base_path('python/liquidaciones_propietarios/GeI_fox.png');
 
