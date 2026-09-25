@@ -113,7 +113,7 @@
                 <div>
                     <h2 class="h5 mb-1">Liquidaciones guardadas</h2>
                     <p class="text-muted mb-0">
-                        Buscá por uno o varios datos dentro del período seleccionado. Los comprobantes ARCA se leen directamente del archivo histórico AAAA/MM.
+                        Buscá por uno o varios datos dentro del período seleccionado. Los comprobantes ARCA se leen desde KNG y se asocian por período y cuenta COBOL.
                     </p>
                 </div>
 

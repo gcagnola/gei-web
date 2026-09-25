@@ -3,8 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Services\ComprobantesArcaService;
-use Illuminate\Support\Facades\Storage;
-use Symfony\Component\HttpFoundation\StreamedResponse;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 final class ComprobanteArcaController extends Controller
 {
@@ -12,17 +11,15 @@ final class ComprobanteArcaController extends Controller
         string $periodo,
         string $archivo,
         ComprobantesArcaService $service,
-    ): StreamedResponse {
-        $ruta = $service->rutaRelativa($periodo, $archivo);
+    ): BinaryFileResponse {
+        $ruta = $service->rutaFisica($periodo, $archivo);
 
         abort_if($ruta === null, 404);
-        abort_unless($service->archivoDisponible($periodo, $archivo), 404);
 
-        return Storage::disk('arca_facturas')->response(
-            $ruta,
-            $archivo,
-            ['Content-Type' => 'application/pdf'],
-            'inline'
-        );
+        return response()->file($ruta, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => 'inline; filename="'.basename($ruta).'"',
+            'Cache-Control' => 'private, max-age=300',
+        ]);
     }
 }
