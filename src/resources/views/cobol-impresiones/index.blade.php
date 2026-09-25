@@ -59,9 +59,10 @@
                             <td class="text-end text-nowrap">
                                 <a class="btn btn-sm btn-outline-secondary" href="{{ route('archivo.impresiones-cobol.raw', $impresion) }}" target="_blank" rel="noopener">Ver RAW</a>
                                 @if (in_array($impresion->tipo_documento, ['LIQUIDACION_DEUDA', 'RECIBO_LIQUIDACION'], true))
-                                    <button class="btn btn-sm btn-primary js-generar-pdf" type="button" data-url="{{ route('archivo.impresiones-cobol.pdf.generar', $impresion) }}">Generar PDF</button>
                                     @if ($impresion->pdf_path)
                                         <a class="btn btn-sm btn-outline-primary" href="{{ route('archivo.impresiones-cobol.pdf', $impresion) }}" target="_blank" rel="noopener">Ver PDF</a>
+                                    @else
+                                        <button class="btn btn-sm btn-primary js-generar-pdf" type="button" data-url="{{ route('archivo.impresiones-cobol.pdf.generar', $impresion) }}">Generar PDF</button>
                                     @endif
                                 @else
                                     <button class="btn btn-sm btn-primary" type="button" disabled>Generar PDF</button>
@@ -104,10 +105,9 @@
                     const badge = item.estado === 'PARSEADO' ? 'success' : 'secondary';
                     let pdf = '<button class="btn btn-sm btn-primary" type="button" disabled>Generar PDF</button>';
                     if (item.puede_generar_pdf) {
-                        pdf = `<button class="btn btn-sm btn-primary js-generar-pdf" type="button" data-url="${escapeHtml(item.generar_pdf_url)}">Generar PDF</button>`;
-                        if (item.pdf_url) {
-                            pdf += ` <a class="btn btn-sm btn-outline-primary" href="${escapeHtml(item.pdf_url)}" target="_blank" rel="noopener">Ver PDF</a>`;
-                        }
+                        pdf = item.pdf_url
+                            ? `<a class="btn btn-sm btn-outline-primary" href="${escapeHtml(item.pdf_url)}" target="_blank" rel="noopener">Ver PDF</a>`
+                            : `<button class="btn btn-sm btn-primary js-generar-pdf" type="button" data-url="${escapeHtml(item.generar_pdf_url)}">Generar PDF</button>`;
                     }
 
                     return `<tr data-id="${escapeHtml(item.id)}">
