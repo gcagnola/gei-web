@@ -618,17 +618,17 @@ final class GeiCoreClienteService
         $f->archivo_pdf = null;
         $f->numero_comprobante = null;
         $f->comprobante = null;
-        $f->pdf_en_raiz = false;
 
-        $lote = preg_replace('/\\D+/', '', (string) ($f->lote ?? '')) ?: '';
-        $puntoVenta = preg_replace('/\\D+/', '', (string) ($f->p_venta ?? '')) ?: '';
-        $numero = preg_replace('/\\D+/', '', (string) ($f->id_factura ?? '')) ?: '';
+        $lote = preg_replace('/\D+/', '', (string) ($f->lote ?? '')) ?: '';
+        $puntoVenta = preg_replace('/\D+/', '', (string) ($f->p_venta ?? '')) ?: '';
+        $numero = preg_replace('/\D+/', '', (string) ($f->id_factura ?? '')) ?: '';
         $cuenta = $this->normalizarCuenta((string) (($f->id_inq ?? '') ?: ($f->cta_orig ?? '')));
 
         if ($puntoVenta === '' || $numero === '' || $cuenta === '') {
             return $f;
         }
 
+        // En KNG los PDFs se nombran FA/CA/FB/CB-PV-NUMERO-CUENTA.pdf.
         $prefijo = match ((int) ($f->tipo ?? 0)) {
             1 => 'FA',
             3 => 'CA',
@@ -637,24 +637,79 @@ final class GeiCoreClienteService
             default => null,
         };
 
-        if ($prefijo === null) {
+        $root = rtrim((string) config('gei.kng.root', '/archivo-kng'), DIRECTORY_SEPARATOR);
+        $dirNombre = trim((string) config('gei.kng.facturas_dir', 'Facturas'), DIRECTORY_SEPARATOR);
+        $pdfRoot = $root.DIRECTORY_SEPARATOR.$dirNombre;
+
+        if ($prefijo !== null) {
+            $archivoEsperado = sprintf(
+                '%s-%04d-%08d-%011d.pdf',
+                $prefijo,
+                (int) $puntoVenta,
+                (int) $numero,
+                (int) $cuenta
+            );
+
+            // Si se organizó por lote, se busca allí. Si no, se admite el PDF
+            // todavía suelto en Facturas/. Esto mantiene opcional el checkbox
+            // "Organizar PDFs por lote" sin perder el enlace desde Cliente 360.
+            $candidatas = [];
+            if ($lote !== '') {
+                $candidatas[] = $pdfRoot.DIRECTORY_SEPARATOR.'lote_'.$lote.DIRECTORY_SEPARATOR.$archivoEsperado;
+            }
+            $candidatas[] = $pdfRoot.DIRECTORY_SEPARATOR.$archivoEsperado;
+
+            foreach ($candidatas as $ruta) {
+                if (is_file($ruta) && is_readable($ruta)) {
+                    $f->archivo_pdf = $archivoEsperado;
+                    $f->comprobante = preg_replace('/-\d{11}\.pdf$/i', '', $archivoEsperado);
+                    $f->numero_comprobante = str_pad($numero, 8, '0', STR_PAD_LEFT);
+                    $f->pdf_en_raiz = dirname($ruta) === $pdfRoot;
+
+                    return $f;
+                }
+            }
+        }
+
+        // Compatibilidad/fallback: si por algún dato legado no pudo formarse
+        // exactamente el nombre, se conserva la búsqueda histórica por
+        // lote + punto de venta + cuenta.
+        if ($lote === '') {
             return $f;
         }
 
-        $archivo = sprintf(
-            '%s-%04d-%08d-%011d.pdf',
-            $prefijo,
-            (int) $puntoVenta,
-            (int) $numero,
-            (int) $cuenta
-        );
+        if (! array_key_exists($lote, $cache)) {
+            $cache[$lote] = $this->indexarPdfsLoteKng($lote);
+        }
 
-        // El nombre sale de FACTURAS.DBF. No ocultamos el enlace por una
-        // comprobación de filesystem aquí: el controlador resuelve si está
-        // en lote_<nro>/ o todavía suelto en Facturas/.
+        $clave = ((string) ((int) $puntoVenta)).'|'.$cuenta;
+        $candidatos = $cache[$lote][$clave] ?? [];
+        if ($candidatos === []) {
+            return $f;
+        }
+
+        $archivo = null;
+        if ($prefijo !== null) {
+            foreach ($candidatos as $candidato) {
+                if (str_starts_with(strtoupper($candidato), $prefijo.'-')) {
+                    $archivo = $candidato;
+                    break;
+                }
+            }
+        }
+        $archivo ??= $candidatos[0] ?? null;
+
+        if ($archivo === null) {
+            return $f;
+        }
+
         $f->archivo_pdf = $archivo;
-        $f->comprobante = preg_replace('/-\\d{11}\\.pdf$/i', '', $archivo);
-        $f->numero_comprobante = str_pad($numero, 8, '0', STR_PAD_LEFT);
+        $f->comprobante = preg_replace('/-\d{11}\.pdf$/i', '', $archivo);
+        $f->pdf_en_raiz = false;
+
+        if (preg_match('/^[A-Z]{2}-(\d{4})-(\d{8})-\d{11}\.pdf$/i', $archivo, $m) === 1) {
+            $f->numero_comprobante = $m[2];
+        }
 
         return $f;
     }
@@ -932,7 +987,7 @@ final class GeiCoreClienteService
         $invalidas = $contenido['fechas_invalidas_inqctacte'] ?? [];
 
         if (! is_array($futuras)) {
-            $futuras = [];
+$futuras = [];
         }
         if (! is_array($invalidas)) {
             $invalidas = [];
@@ -1009,7 +1064,7 @@ final class GeiCoreClienteService
 
         [$filtroCuenta, $bindingsCuenta] = $this->sqlFiltroCuentaPorSedes('cc.cuenta_cobol', $sedesPermitidas);
 
-        return collect($this->core()->select(
+        $movimientos = collect($this->core()->select(
             "select
                 cc.tipo,
                 cc.cuenta_cobol,
@@ -1028,6 +1083,64 @@ final class GeiCoreClienteService
              limit 500",
             [$personaId, ...$bindingsCuenta, $mes]
         ));
+
+        if ($movimientos->isEmpty()) {
+            return $movimientos;
+        }
+
+        $codigosPorDominio = [
+            'PROP' => [],
+            'INQ' => [],
+        ];
+
+        foreach ($movimientos as $movimiento) {
+            $dominio = match (strtoupper(trim((string) ($movimiento->tipo ?? '')))) {
+                'PROPIETARIO', 'PROP' => 'PROP',
+                'INQUILINO', 'INQ' => 'INQ',
+                default => null,
+            };
+
+            $codigo = trim((string) ($movimiento->codigo ?? ''));
+            if ($dominio !== null && $codigo !== '') {
+                $codigosPorDominio[$dominio][] = str_pad($codigo, 2, '0', STR_PAD_LEFT);
+            }
+        }
+
+        $conceptos = collect();
+        foreach ($codigosPorDominio as $dominio => $codigos) {
+            $codigos = array_values(array_unique($codigos));
+            if ($codigos === []) {
+                continue;
+            }
+
+            $conceptos = $conceptos->concat(
+                DB::table('conceptos')
+                    ->where('dominio', $dominio)
+                    ->whereIn('codigo', $codigos)
+                    ->get(['dominio', 'codigo', 'descripcion'])
+            );
+        }
+
+        $indiceConceptos = $conceptos->keyBy(
+            static fn ($concepto): string => strtoupper((string) $concepto->dominio).'|'.str_pad(trim((string) $concepto->codigo), 2, '0', STR_PAD_LEFT)
+        );
+
+        return $movimientos->map(static function ($movimiento) use ($indiceConceptos) {
+            $dominio = match (strtoupper(trim((string) ($movimiento->tipo ?? '')))) {
+                'PROPIETARIO', 'PROP' => 'PROP',
+                'INQUILINO', 'INQ' => 'INQ',
+                default => null,
+            };
+
+            $codigo = str_pad(trim((string) ($movimiento->codigo ?? '')), 2, '0', STR_PAD_LEFT);
+            $concepto = $dominio !== null
+                ? $indiceConceptos->get($dominio.'|'.$codigo)
+                : null;
+
+            $movimiento->concepto_descripcion = $concepto?->descripcion;
+
+            return $movimiento;
+        });
     }
 
     /** @param array<int, string> $sedesPermitidas */

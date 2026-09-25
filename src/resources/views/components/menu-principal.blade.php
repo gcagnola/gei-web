@@ -150,4 +150,22 @@
             </details>
         </li>
     @endif
+
+
+    <li>
+        <details class="gei-menu__group {{ request()->routeIs('parametros.*') ? 'is-active' : '' }}">
+            <summary class="gei-menu__summary">
+                <span class="gei-menu__icon" aria-hidden="true">⚙</span>
+                <span class="gei-menu__label">Parámetros</span>
+                <span class="gei-menu__chevron" aria-hidden="true"></span>
+            </summary>
+            <ul class="gei-submenu">
+                <li>
+                    <a href="{{ route('parametros.conceptos.index') }}" class="gei-menu__link {{ request()->routeIs('parametros.conceptos.*') ? 'is-active' : '' }}">
+                        <span class="gei-menu__label">Conceptos</span>
+                    </a>
+                </li>
+            </ul>
+        </details>
+    </li>
 </ul>

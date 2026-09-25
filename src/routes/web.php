@@ -22,6 +22,7 @@ use App\Http\Controllers\PerfilController;
 use App\Http\Controllers\Api\CobolImpresionController;
 use App\Http\Controllers\CobolImpresionListadoController;
 use App\Http\Controllers\KngImportacionController;
+use App\Http\Controllers\ConceptoController;
 use Illuminate\Support\Facades\Route;
 
 Route::middleware('guest')->group(function () {
@@ -75,6 +76,25 @@ Route::middleware('auth')->group(function () {
 
     Route::get('/parametros/sedes', [SucursalController::class, 'index'])
         ->name('parametros.sedes.index');
+
+    Route::get('/parametros/conceptos/{concepto}/caja', [ConceptoController::class, 'caja'])
+        ->whereNumber('concepto')
+        ->name('parametros.conceptos.caja');
+    Route::put('/parametros/conceptos/{concepto}/caja', [ConceptoController::class, 'updateCaja'])
+        ->whereNumber('concepto')
+        ->name('parametros.conceptos.caja.update');
+
+    Route::get('/parametros/conceptos', [ConceptoController::class, 'index'])
+        ->name('parametros.conceptos.index');
+    Route::post('/parametros/conceptos', [ConceptoController::class, 'store'])
+        ->name('parametros.conceptos.store');
+    Route::put('/parametros/conceptos/{concepto}', [ConceptoController::class, 'update'])
+        ->whereNumber('concepto')
+        ->name('parametros.conceptos.update');
+    Route::delete('/parametros/conceptos/{concepto}', [ConceptoController::class, 'destroy'])
+        ->whereNumber('concepto')
+        ->name('parametros.conceptos.destroy');
+
 
     Route::get('/archivo/impresiones-cobol', [CobolImpresionListadoController::class, 'index'])
         ->name('archivo.impresiones-cobol.index');

@@ -11,14 +11,22 @@
 @if($tipo === 'cuenta-corriente')
     <div class="table-responsive">
         <table class="table table-sm table-hover align-middle mb-0">
-            <thead class="table-light"><tr><th>Fecha</th><th>Tipo</th><th>Cuenta</th><th>Cód.</th><th>Descripción</th><th class="text-end">Importe</th></tr></thead>
+            <thead class="table-light"><tr><th>Fecha</th><th>Tipo</th><th>Cuenta</th><th>Concepto</th><th>Descripción</th><th class="text-end">Importe</th></tr></thead>
             <tbody>
             @forelse($data as $m)
                 <tr>
                     <td>{{ $fechaCobolActividad($m->fecha_original) }}</td>
                     <td>{{ $m->tipo }}</td>
                     <td>{{ $m->cuenta_cobol }}</td>
-                    <td>{{ $m->codigo }}<div class="small text-muted">{{ $m->numero }}</div></td>
+                    <td>
+                        <div>
+                            <span class="fw-semibold">{{ $m->codigo }}</span>
+                            @if(! empty($m->concepto_descripcion))
+                                <span class="ms-1">{{ $m->concepto_descripcion }}</span>
+                            @endif
+                        </div>
+                        <div class="small text-muted">{{ $m->numero }}</div>
+                    </td>
                     <td>{{ ($m->descripcion === null || trim((string)$m->descripcion) === '') ? '—' : $m->descripcion }}</td>
                     <td class="text-end">{{ $moneyActividad($m->importe) }}</td>
                 </tr>
