@@ -23,6 +23,9 @@ use App\Http\Controllers\Api\CobolImpresionController;
 use App\Http\Controllers\CobolImpresionListadoController;
 use App\Http\Controllers\KngImportacionController;
 use App\Http\Controllers\ConceptoController;
+use App\Http\Controllers\PlanCuentaController;
+use App\Http\Controllers\CamaraController;
+use App\Http\Controllers\RelojController;
 use Illuminate\Support\Facades\Route;
 
 Route::middleware('guest')->group(function () {
@@ -73,6 +76,25 @@ Route::post(
 
 Route::middleware('auth')->group(function () {
     Route::view('/', 'inicio')->name('inicio');
+
+    Route::get('/camaras', [CamaraController::class, 'index'])
+        ->name('camaras.index');
+
+    Route::get('/reloj', [RelojController::class, 'index'])
+        ->name('reloj.index');
+    Route::get('/reloj/status', [RelojController::class, 'status'])
+        ->name('reloj.status');
+    Route::get('/reloj/usuarios', [RelojController::class, 'usuarios'])
+        ->name('reloj.usuarios');
+    Route::put('/reloj/usuarios/{codigo}/nombre', [RelojController::class, 'guardarNombre'])
+        ->whereNumber('codigo')
+        ->name('reloj.usuarios.nombre');
+    Route::get('/reloj/marcaciones', [RelojController::class, 'marcaciones'])
+        ->name('reloj.marcaciones');
+    Route::post('/reloj/sincronizar/usuarios', [RelojController::class, 'sincronizarUsuarios'])
+        ->name('reloj.sincronizar.usuarios');
+    Route::post('/reloj/sincronizar/nuevas', [RelojController::class, 'sincronizarNuevas'])
+        ->name('reloj.sincronizar.nuevas');
 
     Route::get('/parametros/sedes', [SucursalController::class, 'index'])
         ->name('parametros.sedes.index');
@@ -320,7 +342,7 @@ Route::get('/archivo/unificacion', [UnificacionInmuebleController::class, 'index
     Route::get('/compras/cuenta-corriente', $modulo('Cuenta Corriente', 'Compras'))
         ->name('compras.cuenta-corriente');
 
-    Route::get('/contabilidad/plan-de-cuentas', $modulo('Plan de Cuentas', 'Contabilidad'))
+    Route::get('/contabilidad/plan-de-cuentas', [PlanCuentaController::class, 'index'])
         ->name('contabilidad.plan-cuentas.index');
     Route::get('/contabilidad/caja-diaria', $modulo('Caja Diaria', 'Contabilidad'))
         ->name('contabilidad.caja-diaria');

@@ -40,7 +40,7 @@
                 <div class="col-12 col-md-2">
                     <label class="form-label" for="dominio">Tipo</label>
                     <select class="form-select" id="dominio" name="dominio" required>
-                        @php($dominioForm = old('dominio', $conceptoEditar?->dominio ?? 'INQ'))
+@php $dominioForm = old('dominio', $conceptoEditar?->dominio ?? 'INQ'); @endphp
                         <option value="INQ" @selected($dominioForm === 'INQ')>Inquilino</option>
                         <option value="PROP" @selected($dominioForm === 'PROP')>Propietario</option>
                     </select>
@@ -74,7 +74,7 @@
 
                 <div class="col-12 col-md-1">
                     <label class="form-label" for="activo">Estado</label>
-                    @php($activoForm = (string) old('activo', $conceptoEditar ? (int) $conceptoEditar->activo : 1))
+                    @php $activoForm = (string) old('activo', $conceptoEditar ? (int) $conceptoEditar->activo : 1); @endphp
                     <select class="form-select" id="activo" name="activo" required>
                         <option value="1" @selected($activoForm === '1')>Activo</option>
                         <option value="0" @selected($activoForm === '0')>Inactivo</option>
@@ -111,7 +111,16 @@
                 </select>
             </div>
 
-            <div class="col-12 col-md-5">
+            <div class="col-12 col-md-2">
+                <label class="form-label" for="filtro-imputacion">Imputación</label>
+                <select class="form-select" id="filtro-imputacion" name="imputacion">
+                    <option value="todas" @selected($imputacion === 'todas')>Todas</option>
+                    <option value="completas" @selected($imputacion === 'completas')>Completas</option>
+                    <option value="pendientes" @selected($imputacion === 'pendientes')>Pendientes</option>
+                </select>
+            </div>
+
+            <div class="col-12 col-md-3">
                 <label class="form-label" for="q">Buscar</label>
                 <input class="form-control" id="q" name="q" value="{{ $texto }}" placeholder="Código o descripción">
             </div>
@@ -131,6 +140,7 @@
                         <th>Descripción</th>
                         <th style="width: 110px;">Estado</th>
                         <th style="width: 135px;">Origen</th>
+                        <th style="width: 170px;">Imputación contable</th>
                         <th class="text-end" style="width: 210px;">Acciones</th>
                     </tr>
                 </thead>
@@ -142,6 +152,23 @@
                             <td>{{ $concepto->descripcion ?: '—' }}</td>
                             <td>{{ $concepto->activo ? 'Activo' : 'Inactivo' }}</td>
                             <td>{{ $concepto->origen_cobol ?: 'Manual' }}</td>
+                            <td>
+                                @php
+                                    $imputaciones = $concepto->imputacionesCaja;
+                                    $sinCaja = $imputaciones->whereNull('cuenta_caja_id')->count();
+                                    $sinContable = $imputaciones->filter(fn ($i) => $i->cuentaCaja && !$i->cuentaCaja->cuenta_contable_id)->count();
+                                    $completa = $imputaciones->isNotEmpty() && $sinCaja === 0 && $sinContable === 0;
+                                @endphp
+                                @if ($completa)
+                                    <span class="text-success">Completa</span>
+                                @else
+                                    <span class="text-danger">Pendiente</span>
+                                    <div class="small text-muted">
+                                        @if ($sinCaja){{ $sinCaja }} Caja inválida @endif
+                                        @if ($sinContable){{ $sinCaja ? ' · ' : '' }}{{ $sinContable }} sin contable @endif
+                                    </div>
+                                @endif
+                            </td>
                             <td class="text-end">
                                 <div class="d-inline-flex gap-2">
                                     <a
@@ -166,7 +193,7 @@
                         </tr>
                     @empty
                         <tr>
-                            <td colspan="6" class="text-center text-muted py-4">No hay conceptos para los filtros seleccionados.</td>
+                            <td colspan="7" class="text-center text-muted py-4">No hay conceptos para los filtros seleccionados.</td>
                         </tr>
                     @endforelse
                 </tbody>

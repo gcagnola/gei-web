@@ -7,6 +7,9 @@
     $puedeClientes = $puedeModulo('ARCHIVO_CLIENTES');
     $puedeImpresionesCobol = $puedeModulo('ARCHIVO_IMPRESIONES_COBOL');
     $puedeLiquidacionesPropietarios = $puedeModulo('PROPIETARIOS_LIQUIDACIONES');
+    $puedeContabilidad = $puedeModulo('CONTABILIDAD');
+    $puedeCamaras = $puedeModulo('CAMARAS');
+    $puedeReloj = $puedeModulo('RELOJ');
 
     $puedeUsuarios = $puedeModulo('OPCIONES_USUARIOS');
     $puedePerfiles = $puedeModulo('OPCIONES_PERFILES');
@@ -25,6 +28,7 @@
         || request()->routeIs('core-clientes.*');
 
     $propietariosActivo = request()->routeIs('propietarios.*');
+    $contabilidadActivo = request()->routeIs('contabilidad.*');
     $opcionesActivo = request()->routeIs('usuarios.*')
         || request()->routeIs('perfiles.*')
         || request()->routeIs('permisos.*')
@@ -39,6 +43,24 @@
             <span class="gei-menu__label">Inicio</span>
         </a>
     </li>
+
+    @if ($puedeCamaras)
+        <li>
+            <a href="{{ route('camaras.index') }}" class="gei-menu__link {{ request()->routeIs('camaras.*') ? 'is-active' : '' }}">
+                <span class="gei-menu__icon" aria-hidden="true">▣</span>
+                <span class="gei-menu__label">Cámaras</span>
+            </a>
+        </li>
+    @endif
+
+    @if ($puedeReloj)
+        <li>
+            <a href="{{ route('reloj.index') }}" class="gei-menu__link {{ request()->routeIs('reloj.*') ? 'is-active' : '' }}">
+                <span class="gei-menu__icon" aria-hidden="true">◷</span>
+                <span class="gei-menu__label">Reloj</span>
+            </a>
+        </li>
+    @endif
 
     @if ($mostrarArchivo)
         <li>
@@ -102,6 +124,21 @@
         </li>
     @endif
 
+    @if ($puedeContabilidad)
+        <li>
+            <details class="gei-menu__group {{ $contabilidadActivo ? 'is-active' : '' }}">
+                <summary class="gei-menu__summary">
+                    <span class="gei-menu__icon" aria-hidden="true">▤</span>
+                    <span class="gei-menu__label">Contabilidad</span>
+                    <span class="gei-menu__chevron" aria-hidden="true"></span>
+                </summary>
+                <ul class="gei-submenu">
+                    <li><a href="{{ route('contabilidad.plan-cuentas.index') }}" class="gei-menu__link {{ request()->routeIs('contabilidad.plan-cuentas.*') ? 'is-active' : '' }}"><span class="gei-menu__label">Plan de Cuentas</span></a></li>
+                </ul>
+            </details>
+        </li>
+    @endif
+
     @if ($mostrarOpciones)
         <li>
             <details class="gei-menu__group {{ $opcionesActivo ? 'is-active' : '' }}">
@@ -152,6 +189,7 @@
     @endif
 
 
+    @if ($perfilActual?->codigo !== 'CONTADOR')
     <li>
         <details class="gei-menu__group {{ request()->routeIs('parametros.*') ? 'is-active' : '' }}">
             <summary class="gei-menu__summary">
@@ -168,4 +206,5 @@
             </ul>
         </details>
     </li>
+    @endif
 </ul>

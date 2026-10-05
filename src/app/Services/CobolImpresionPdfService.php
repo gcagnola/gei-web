@@ -21,7 +21,7 @@ class CobolImpresionPdfService
 
         $python = base_path('python/.venv/bin/python');
         $script = base_path('python/cobol_impresion_pdf.py');
-        $logo = base_path('python/liquidaciones_propietarios/GeI_fox.png');
+        $logo = base_path('python/liquidaciones_propietarios/GeI_cabecera_color.png');
 
         if (! is_file($python) || ! is_executable($python)) {
             throw new RuntimeException("No se encontró Python ejecutable: {$python}");

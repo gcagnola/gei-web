@@ -38,6 +38,8 @@ class VerificarAccesoModulo
         'clientes.facturacion.' => 'ARCHIVO_CLIENTES',
         'archivo.impresiones-cobol.' => 'ARCHIVO_IMPRESIONES_COBOL',
         'propietarios.liquidaciones.' => 'PROPIETARIOS_LIQUIDACIONES',
+        'contabilidad.' => 'CONTABILIDAD',
+        'reloj.' => 'RELOJ',
         'usuarios.' => 'OPCIONES_USUARIOS',
         'perfiles.' => 'OPCIONES_PERFILES',
         'permisos.' => 'OPCIONES_PERMISOS',
@@ -55,6 +57,12 @@ class VerificarAccesoModulo
         }
 
         $codigoModulo = $this->codigoModuloParaRuta($nombreRuta);
+
+        if ($usuario->perfil?->codigo === 'CONTADOR'
+            && ! in_array($nombreRuta, ['inicio', 'logout'], true)
+            && $codigoModulo !== 'CONTABILIDAD') {
+            abort(403, 'No tenés permiso para acceder a este módulo.');
+        }
 
         if ($codigoModulo === null) {
             return $next($request);

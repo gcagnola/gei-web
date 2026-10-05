@@ -11,7 +11,7 @@
 @if($tipo === 'cuenta-corriente')
     <div class="table-responsive">
         <table class="table table-sm table-hover align-middle mb-0">
-            <thead class="table-light"><tr><th>Fecha</th><th>Tipo</th><th>Cuenta</th><th>Concepto</th><th>Descripción</th><th class="text-end">Importe</th></tr></thead>
+            <thead class="table-light"><tr><th>Fecha</th><th>Tipo</th><th>Cuenta</th><th>Concepto</th><th>Descripción</th><th class="text-end">Debe</th><th class="text-end">Haber</th></tr></thead>
             <tbody>
             @forelse($data as $m)
                 <tr>
@@ -19,21 +19,60 @@
                     <td>{{ $m->tipo }}</td>
                     <td>{{ $m->cuenta_cobol }}</td>
                     <td>
-                        <div>
+                        @php
+                            $tieneConceptoContable = ! empty($m->concepto_descripcion);
+                            $contabilidadCompleta = (bool) ($m->contabilidad_completa ?? false);
+                            $tooltipContable = ! empty($m->contabilidad_tooltip)
+                                ? $m->contabilidad_tooltip
+                                : ($tieneConceptoContable
+                                    ? 'Concepto identificado, pero la imputación Caja/contable no está completa.'
+                                    : null);
+                        @endphp
+                        <div
+                            @if($tooltipContable)
+                                title="{{ $tooltipContable }}"
+                                style="cursor: help"
+                            @endif
+                        >
                             <span class="fw-semibold">{{ $m->codigo }}</span>
-                            @if(! empty($m->concepto_descripcion))
+                            @if($tieneConceptoContable)
                                 <span class="ms-1">{{ $m->concepto_descripcion }}</span>
+                                <span
+                                    class="ms-1 {{ $contabilidadCompleta ? 'text-primary' : 'text-danger' }}"
+                                    aria-label="{{ $contabilidadCompleta ? 'Imputación contable completa' : 'Imputación contable incompleta' }}"
+                                >ⓘ</span>
                             @endif
                         </div>
                         <div class="small text-muted">{{ $m->numero }}</div>
                     </td>
                     <td>{{ ($m->descripcion === null || trim((string)$m->descripcion) === '') ? '—' : $m->descripcion }}</td>
-                    <td class="text-end">{{ $moneyActividad($m->importe) }}</td>
+                    <td class="text-end">{{ (float)($m->debe ?? 0) != 0.0 ? $moneyActividad($m->debe) : '—' }}</td>
+                    <td class="text-end">{{ (float)($m->haber ?? 0) != 0.0 ? $moneyActividad($m->haber) : '—' }}</td>
                 </tr>
             @empty
-                <tr><td colspan="6" class="text-center text-muted py-4">Sin movimientos en este mes.</td></tr>
+                <tr><td colspan="7" class="text-center text-muted py-4">Sin movimientos en este mes.</td></tr>
             @endforelse
             </tbody>
+            @if(collect($data)->isNotEmpty())
+                <tfoot class="table-light fw-semibold">
+                    @php
+                        $totalDebeActividad = collect($data)->sum(fn ($m) => (float)($m->debe ?? 0));
+                        $totalHaberActividad = collect($data)->sum(fn ($m) => (float)($m->haber ?? 0));
+                        $saldoActividad = $totalHaberActividad - $totalDebeActividad;
+                    @endphp
+                    <tr>
+                        <td colspan="5" class="text-end">Totales</td>
+                        <td class="text-end">{{ $moneyActividad($totalDebeActividad) }}</td>
+                        <td class="text-end">{{ $moneyActividad($totalHaberActividad) }}</td>
+                    </tr>
+                    <tr>
+                        <td colspan="5" class="text-end">Saldo</td>
+                        <td colspan="2" class="text-end">
+                            {{ ($saldoActividad >= 0 ? '+ ' : '- ').$moneyActividad(abs($saldoActividad)) }}
+                        </td>
+                    </tr>
+                </tfoot>
+            @endif
         </table>
     </div>
 

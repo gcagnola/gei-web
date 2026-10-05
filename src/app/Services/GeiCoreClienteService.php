@@ -1125,7 +1125,67 @@ $futuras = [];
             static fn ($concepto): string => strtoupper((string) $concepto->dominio).'|'.str_pad(trim((string) $concepto->codigo), 2, '0', STR_PAD_LEFT)
         );
 
-        return $movimientos->map(static function ($movimiento) use ($indiceConceptos) {
+        $imputacionesContables = collect();
+        if (
+            Schema::hasTable('conceptos_imputaciones_caja')
+            && Schema::hasTable('cuentas_caja')
+            && Schema::hasTable('cuentas_contables')
+            && $conceptos->isNotEmpty()
+        ) {
+            $idsConceptos = $conceptos->pluck('id')->filter()->values()->all();
+
+            // Las consultas anteriores pedían sólo dominio/código/descripción.
+            // Recuperamos los ids por la misma clave para resolver Caja -> Contabilidad.
+            if ($idsConceptos === []) {
+                $claves = $conceptos->map(
+                    static fn ($c): array => [
+                        'dominio' => strtoupper((string) $c->dominio),
+                        'codigo' => str_pad(trim((string) $c->codigo), 2, '0', STR_PAD_LEFT),
+                    ]
+                );
+
+                $conceptosConId = collect();
+                foreach ($claves->groupBy('dominio') as $dominio => $filasDominio) {
+                    $conceptosConId = $conceptosConId->concat(
+                        DB::table('conceptos')
+                            ->where('dominio', $dominio)
+                            ->whereIn('codigo', $filasDominio->pluck('codigo')->unique()->values()->all())
+                            ->get(['id', 'dominio', 'codigo'])
+                    );
+                }
+                $idsConceptos = $conceptosConId->pluck('id')->filter()->values()->all();
+            }
+
+            if ($idsConceptos !== []) {
+                $imputacionesContables = DB::table('conceptos_imputaciones_caja as i')
+                    ->join('conceptos as c', 'c.id', '=', 'i.concepto_id')
+                    ->leftJoin('cuentas_caja as cj', 'cj.id', '=', 'i.cuenta_caja_id')
+                    ->leftJoin('cuentas_contables as ct', 'ct.id', '=', 'cj.cuenta_contable_id')
+                    ->whereIn('i.concepto_id', $idsConceptos)
+                    ->whereNotNull('i.cuenta_caja_id')
+                    ->orderBy('c.dominio')
+                    ->orderBy('c.codigo')
+                    ->orderBy('i.sede')
+                    ->orderBy('i.moneda')
+                    ->orderBy('i.judicial')
+                    ->get([
+                        'c.dominio',
+                        'c.codigo',
+                        'i.sede',
+                        'i.moneda',
+                        'i.judicial',
+                        'cj.codigo_cobol as cuenta_caja',
+                        'ct.codigo as cuenta_contable',
+                        'ct.descripcion as cuenta_contable_descripcion',
+                    ]);
+            }
+        }
+
+        $indiceImputaciones = $imputacionesContables->groupBy(
+            static fn ($fila): string => strtoupper((string) $fila->dominio).'|'.str_pad(trim((string) $fila->codigo), 2, '0', STR_PAD_LEFT).'|'.strtoupper((string) $fila->sede)
+        );
+
+        return $movimientos->map(static function ($movimiento) use ($indiceConceptos, $indiceImputaciones) {
             $dominio = match (strtoupper(trim((string) ($movimiento->tipo ?? '')))) {
                 'PROPIETARIO', 'PROP' => 'PROP',
                 'INQUILINO', 'INQ' => 'INQ',
@@ -1138,6 +1198,68 @@ $futuras = [];
                 : null;
 
             $movimiento->concepto_descripcion = $concepto?->descripcion;
+
+            // La cuenta corriente COBOL no guarda Debe/Haber como columnas separadas
+            // en gei_core. Conservamos la regla histórica usada por el importador:
+            //   PROP: códigos 00-20 = Haber; 21 en adelante = Debe.
+            //   INQ : el signo del importe define Debe (+) / Haber (-).
+            // La presentación siempre muestra el valor absoluto en la columna correspondiente.
+            $importe = (float) ($movimiento->importe ?? 0);
+            if ($dominio === 'PROP') {
+                $esDebe = ((int) $codigo) >= 21;
+                $movimiento->debe = $esDebe ? abs($importe) : 0.0;
+                $movimiento->haber = $esDebe ? 0.0 : abs($importe);
+            } elseif ($dominio === 'INQ') {
+                $movimiento->debe = $importe >= 0 ? abs($importe) : 0.0;
+                $movimiento->haber = $importe < 0 ? abs($importe) : 0.0;
+            } else {
+                $movimiento->debe = 0.0;
+                $movimiento->haber = 0.0;
+            }
+
+            $cuentaCobol = preg_replace('/\D+/', '', (string) ($movimiento->cuenta_cobol ?? '')) ?: '';
+            $prefijo = substr($cuentaCobol, 0, 4);
+            $sede = match ($prefijo) {
+                '1103', '1202' => 'SF',
+                '2103', '2202' => 'ST',
+                default => null,
+            };
+
+            $lineas = collect();
+            if ($dominio !== null && $sede !== null) {
+                $lineas = $indiceImputaciones->get($dominio.'|'.$codigo.'|'.$sede, collect());
+            }
+
+            $detalle = $lineas->map(static function ($fila): string {
+                $circuito = ((bool) $fila->judicial) ? 'Judicial' : 'Normal';
+                $cuentaCaja = trim((string) ($fila->cuenta_caja ?? ''));
+                $cuentaContable = trim((string) ($fila->cuenta_contable ?? ''));
+                $descripcionContable = trim((string) ($fila->cuenta_contable_descripcion ?? ''));
+
+                $destino = $cuentaContable !== ''
+                    ? $cuentaContable.($descripcionContable !== '' ? ' - '.$descripcionContable : '')
+                    : 'sin cuenta contable vinculada';
+
+                return trim((string) $fila->sede).' · '.trim((string) $fila->moneda).' · '.$circuito
+                    .' → Caja '.($cuentaCaja !== '' ? $cuentaCaja : '—').' → '.$destino;
+            })->unique()->values();
+
+            if ($concepto !== null) {
+                $encabezado = 'Concepto: '.$dominio.' '.$codigo.' - '.trim((string) ($concepto->descripcion ?? ''));
+
+                $movimiento->contabilidad_tooltip = $detalle->isNotEmpty()
+                    ? $encabezado."\n".$detalle->implode("\n")
+                    : $encabezado."\nImputación Caja/contable: no configurada";
+
+                $movimiento->contabilidad_completa = $lineas->isNotEmpty()
+                    && $lineas->every(static function ($fila): bool {
+                        return trim((string) ($fila->cuenta_caja ?? '')) !== ''
+                            && trim((string) ($fila->cuenta_contable ?? '')) !== '';
+                    });
+            } else {
+                $movimiento->contabilidad_tooltip = null;
+                $movimiento->contabilidad_completa = false;
+            }
 
             return $movimiento;
         });

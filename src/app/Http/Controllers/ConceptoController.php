@@ -20,9 +20,10 @@ class ConceptoController extends Controller
             'estado' => ['nullable', Rule::in(['activos', 'inactivos', 'todos'])],
             'q' => ['nullable', 'string', 'max:100'],
             'editar' => ['nullable', 'integer', 'min:1'],
+            'imputacion' => ['nullable', Rule::in(['todas', 'completas', 'pendientes'])],
         ]);
 
-        $query = Concepto::query()
+        $query = Concepto::query()->with('imputacionesCaja.cuentaCaja.cuentaContable')
             ->when($filtros['dominio'] ?? null, fn ($q, $dominio) => $q->where('dominio', $dominio))
             ->when(($filtros['estado'] ?? 'activos') !== 'todos', function ($q) use ($filtros) {
                 $q->where('activo', ($filtros['estado'] ?? 'activos') === 'activos');
@@ -33,6 +34,18 @@ class ConceptoController extends Controller
                     $sub->where('codigo', 'ilike', "%{$texto}%")
                         ->orWhere('descripcion', 'ilike', "%{$texto}%");
                 });
+            })
+            ->when(($filtros['imputacion'] ?? 'todas') === 'pendientes', function ($q) {
+                $q->where(function ($sub) {
+                    $sub->whereDoesntHave('imputacionesCaja')
+                        ->orWhereHas('imputacionesCaja', fn ($imp) => $imp->whereNull('cuenta_caja_id'))
+                        ->orWhereHas('imputacionesCaja.cuentaCaja', fn ($caja) => $caja->whereNull('cuenta_contable_id'));
+                });
+            })
+            ->when(($filtros['imputacion'] ?? 'todas') === 'completas', function ($q) {
+                $q->whereHas('imputacionesCaja')
+                    ->whereDoesntHave('imputacionesCaja', fn ($imp) => $imp->whereNull('cuenta_caja_id'))
+                    ->whereDoesntHave('imputacionesCaja.cuentaCaja', fn ($caja) => $caja->whereNull('cuenta_contable_id'));
             })
             ->orderBy('dominio')
             ->orderBy('codigo');
@@ -50,6 +63,7 @@ class ConceptoController extends Controller
             'dominio' => $filtros['dominio'] ?? '',
             'estado' => $filtros['estado'] ?? 'activos',
             'texto' => $filtros['q'] ?? '',
+            'imputacion' => $filtros['imputacion'] ?? 'todas',
         ]);
     }
 
