@@ -89,7 +89,15 @@
                 </div>
                 <div class="table-responsive">
                     <table class="table table-hover align-middle mb-0">
-                        <thead class="table-light"><tr><th>Fecha / hora</th><th>Código</th><th>Nombre local</th><th>Backup</th><th>Tipo</th></tr></thead>
+                        <thead class="table-light">
+                            <tr>
+                                <th><button type="button" class="reloj-sort-btn" data-sort-key="datetime">Fecha / hora <span class="reloj-sort-indicator" data-sort-indicator="datetime"></span></button></th>
+                                <th><button type="button" class="reloj-sort-btn" data-sort-key="user_code">Código <span class="reloj-sort-indicator" data-sort-indicator="user_code"></span></button></th>
+                                <th><button type="button" class="reloj-sort-btn" data-sort-key="user_name">Nombre local <span class="reloj-sort-indicator" data-sort-indicator="user_name"></span></button></th>
+                                <th>Backup</th>
+                                <th>Tipo</th>
+                            </tr>
+                        </thead>
                         <tbody id="relojMarcacionesFilas"><tr><td colspan="5" class="text-muted">Cargando…</td></tr></tbody>
                     </table>
                 </div>
@@ -124,6 +132,35 @@
         </section>
     </div>
 
+    <style>
+        .reloj-sort-btn {
+            appearance: none;
+            border: 0;
+            padding: 0;
+            background: transparent;
+            color: inherit;
+            font: inherit;
+            font-weight: 600;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .reloj-sort-btn:hover,
+        .reloj-sort-btn:focus-visible {
+            color: var(--gei-primary);
+            text-decoration: underline;
+        }
+
+        .reloj-sort-indicator {
+            display: inline-block;
+            min-width: 2.2rem;
+            margin-left: .2rem;
+            font-size: .72rem;
+            color: var(--gei-primary);
+            text-decoration: none;
+        }
+    </style>
+
     <script>
         (() => {
             const urls = {
@@ -136,6 +173,8 @@
             };
             const csrf = @json(csrf_token());
             const formato = new Intl.NumberFormat('es-AR');
+            let marcacionesActuales = [];
+            let criteriosOrden = [{key: 'datetime', dir: 'desc'}];
 
             const esc = (valor) => String(valor ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
             const formatDateTime = (valor) => {
@@ -200,6 +239,83 @@
                 document.getElementById('relojUsuariosFilas').innerHTML = filas || '<tr><td colspan="5" class="text-muted">Sin datos.</td></tr>';
             };
 
+            const valorOrden = (registro, key) => {
+                const valor = registro?.[key] ?? '';
+
+                if (key === 'user_code') {
+                    const numero = Number(valor);
+                    return Number.isNaN(numero) ? String(valor).toLocaleLowerCase('es') : numero;
+                }
+
+                if (key === 'datetime') {
+                    return String(valor);
+                }
+
+                return String(valor).toLocaleLowerCase('es');
+            };
+
+            const compararValores = (a, b) => {
+                if (typeof a === 'number' && typeof b === 'number') return a - b;
+                return String(a).localeCompare(String(b), 'es', {numeric: true, sensitivity: 'base'});
+            };
+
+            const actualizarIndicadoresOrden = () => {
+                document.querySelectorAll('[data-sort-indicator]').forEach((span) => {
+                    const indice = criteriosOrden.findIndex((criterio) => criterio.key === span.dataset.sortIndicator);
+                    if (indice === -1) {
+                        span.textContent = '';
+                        return;
+                    }
+
+                    const criterio = criteriosOrden[indice];
+                    span.textContent = `${indice + 1}${criterio.dir === 'asc' ? '▲' : '▼'}`;
+                });
+            };
+
+            const renderMarcaciones = () => {
+                const ordenadas = [...marcacionesActuales].sort((a, b) => {
+                    for (const criterio of criteriosOrden) {
+                        const resultado = compararValores(
+                            valorOrden(a, criterio.key),
+                            valorOrden(b, criterio.key)
+                        );
+
+                        if (resultado !== 0) {
+                            return criterio.dir === 'asc' ? resultado : -resultado;
+                        }
+                    }
+
+                    return 0;
+                });
+
+                const filas = ordenadas.map((r) => `<tr>
+                    <td>${esc(formatDateTime(r.datetime))}</td><td><strong>${esc(r.user_code)}</strong></td>
+                    <td>${esc(r.user_name || '')}</td><td>${esc(r.backup_code)}</td><td>${esc(r.record_type)}</td>
+                </tr>`).join('');
+
+                document.getElementById('relojMarcacionesFilas').innerHTML = filas || '<tr><td colspan="5" class="text-muted">Sin datos.</td></tr>';
+                actualizarIndicadoresOrden();
+            };
+
+            const aplicarOrden = (key, combinado = false) => {
+                const indice = criteriosOrden.findIndex((criterio) => criterio.key === key);
+                const direccionInicial = key === 'datetime' ? 'desc' : 'asc';
+
+                if (combinado) {
+                    if (indice === -1) {
+                        criteriosOrden.push({key, dir: direccionInicial});
+                    } else {
+                        criteriosOrden[indice].dir = criteriosOrden[indice].dir === 'asc' ? 'desc' : 'asc';
+                    }
+                } else if (indice === 0 && criteriosOrden.length === 1) {
+                    criteriosOrden[0].dir = criteriosOrden[0].dir === 'asc' ? 'desc' : 'asc';
+                } else {
+                    criteriosOrden = [{key, dir: direccionInicial}];
+                }
+
+                renderMarcaciones();
+            };
+
             const cargarMarcaciones = async () => {
                 const j = await get(urls.marcaciones, {
                     limit: 200,
@@ -207,11 +323,9 @@
                     from: document.getElementById('recFrom').value || '',
                     to: document.getElementById('recTo').value || '',
                 });
-                const filas = (j.records || []).map((r) => `<tr>
-                    <td>${esc(formatDateTime(r.datetime))}</td><td><strong>${esc(r.user_code)}</strong></td>
-                    <td>${esc(r.user_name || '')}</td><td>${esc(r.backup_code)}</td><td>${esc(r.record_type)}</td>
-                </tr>`).join('');
-                document.getElementById('relojMarcacionesFilas').innerHTML = filas || '<tr><td colspan="5" class="text-muted">Sin datos.</td></tr>';
+
+                marcacionesActuales = Array.isArray(j.records) ? j.records : [];
+                renderMarcaciones();
             };
 
             const refrescarTodo = async () => {
@@ -278,6 +392,10 @@
             document.getElementById('btnSyncNuevas').addEventListener('click', () => sincronizar(urls.syncNuevas, 'Sincronizando marcaciones nuevas', {max: 1000}));
             document.getElementById('btnBuscarUsuarios').addEventListener('click', () => cargarUsuarios().catch((e) => mostrarMensaje(e.message, true)));
             document.getElementById('btnBuscarMarcaciones').addEventListener('click', () => cargarMarcaciones().catch((e) => mostrarMensaje(e.message, true)));
+            document.querySelectorAll('.reloj-sort-btn').forEach((boton) => {
+                boton.addEventListener('click', (event) => aplicarOrden(boton.dataset.sortKey, event.shiftKey));
+            });
+            actualizarIndicadoresOrden();
             document.getElementById('relojUsuariosFilas').addEventListener('change', async (event) => {
                 const input = event.target.closest('.js-nombre-local');
                 if (!input) return;

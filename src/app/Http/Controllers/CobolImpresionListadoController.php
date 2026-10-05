@@ -32,6 +32,11 @@ class CobolImpresionListadoController extends Controller
         $impresiones = $this->impresionesDeFecha($fechaConsulta)->map(fn (CobolImpresion $impresion) => [
             'id' => $impresion->id,
             'hora' => optional($impresion->recibido_en)->format('H:i:s'),
+	    'sucursal' => match ($impresion->origen) {
+                'gei-c-central' => 'Santa Fe',
+            	'gei-stotome' => 'Santo Tomé',
+                default => $impresion->origen ?: '—',
+            },
             'tipo' => $this->etiquetaTipo($impresion->tipo_documento),
             'tipo_documento' => $impresion->tipo_documento,
             'cuenta' => $impresion->cuenta,

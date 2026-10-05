@@ -40,13 +40,27 @@
             <table class="table table-hover align-middle mb-0">
                 <thead>
                     <tr>
-                        <th>Hora</th><th>Tipo</th><th>Cuenta</th><th>Cliente</th><th>Archivo RAW</th><th>Estado</th><th class="text-end">Acciones</th>
+                        <th>Hora</th><th>Sucursal</th><th>Tipo</th><th>Cuenta</th><th>Cliente</th><th>Archivo RAW</th><th>Estado</th><th class="text-end">Acciones</th>
                     </tr>
                 </thead>
                 <tbody id="tabla-impresiones">
                     @forelse ($impresiones as $impresion)
                         <tr data-id="{{ $impresion->id }}">
-                            <td class="text-nowrap">{{ optional($impresion->recibido_en)->format('H:i:s') }}</td>
+                           <td class="text-nowrap">{{ optional($impresion->recibido_en)->format('H:i:s') }}</td>
+			   <td class="text-nowrap">
+			       @switch($impresion->origen)
+			           @case('gei-c-central')
+			               Santa Fe
+			               @break
+
+			            @case('gei-stotome')
+			                Santo Tomé
+			                @break
+
+			            @default
+			                {{ $impresion->origen ?: '—' }}
+			        @endswitch
+			    </td>
                             <td>
                                 @if ($impresion->tipo_documento === 'LIQUIDACION_DEUDA') Liquidación de deuda
                                 @elseif ($impresion->tipo_documento === 'RECIBO_LIQUIDACION') Recibo de liquidación
@@ -70,7 +84,7 @@
                             </td>
                         </tr>
                     @empty
-                        <tr id="sin-impresiones"><td colspan="7" class="text-center text-muted py-5">No se recibieron impresiones COBOL en esta fecha.</td></tr>
+                        <tr id="sin-impresiones"><td colspan="8" class="text-center text-muted py-5">No se recibieron impresiones COBOL en esta fecha.</td></tr>
                     @endforelse
                 </tbody>
             </table>
@@ -97,7 +111,7 @@
 
             const render = (items) => {
                 if (!Array.isArray(items) || items.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-5">No se recibieron impresiones COBOL en esta fecha.</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-5">No se recibieron impresiones COBOL en esta fecha.</td></tr>';
                     return;
                 }
 
@@ -112,6 +126,7 @@
 
                     return `<tr data-id="${escapeHtml(item.id)}">
                         <td class="text-nowrap">${escapeHtml(item.hora || '—')}</td>
+			<td class="text-nowrap">${escapeHtml(item.sucursal || '—')}</td>
                         <td>${escapeHtml(item.tipo || 'Desconocido')}</td>
                         <td class="text-nowrap">${escapeHtml(item.cuenta || '—')}</td>
                         <td>${escapeHtml(item.cliente || '—')}</td>
