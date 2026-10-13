@@ -158,6 +158,162 @@
                     </dl>
                 </article>
 
+                @php
+                    $portalUsuario = $clienteSeleccionado->portalUsuario;
+                    $tokenPortal = $portalUsuario?->tokens
+                        ?->sortByDesc('enviado_at')
+                        ?->first();
+                    $tokenPortalVigente = $tokenPortal && $tokenPortal->estaVigente();
+                    $rolAutogestion = $esPropietario || $esInquilino;
+                    $identificadorAutogestion = $clienteSeleccionado->identificador_autogestion;
+                    $emailAutogestionOk = filter_var(trim((string) $clienteSeleccionado->email), FILTER_VALIDATE_EMAIL) !== false;
+                    $puedeEnviarAutogestion = $clienteSeleccionado->activo
+                        && $clienteSeleccionado->id_cliente_canonico === null
+                        && $rolAutogestion
+                        && filled($identificadorAutogestion)
+                        && $emailAutogestionOk;
+                @endphp
+
+                <article class="gei-card p-4 mb-4">
+                    <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+                        <div>
+                            <h3 class="h5 mb-1">Autogestión</h3>
+                            <p class="text-muted small mb-0">Acceso externo del cliente. Usuario: CUIT; si no tiene CUIT, número de documento.</p>
+                        </div>
+                        @if ($puedeEnviarAutogestion && ! $tokenPortalVigente)
+                            <form method="POST" action="{{ route('clientes.autogestion.enviar-acceso', $clienteSeleccionado) }}">
+                                @csrf
+                                <button class="btn btn-outline-primary" type="submit">
+                                    {{ $portalUsuario?->estaActivado() ? 'Enviar recuperación' : 'Enviar acceso' }}
+                                </button>
+                            </form>
+                        @elseif ($tokenPortalVigente)
+                            <button class="btn btn-outline-secondary" type="button" disabled>Enlace vigente</button>
+                        @endif
+                    </div>
+
+                    @error('autogestion')
+                        <div class="alert alert-danger mt-3 mb-0">{{ $message }}</div>
+                    @enderror
+
+                    <dl class="row mt-3 mb-0">
+                        <dt class="col-sm-3">Usuario</dt>
+                        <dd class="col-sm-9">{{ $identificadorAutogestion ?: '—' }}</dd>
+                        <dt class="col-sm-3">Email</dt>
+                        <dd class="col-sm-9">{{ $clienteSeleccionado->email ?: '—' }}</dd>
+                        <dt class="col-sm-3">Estado</dt>
+                        <dd class="col-sm-9">
+                            @if ($portalUsuario?->estaActivado())
+                                <span class="badge text-bg-success">Activa</span>
+                            @elseif ($tokenPortalVigente)
+                                <span class="badge text-bg-warning">Invitación pendiente</span>
+                            @elseif ($portalUsuario)
+                                <span class="badge text-bg-secondary">Sin activar</span>
+                            @else
+                                <span class="badge text-bg-light border text-dark">No habilitada</span>
+                            @endif
+                        </dd>
+                        @if ($tokenPortalVigente)
+                            <dt class="col-sm-3">Enviado</dt>
+                            <dd class="col-sm-9">{{ $tokenPortal->enviado_at?->format('d/m/Y H:i') }} · vence {{ $tokenPortal->vence_at?->format('d/m/Y H:i') }}</dd>
+                            @if ($tokenPortal->usuarioEnvio)
+                                <dt class="col-sm-3">Enviado por</dt>
+                                <dd class="col-sm-9">{{ $tokenPortal->usuarioEnvio->nombre_limpio }}</dd>
+                            @endif
+                        @endif
+                        @if ($portalUsuario?->activado_at)
+                            <dt class="col-sm-3">Activada</dt>
+                            <dd class="col-sm-9">{{ $portalUsuario->activado_at->format('d/m/Y H:i') }}</dd>
+                        @endif
+                        @if ($portalUsuario?->ultimo_acceso_at)
+                            <dt class="col-sm-3">Último acceso</dt>
+                            <dd class="col-sm-9">{{ $portalUsuario->ultimo_acceso_at->format('d/m/Y H:i') }}</dd>
+                        @endif
+                    </dl>
+
+                    @if (! $puedeEnviarAutogestion && ! $portalUsuario?->estaActivado())
+                        <div class="alert alert-warning mt-3 mb-0 py-2">
+                            Para habilitar Autogestión debe ser un cliente activo Inquilino/Propietario, tener CUIT o documento y un email válido.
+                        </div>
+                    @endif
+                </article>
+
+                @php
+                    $portalUsuario = $clienteSeleccionado->portalUsuario;
+                    $tokenPortal = $portalUsuario?->tokens
+                        ?->sortByDesc('enviado_at')
+                        ?->first();
+                    $tokenPortalVigente = $tokenPortal && $tokenPortal->estaVigente();
+                    $rolAutogestion = $esPropietario || $esInquilino;
+                    $identificadorAutogestion = $clienteSeleccionado->identificador_autogestion;
+                    $emailAutogestionOk = filter_var(trim((string) $clienteSeleccionado->email), FILTER_VALIDATE_EMAIL) !== false;
+                    $puedeEnviarAutogestion = $clienteSeleccionado->activo
+                        && $clienteSeleccionado->id_cliente_canonico === null
+                        && $rolAutogestion
+                        && filled($identificadorAutogestion)
+                        && $emailAutogestionOk;
+                @endphp
+
+                <article class="gei-card p-4 mb-4">
+                    <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+                        <div>
+                            <h3 class="h5 mb-1">Autogestión</h3>
+                            <p class="text-muted small mb-0">Acceso externo del cliente. Usuario: CUIT; si no tiene CUIT, número de documento.</p>
+                        </div>
+                        @if ($puedeEnviarAutogestion && ! $tokenPortalVigente)
+                            <form method="POST" action="{{ route('clientes.autogestion.enviar-acceso', $clienteSeleccionado) }}">
+                                @csrf
+                                <button class="btn btn-outline-primary" type="submit">
+                                    {{ $portalUsuario?->estaActivado() ? 'Enviar recuperación' : 'Enviar acceso' }}
+                                </button>
+                            </form>
+                        @elseif ($tokenPortalVigente)
+                            <button class="btn btn-outline-secondary" type="button" disabled>Enlace vigente</button>
+                        @endif
+                    </div>
+
+                    @error('autogestion')
+                        <div class="alert alert-danger mt-3 mb-0">{{ $message }}</div>
+                    @enderror
+
+                    <dl class="row mt-3 mb-0">
+                        <dt class="col-sm-3">Usuario</dt>
+                        <dd class="col-sm-9">{{ $identificadorAutogestion ?: '—' }}</dd>
+                        <dt class="col-sm-3">Email</dt>
+                        <dd class="col-sm-9">{{ $clienteSeleccionado->email ?: '—' }}</dd>
+                        <dt class="col-sm-3">Estado</dt>
+                        <dd class="col-sm-9">
+                            @if ($portalUsuario?->estaActivado())
+                                <span class="badge text-bg-success">Activa</span>
+                            @elseif ($tokenPortalVigente)
+                                <span class="badge text-bg-warning">Invitación pendiente</span>
+                            @elseif ($portalUsuario)
+                                <span class="badge text-bg-secondary">Sin activar</span>
+                            @else
+                                <span class="badge text-bg-light border text-dark">No habilitada</span>
+                            @endif
+                        </dd>
+                        @if ($tokenPortalVigente)
+                            <dt class="col-sm-3">Enviado</dt>
+                            <dd class="col-sm-9">{{ $tokenPortal->enviado_at?->format('d/m/Y H:i') }} · vence {{ $tokenPortal->vence_at?->format('d/m/Y H:i') }}</dd>
+                        @endif
+                        @if ($portalUsuario?->activado_at)
+                            <dt class="col-sm-3">Activada</dt>
+                            <dd class="col-sm-9">{{ $portalUsuario->activado_at->format('d/m/Y H:i') }}</dd>
+                        @endif
+                        @if ($portalUsuario?->ultimo_acceso_at)
+                            <dt class="col-sm-3">Último acceso</dt>
+                            <dd class="col-sm-9">{{ $portalUsuario->ultimo_acceso_at->format('d/m/Y H:i') }}</dd>
+                        @endif
+                    </dl>
+
+                    @if (! $puedeEnviarAutogestion && ! $portalUsuario?->estaActivado())
+                        <div class="alert alert-warning mt-3 mb-0 py-2">
+                            Para habilitar Autogestión debe ser un cliente activo Inquilino/Propietario, tener CUIT o documento y un email válido.
+                        </div>
+                    @endif
+                </article>
+
                 <article class="gei-card p-4 mb-4">
                     <h3 class="h5">Cuentas COBOL</h3>
                     <div class="table-responsive">

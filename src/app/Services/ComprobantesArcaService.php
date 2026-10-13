@@ -137,6 +137,14 @@ SQL))
             return null;
         }
 
+        // Camino rápido: muchos comprobantes KNG están directamente
+        // en /archivo-kng/Facturas. Evitamos consultar kng_facturas
+        // cuando el nombre exacto ya permite resolver el PDF.
+        $rutaDirecta = $this->buscarPdfFisico('', $nombre);
+        if ($rutaDirecta !== null) {
+            return $rutaDirecta;
+        }
+
         $tipoCodigo = strtoupper($m[1]);
         $puntoVenta = (string) ((int) $m[2]);
         $numero = (string) ((int) $m[3]);

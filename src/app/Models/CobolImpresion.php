@@ -18,6 +18,7 @@ class CobolImpresion extends Model
         'cuenta',
         'nombre_cliente',
         'fecha_documento',
+        'importe_total',
         'estado',
         'pdf_path',
         'recibido_en',
@@ -28,6 +29,7 @@ class CobolImpresion extends Model
         return [
             'bytes' => 'integer',
             'fecha_documento' => 'date',
+            'importe_total' => 'decimal:2',
             'recibido_en' => 'datetime',
             'created_at' => 'datetime',
             'updated_at' => 'datetime',

@@ -25,7 +25,8 @@
         || request()->routeIs('personas.*')
         || request()->routeIs('inmuebles.*')
         || request()->routeIs('cuentas-corrientes.*')
-        || request()->routeIs('core-clientes.*');
+        || request()->routeIs('core-clientes.*')
+        || (config('portal.funcionalidades.transferencias', false) && request()->routeIs('transferencias-informadas.*'));
 
     $propietariosActivo = request()->routeIs('propietarios.*');
     $contabilidadActivo = request()->routeIs('contabilidad.*');
@@ -90,6 +91,13 @@
                         <li>
                             <a href="{{ route('core-clientes.index') }}" class="gei-menu__link {{ request()->routeIs('core-clientes.*') ? 'is-active' : '' }}">
                                 <span class="gei-menu__label">Clientes</span>
+                            </a>
+                        </li>
+                    @endif
+                    @if ($puedeClientes && config('portal.funcionalidades.transferencias', false))
+                        <li>
+                            <a href="{{ route('transferencias-informadas.index') }}" class="gei-menu__link {{ request()->routeIs('transferencias-informadas.*') ? 'is-active' : '' }}">
+                                <span class="gei-menu__label">Transferencias informadas</span>
                             </a>
                         </li>
                     @endif

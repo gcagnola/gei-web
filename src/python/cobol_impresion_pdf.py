@@ -77,6 +77,94 @@ def fmt_monto(v: Decimal) -> str:
     return f"{signo}{'.'.join(grupos)},{dec}"
 
 
+
+def numero_entero_a_letras(n: int) -> str:
+    """Convierte un entero no negativo a letras en español."""
+    if n == 0:
+        return 'CERO'
+
+    unidades = [
+        '', 'UNO', 'DOS', 'TRES', 'CUATRO', 'CINCO', 'SEIS', 'SIETE', 'OCHO', 'NUEVE',
+        'DIEZ', 'ONCE', 'DOCE', 'TRECE', 'CATORCE', 'QUINCE', 'DIECISEIS',
+        'DIECISIETE', 'DIECIOCHO', 'DIECINUEVE', 'VEINTE', 'VEINTIUNO',
+        'VEINTIDOS', 'VEINTITRES', 'VEINTICUATRO', 'VEINTICINCO', 'VEINTISEIS',
+        'VEINTISIETE', 'VEINTIOCHO', 'VEINTINUEVE'
+    ]
+    decenas = {
+        30: 'TREINTA', 40: 'CUARENTA', 50: 'CINCUENTA', 60: 'SESENTA',
+        70: 'SETENTA', 80: 'OCHENTA', 90: 'NOVENTA'
+    }
+    centenas = {
+        200: 'DOSCIENTOS', 300: 'TRESCIENTOS', 400: 'CUATROCIENTOS',
+        500: 'QUINIENTOS', 600: 'SEISCIENTOS', 700: 'SETECIENTOS',
+        800: 'OCHOCIENTOS', 900: 'NOVECIENTOS'
+    }
+
+    def menos_de_mil(v: int, apocopar: bool = False) -> str:
+        if v == 0:
+            return ''
+        if v < 30:
+            texto = unidades[v]
+        elif v < 100:
+            d = (v // 10) * 10
+            u = v % 10
+            texto = decenas[d] if u == 0 else f'{decenas[d]} Y {unidades[u]}'
+        elif v == 100:
+            texto = 'CIEN'
+        else:
+            c = (v // 100) * 100
+            resto = v % 100
+            pref = 'CIENTO' if c == 100 else centenas[c]
+            texto = pref if resto == 0 else f'{pref} {menos_de_mil(resto)}'
+
+        if apocopar:
+            if texto.endswith('VEINTIUNO'):
+                texto = texto[:-9] + 'VEINTIUN'
+            elif texto.endswith(' Y UNO'):
+                texto = texto[:-6] + ' Y UN'
+            elif texto.endswith('UNO'):
+                texto = texto[:-3] + 'UN'
+        return texto
+
+    partes = []
+
+    millones = n // 1_000_000
+    n %= 1_000_000
+    if millones:
+        if millones == 1:
+            partes.append('UN MILLON')
+        else:
+            partes.append(f'{numero_entero_a_letras(millones)} MILLONES')
+
+    miles = n // 1000
+    n %= 1000
+    if miles:
+        if miles == 1:
+            partes.append('MIL')
+        else:
+            partes.append(f'{menos_de_mil(miles, apocopar=True)} MIL')
+
+    if n:
+        partes.append(menos_de_mil(n))
+
+    return ' '.join(partes)
+
+
+def importe_pesos_a_letras(valor: Decimal) -> str:
+    """Genera el importe completo en letras desde el total calculado."""
+    valor = valor.quantize(Decimal('0.01'))
+    signo = 'MENOS ' if valor < 0 else ''
+    valor = abs(valor)
+
+    pesos = int(valor)
+    centavos = int((valor - Decimal(pesos)) * 100)
+
+    texto = f'PESOS {signo}{numero_entero_a_letras(pesos)}'
+    if centavos:
+        texto += f' CON {numero_entero_a_letras(centavos)} CENTAVOS'
+    return texto
+
+
 def txt(c, x, y, s, size=8, font='Helvetica', color=TEXT, align='left'):
     c.setFillColor(color)
     c.setFont(font, size)
@@ -177,6 +265,7 @@ class ReceiptItem:
     code: str
     description: str
     amount: Decimal
+    movimiento: str = 'DEBITO'
 
 
 @dataclass
@@ -283,43 +372,82 @@ def parse_receipt(texto: str) -> Receipt:
                 r.valid_to = fechas[0]
         break
 
-    # Condición IVA, CUIT y número de recibo. El formato real observado es:
-    # Consumidor Final   27.13925544.0   738006   01
+    # Condición IVA, CUIT y número de recibo.
+    # Formatos reales observados:
+    #   Consumidor Final   27.13925544.0   738006   01
+    #   Consumidor Final                    91079   01
+    #
+    # El número de recibo no depende de que exista CUIT.
     for line in all_lines:
         cui = re.search(r'\b\d{2}[.\-]?\d{8}[.\-]?\d\b', line)
-        if not cui:
-            continue
-        tail = line[cui.end():]
-        nr = re.search(r'\b(\d{6})\b', tail)
-        if not nr:
-            continue
-        digits = re.sub(r'\D', '', cui.group(0))
-        if len(digits) == 11:
-            r.cuit = f'{digits[:2]}-{digits[2:10]}-{digits[10:]}'
-        r.receipt_no = nr.group(1)
-        iva = normalize_spaces(line[:cui.start()])
-        if iva:
-            r.iva_condition = iva
-        break
 
-    # Texto del importe en letras: aparece en la última página antes del
-    # TRANSPORTE de entrada.
+        if cui:
+            tail = line[cui.end():]
+            nr = re.search(r'\b(\d{5,6})\b\s+\d{2}\s*$', tail)
+            if nr:
+                digits = re.sub(r'\D', '', cui.group(0))
+                if len(digits) == 11:
+                    r.cuit = f'{digits[:2]}-{digits[2:10]}-{digits[10:]}'
+                r.receipt_no = nr.group(1)
+                iva = normalize_spaces(line[:cui.start()])
+                if iva:
+                    r.iva_condition = iva
+                break
+
+        # Variante sin CUIT: la condición IVA queda a la izquierda y al final
+        # aparecen número de recibo + código de copia/secuencia de 2 dígitos.
+        nr_sin_cuit = re.match(
+            r'^\s*(.+?)\s{2,}(\d{5,6})\s+(\d{2})\s*$',
+            line,
+        )
+        if nr_sin_cuit:
+            iva = normalize_spaces(nr_sin_cuit.group(1))
+            # Evitar falsos positivos: esta línea debe parecer una condición IVA.
+            if re.search(
+                r'Consumidor\s+Final|Monotrib|Inscrip|Exento|No\s+Categ',
+                iva,
+                re.I,
+            ):
+                r.iva_condition = iva
+                r.receipt_no = nr_sin_cuit.group(2)
+                break
+
+    # Texto del importe en letras. Se corta antes de los títulos del cuerpo
+    # para no incorporar "DEBITOS", "CREDITOS" ni el pie de atención.
     word_lines: list[str] = []
     collecting_words = False
     for line in all_lines:
         sline = normalize_spaces(line)
+
         if 'PESOS ' in sline.upper():
             collecting_words = True
-            word_lines.append(sline)
+            limpio = re.sub(r'\*+', '', sline).strip()
+            if limpio:
+                word_lines.append(limpio)
             continue
+
         if collecting_words:
-            if re.search(r'TRANSPORTE', sline, re.I):
+            if re.search(
+                r'TRANSPORTE|D\s*E\s*B\s*I\s*T\s*O\s*S|'
+                r'C\s*R\s*E\s*D\s*I\s*T\s*O\s*S|'
+                r'HORARIO\s+DE\s+ATENCION|Sr\.Inquilino',
+                sline,
+                re.I,
+            ):
                 break
-            if sline and not re.search(r'\d', sline):
-                word_lines.append(sline)
-    r.amount_words = ' '.join(word_lines).strip()
+
+            limpio = re.sub(r'\*+', '', sline).strip()
+            if limpio and not re.search(r'\d', limpio):
+                word_lines.append(limpio)
+
+    r.amount_words = normalize_spaces(' '.join(word_lines)).strip()
 
     item_rx = re.compile(r'^\s*(?:(\d{2})\s+)?(.+?)\s+([0-9.]+,[0-9]{2})\s*$')
+
+    # El estado DÉBITO/CRÉDITO debe continuar entre páginas COBOL.
+    # Hay recibos donde el título "C R E D I T O S" queda al final de una página
+    # y los movimientos de crédito aparecen recién en la página siguiente.
+    movimiento = 'DEBITO'
 
     for page_no, lines in enumerate(pages_lines, 1):
         page = ReceiptPage(number=page_no, items=[])
@@ -340,7 +468,13 @@ def parse_receipt(texto: str) -> Receipt:
                     page.transport_in = val
                 continue
 
-            if re.search(r'D E B I T O S', line):
+            if re.search(r'D\s*E\s*B\s*I\s*T\s*O\s*S', line, re.I):
+                movimiento = 'DEBITO'
+                seen_content = True
+                continue
+
+            if re.search(r'C\s*R\s*E\s*D\s*I\s*T\s*O\s*S', line, re.I):
+                movimiento = 'CREDITO'
                 seen_content = True
                 continue
 
@@ -367,7 +501,7 @@ def parse_receipt(texto: str) -> Receipt:
             if not code and not desc.upper().startswith('INTERESES CONCEPTO ANTERIOR'):
                 continue
 
-            item = ReceiptItem(code, desc, monto(m.group(3)))
+            item = ReceiptItem(code, desc, monto(m.group(3)), movimiento)
             page.items.append(item)
             r.items.append(item)
             seen_content = True
@@ -375,7 +509,20 @@ def parse_receipt(texto: str) -> Receipt:
         if page.items or page.transport_in or page.transport_out or seen_content:
             r.pages.append(page)
 
-    r.total = sum((x.amount for x in r.items), Decimal('0'))
+    total_debitos = sum(
+        (x.amount for x in r.items if x.movimiento == 'DEBITO'),
+        Decimal('0'),
+    )
+    total_creditos = sum(
+        (x.amount for x in r.items if x.movimiento == 'CREDITO'),
+        Decimal('0'),
+    )
+    r.total = total_debitos - total_creditos
+
+    # El COBOL puede truncar el importe en letras por el ancho del spool.
+    # Para el PDF moderno lo regeneramos siempre desde el saldo calculado.
+    r.amount_words = importe_pesos_a_letras(r.total)
+
     r.footer = ('Sr.Inquilino: Ud puede abonar tambien sus alquileres por '
                 'transferencias o depositos bancarios. Consultenos.')
     return r
@@ -531,28 +678,66 @@ def draw_receipt_band(c, r: Receipt, y_top: float):
 
 
 def draw_receipt_page_body(c, r: Receipt, page: ReceiptPage, y_start: float, half_bottom: float):
-    """Dibuja una página lógica del recibo dentro de media A4."""
+    """Dibuja una página lógica del recibo separando DÉBITOS y CRÉDITOS."""
     y = y_start - 3.3*mm
     widths = [14*mm, 139*mm, 33*mm]
-    draw_table_header(c, LEFT, y, widths, [('Código', 'center'), ('Concepto', 'left'), ('Importe', 'right')], h=6.8*mm)
-    row_y = y - 9.0*mm
     line_h = 3.7*mm
 
-    if page.transport_in:
-        txt(c, LEFT + 16.5*mm, row_y, 'TRANSPORTE', 6.8, 'Helvetica-Bold', MUTED)
-        txt(c, RIGHT - 2*mm, row_y, fmt_monto(page.transport_in), 6.8, 'Helvetica-Bold', MUTED, 'right')
-        row_y -= line_h
+    debitos = [item for item in page.items if item.movimiento == 'DEBITO']
+    creditos = [item for item in page.items if item.movimiento == 'CREDITO']
 
-    for item in page.items:
-        txt(c, LEFT + 7*mm, row_y, item.code, 6.6, align='center')
-        txt(c, LEFT + 16.5*mm, row_y, item.description[:70], 6.8)
-        txt(c, RIGHT - 2*mm, row_y, fmt_monto(item.amount), 6.8, align='right')
-        row_y -= line_h
+    def draw_movimientos(titulo: str, items: list[ReceiptItem], row_y: float) -> float:
+        if not items:
+            return row_y
+
+        # Título de bloque igual al estilo usado en la liquidación de deuda.
+        txt(c, LEFT, row_y, titulo, 8.2, 'Helvetica-Bold', PURPLE_DARK)
+        row_y -= 2.2*mm
+
+        draw_table_header(
+            c,
+            LEFT,
+            row_y,
+            widths,
+            [('N°', 'center'), ('Detalle', 'left'), ('Importe', 'right')],
+            h=6.8*mm,
+        )
+        # Un poco más de aire entre la cabecera violeta y el primer detalle.
+        row_y -= 10.2*mm
+
+        total_grupo = Decimal('0')
+        for item in items:
+            txt(c, LEFT + 7*mm, row_y, item.code, 6.6, align='center')
+            txt(c, LEFT + 16.5*mm, row_y, item.description[:70], 6.8)
+            txt(c, RIGHT - 2*mm, row_y, fmt_monto(item.amount), 6.8, align='right')
+            total_grupo += item.amount
+            row_y -= line_h
+
+        c.setStrokeColor(GRID)
+        c.line(LEFT, row_y + 2.0*mm, RIGHT, row_y + 2.0*mm)
+        txt(c, LEFT + 2*mm, row_y - 1.7*mm, f'TOTAL {titulo}', 7.2, 'Helvetica-Bold')
+        txt(c, RIGHT - 2*mm, row_y - 1.7*mm, fmt_monto(total_grupo), 7.2, 'Helvetica-Bold', align='right')
+        row_y -= 7.0*mm
+
+        return row_y
+
+    # Transporte entrante, si existe, antes de los movimientos de la página.
+    if page.transport_in:
+        txt(c, LEFT + 2*mm, y, 'TRANSPORTE', 6.8, 'Helvetica-Bold', MUTED)
+        txt(c, RIGHT - 2*mm, y, fmt_monto(page.transport_in), 6.8, 'Helvetica-Bold', MUTED, 'right')
+        y -= 5.0*mm
+
+    y = draw_movimientos('DÉBITOS', debitos, y)
+
+    if debitos and creditos:
+        y -= 1.5*mm
+
+    y = draw_movimientos('CRÉDITOS', creditos, y)
 
     if page.transport_out:
         # El transporte saliente se alinea hacia el pie de cada mitad, sin
         # alterar el acumulado que trae el RAW.
-        transport_y = max(half_bottom + 10.5*mm, row_y - 1.5*mm)
+        transport_y = max(half_bottom + 10.5*mm, y - 1.5*mm)
         c.setStrokeColor(GRID)
         c.line(LEFT, transport_y + 2.8*mm, RIGHT, transport_y + 2.8*mm)
         txt(c, LEFT + 2*mm, transport_y, 'TRANSPORTE:', 7.0, 'Helvetica-Bold', MUTED)
@@ -561,19 +746,18 @@ def draw_receipt_page_body(c, r: Receipt, page: ReceiptPage, y_start: float, hal
         txt(c, LEFT, footer_y, r.footer, 5.2, 'Helvetica', MUTED)
         return
 
-    # Última página: texto en letras y total definitivo.
+    # Última página: texto en letras y saldo definitivo.
     words = normalize_spaces(r.amount_words)
     if words:
-        txt(c, LEFT, max(half_bottom + 15*mm, row_y - 1.5*mm), ('Son: ' + words)[:180], 5.8, 'Helvetica-Bold')
+        txt(c, LEFT, max(half_bottom + 15*mm, y - 1.5*mm), ('Son: ' + words)[:180], 5.8, 'Helvetica-Bold')
 
     total_y = half_bottom + 9.5*mm
     panel_w = 46*mm
     c.setFillColor(LAV2)
     c.rect(RIGHT - panel_w, total_y - 5.5*mm, panel_w, 8*mm, fill=1, stroke=0)
-    txt(c, RIGHT - panel_w + 4*mm, total_y - 2.5*mm, 'TOTAL', 8.0, 'Helvetica-Bold')
+    txt(c, RIGHT - panel_w + 4*mm, total_y - 2.5*mm, 'SALDO', 8.0, 'Helvetica-Bold')
     txt(c, RIGHT - 3*mm, total_y - 2.5*mm, '$ ' + fmt_monto(r.total), 10.0, 'Helvetica-Bold', align='right')
     txt(c, LEFT, half_bottom + 5.0*mm, r.footer, 5.2, 'Helvetica', MUTED)
-
 
 def draw_receipt_half_page(c, r: Receipt, page: ReceiptPage, y_top: float, half_bottom: float, label: str, logo: Path | None):
     y = draw_receipt_header(c, r, y_top, logo, label)

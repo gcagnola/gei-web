@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class Cliente extends Model
 {
@@ -49,6 +50,23 @@ class Cliente extends Model
     public function cuentas(): HasMany
     {
         return $this->hasMany(ClienteCuenta::class);
+    }
+
+    public function portalUsuario(): HasOne
+    {
+        return $this->hasOne(PortalUsuario::class);
+    }
+
+    public function getIdentificadorAutogestionAttribute(): ?string
+    {
+        $cuit = preg_replace('/\D+/', '', (string) $this->cuit) ?: '';
+        if ($cuit !== '') {
+            return $cuit;
+        }
+
+        $documento = preg_replace('/\D+/', '', (string) $this->numero_documento) ?: '';
+
+        return $documento !== '' ? $documento : null;
     }
 
     public function getNombreVisibleAttribute(): string

@@ -113,7 +113,7 @@
                                     <th>Línea</th>
                                     <th>Fecha mov.</th>
                                     <th>Vencimiento</th>
-                                    <th>Cód.</th>
+                                    <th>Concepto</th>
                                     <th>Nº COBOL</th>
                                     <th>Incidencia</th>
                                 </tr>
@@ -130,7 +130,12 @@
                                                 {{ $fechaCobolActividad($i->fecha_vencimiento) }}
                                             @endif
                                         </td>
-                                        <td>{{ $i->codigo ?: '—' }}</td>
+                                        <td>
+                                            <span class="fw-semibold">{{ $i->codigo ?: '—' }}</span>
+                                            @if(! empty($i->concepto_descripcion))
+                                                <span class="ms-1">{{ $i->concepto_descripcion }}</span>
+                                            @endif
+                                        </td>
                                         <td>{{ $i->numero_cobol ?: '—' }}</td>
                                         <td>
                                             @if(($i->tipo_incidencia ?? '') === 'FECHA_INVALIDA')
@@ -202,7 +207,7 @@
                     <td>{{ $f->fecha ? \Illuminate\Support\Carbon::parse($f->fecha)->format('d/m/Y') : '—' }}</td>
                     <td>
                         @if($f->comprobante && $f->archivo_pdf)
-                            <a target="_blank" href="{{ route('kng.facturas.pdf', ['lote' => $f->lote, 'archivo' => $f->archivo_pdf]) }}" class="text-decoration-none fw-semibold">{{ $f->comprobante }}</a>
+                            <a target="_blank" href="{{ route('kng.facturas.pdf', ['lote' => $f->lote, 'archivo' => $f->archivo_pdf]) }}" class="link-primary text-decoration-underline fw-semibold">{{ $f->comprobante }}</a>
                         @elseif($f->comprobante)
                             <span class="fw-semibold">{{ $f->comprobante }}</span>
                         @else

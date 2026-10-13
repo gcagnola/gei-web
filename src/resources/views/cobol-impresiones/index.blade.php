@@ -40,7 +40,7 @@
             <table class="table table-hover align-middle mb-0">
                 <thead>
                     <tr>
-                        <th>Hora</th><th>Sucursal</th><th>Tipo</th><th>Cuenta</th><th>Cliente</th><th>Archivo RAW</th><th>Estado</th><th class="text-end">Acciones</th>
+                        <th>Hora</th><th>Sucursal</th><th>Tipo</th><th>Cuenta</th><th>Cliente</th><th class="text-end">Importe</th><th>Archivo RAW</th><th>Estado</th><th class="text-end">Acciones</th>
                     </tr>
                 </thead>
                 <tbody id="tabla-impresiones">
@@ -68,6 +68,7 @@
                             </td>
                             <td class="text-nowrap">{{ $impresion->cuenta ?: '—' }}</td>
                             <td>{{ $impresion->nombre_cliente ?: '—' }}</td>
+                            <td class="text-end text-nowrap fw-semibold">{{ $impresion->importe_total !== null ? '$ '.number_format((float) $impresion->importe_total, 2, ',', '.') : '—' }}</td>
                             <td class="text-nowrap"><code>{{ $impresion->archivo_origen }}</code></td>
                             <td><span class="badge text-bg-{{ $impresion->estado === 'PARSEADO' ? 'success' : 'secondary' }}">{{ $impresion->estado }}</span></td>
                             <td class="text-end text-nowrap">
@@ -84,7 +85,7 @@
                             </td>
                         </tr>
                     @empty
-                        <tr id="sin-impresiones"><td colspan="8" class="text-center text-muted py-5">No se recibieron impresiones COBOL en esta fecha.</td></tr>
+                        <tr id="sin-impresiones"><td colspan="9" class="text-center text-muted py-5">No se recibieron impresiones COBOL en esta fecha.</td></tr>
                     @endforelse
                 </tbody>
             </table>
@@ -111,7 +112,7 @@
 
             const render = (items) => {
                 if (!Array.isArray(items) || items.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-5">No se recibieron impresiones COBOL en esta fecha.</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-5">No se recibieron impresiones COBOL en esta fecha.</td></tr>';
                     return;
                 }
 
@@ -130,6 +131,7 @@
                         <td>${escapeHtml(item.tipo || 'Desconocido')}</td>
                         <td class="text-nowrap">${escapeHtml(item.cuenta || '—')}</td>
                         <td>${escapeHtml(item.cliente || '—')}</td>
+                        <td class="text-end text-nowrap fw-semibold">${escapeHtml(item.importe_total || '—')}</td>
                         <td class="text-nowrap"><code>${escapeHtml(item.archivo)}</code></td>
                         <td><span class="badge text-bg-${badge}">${escapeHtml(item.estado)}</span></td>
                         <td class="text-end text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="${escapeHtml(item.raw_url)}" target="_blank" rel="noopener">Ver RAW</a> ${pdf}</td>

@@ -5,6 +5,23 @@
 
 @section('content')
 @php
+    // Sedes obtenidas solamente de las cuentas COBOL presentes en el listado.
+    // El Service filtra esas cuentas por las sedes permitidas al usuario.
+    $sedesDeCuentas = static function ($cuentas): array {
+        $detectadas = [];
+        foreach (explode(',', (string) $cuentas) as $cuenta) {
+            $numero = preg_replace('/[^0-9]/', '', (string) $cuenta) ?? '';
+            $prefijo = substr($numero, 0, 4);
+            if (in_array($prefijo, ['1103', '1202'], true)) {
+                $detectadas['SF'] = true;
+            } elseif (in_array($prefijo, ['2103', '2202'], true)) {
+                $detectadas['ST'] = true;
+            }
+        }
+
+        return array_values(array_filter(['SF', 'ST'], static fn (string $sede): bool => isset($detectadas[$sede])));
+    };
+
     $pv = static fn (?string $p): string => $p && strlen($p) === 6
         ? substr($p,4,2).'/'.substr($p,0,4)
         : ($p ?: '—');
@@ -164,11 +181,21 @@
                             <tr>
                                 <td class="text-muted">#{{ $c->id }}</td>
                                 <td>
-                                    <div class="fw-semibold">{{ $v($c->nombre) }}</div>
+                                    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+                                        <div class="fw-semibold">{{ $v($c->nombre) }}</div>
+                                        <div class="d-flex flex-wrap align-items-center gap-1 ms-auto">
+                                            @foreach($sedesDeCuentas($c->cuentas ?? '') as $sede)
+                                                <span class="badge {{ $sede === 'SF' ? 'text-bg-primary' : 'text-bg-info' }}">{{ $sede }}</span>
+                                            @endforeach
+                                        </div>
+                                    </div>
                                     @if($c->domicilio)
                                         <div class="small text-muted">
                                             {{ $c->domicilio }}{{ $c->localidad ? ' · '.$c->localidad : '' }}{{ $c->provincia ? ' · '.$c->provincia : '' }}
                                         </div>
+                                    @endif
+                                    @if(!empty($c->email))
+                                        <div class="small"><a href="mailto:{{ $c->email }}" onclick="event.stopPropagation()">{{ $c->email }}</a></div>
                                     @endif
                                 </td>
                                 <td>{{ $v($c->nro_iva) }}</td>
@@ -203,8 +230,18 @@
                     @forelse($clientes as $c)
                         <tr style="cursor:pointer" onclick="window.location.href=@js(route('core-clientes.show',['persona'=>$c->id,'periodo'=>$periodo]))">
                             <td>
-                                <div class="fw-semibold">{{ $v($c->nombre) }}</div>
+                                <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+                                    <div class="fw-semibold">{{ $v($c->nombre) }}</div>
+                                    <div class="d-flex flex-wrap align-items-center gap-1 ms-auto">
+                                        @foreach($sedesDeCuentas($c->cuentas ?? '') as $sede)
+                                            <span class="badge {{ $sede === 'SF' ? 'text-bg-primary' : 'text-bg-info' }}">{{ $sede }}</span>
+                                        @endforeach
+                                    </div>
+                                </div>
                                 @if($c->domicilio)<div class="small text-muted">{{ $c->domicilio }}{{ $c->localidad ? ' · '.$c->localidad : '' }}</div>@endif
+                                @if(!empty($c->email))
+                                    <div class="small"><a href="mailto:{{ $c->email }}" onclick="event.stopPropagation()">{{ $c->email }}</a></div>
+                                @endif
                             </td>
                             <td>{{ $v($c->nro_iva) }}</td>
                             <td>{{ $v($c->nro_documento) }}</td>

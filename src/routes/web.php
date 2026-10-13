@@ -3,6 +3,7 @@
 use App\Http\Controllers\Auth\LoginController;
 use App\Http\Controllers\Auth\RecuperarClaveController;
 use App\Http\Controllers\ClienteController;
+use App\Http\Controllers\ClientePortalAccesoController;
 use App\Http\Controllers\ClienteComprobanteArcaController;
 use App\Http\Controllers\ComprobanteArcaController;
 use App\Http\Controllers\ConfiguracionFacturacionController;
@@ -26,6 +27,14 @@ use App\Http\Controllers\ConceptoController;
 use App\Http\Controllers\PlanCuentaController;
 use App\Http\Controllers\CamaraController;
 use App\Http\Controllers\RelojController;
+use App\Http\Controllers\PortalAuthController;
+use App\Http\Controllers\TransferenciaInformadaController;
+use App\Http\Controllers\PortalTransferenciaController;
+use App\Http\Controllers\PortalController;
+use App\Http\Controllers\PortalDocumentosController;
+use App\Http\Controllers\PortalReciboController;
+use App\Http\Middleware\AutenticarPortal;
+use App\Http\Middleware\VerificarFuncionalidadPortal;
 use Illuminate\Support\Facades\Route;
 
 Route::middleware('guest')->group(function () {
@@ -54,6 +63,65 @@ Route::middleware('guest')->group(function () {
         '/restablecer-clave',
         [RecuperarClaveController::class, 'restablecer']
     )->name('password.update');
+});
+
+// Autogestión de clientes. Se mantiene separada del guard administrativo.
+Route::prefix('autogestion')->name('portal.')->group(function (): void {
+    Route::get('/login', [PortalAuthController::class, 'login'])->name('login');
+    Route::post('/login', [PortalAuthController::class, 'ingresar'])->middleware('throttle:10,1')->name('login.ingresar');
+
+    Route::get('/activar/{token}', [PortalAuthController::class, 'activacion'])->name('activacion.mostrar');
+    Route::post('/activar', [PortalAuthController::class, 'activar'])->middleware('throttle:10,1')->name('activacion.guardar');
+
+    Route::get('/clave-olvidada', [PortalAuthController::class, 'solicitarRecuperacion'])->name('password.request');
+    Route::post('/clave-olvidada', [PortalAuthController::class, 'enviarRecuperacion'])->middleware('throttle:5,1')->name('password.email');
+    Route::get('/restablecer-clave/{token}', [PortalAuthController::class, 'mostrarReset'])->name('password.reset');
+    Route::post('/restablecer-clave', [PortalAuthController::class, 'reset'])->middleware('throttle:10,1')->name('password.update');
+
+    Route::middleware(AutenticarPortal::class)->group(function (): void {
+        Route::get('/', [PortalController::class, 'inicio'])->name('inicio');
+        Route::put('/datos', [PortalController::class, 'actualizarDatos'])->name('datos.update');
+        Route::put('/clave', [PortalController::class, 'cambiarClave'])->name('clave.update');
+
+        Route::get('/comprobantes-arca', [PortalDocumentosController::class, 'comprobantesArca'])->name('comprobantes-arca.index');
+        Route::get('/comprobantes-arca/{periodo}/{archivo}', [PortalDocumentosController::class, 'verComprobanteArca'])
+            ->where('periodo', '(19|20)[0-9]{2}(0[1-9]|1[0-2])')
+            ->name('comprobantes-arca.ver');
+
+        Route::get('/comprobantes-arca/factura/{factura}', [PortalDocumentosController::class, 'verFacturaArca'])
+            ->whereNumber('factura')
+            ->name('comprobantes-arca.factura');
+
+        Route::get('/liquidaciones-propietario', [PortalDocumentosController::class, 'liquidacionesPropietario'])->name('liquidaciones-propietario.index');
+        Route::get('/liquidaciones-propietario/{liquidacion}/ver', [PortalDocumentosController::class, 'verLiquidacionPropietario'])
+            ->whereNumber('liquidacion')
+            ->name('liquidaciones-propietario.ver');
+
+        Route::get('/impuestos-garantizados', [PortalDocumentosController::class, 'impuestosGarantizados'])->name('impuestos-garantizados.index');
+        Route::get('/impuestos-garantizados/{liquidacion}/ver', [PortalDocumentosController::class, 'verImpuestosGarantizados'])
+            ->whereNumber('liquidacion')
+            ->name('impuestos-garantizados.ver');
+
+
+        // Se mantienen los nombres de ruta para poder habilitar los módulos más adelante.
+        // Las rutas devuelven 404 mientras la funcionalidad esté desactivada.
+        Route::middleware(VerificarFuncionalidadPortal::class.':recibos')->group(function (): void {
+            Route::get('/recibos', [PortalReciboController::class, 'index'])->name('recibos.index');
+            Route::get('/recibos/{impresion}/pdf', [PortalReciboController::class, 'pdf'])
+                ->whereNumber('impresion')
+                ->name('recibos.pdf');
+        });
+
+        Route::middleware(VerificarFuncionalidadPortal::class.':transferencias')->group(function (): void {
+            Route::get('/transferencias', [PortalTransferenciaController::class, 'index'])->name('transferencias.index');
+            Route::get('/transferencias/nueva', [PortalTransferenciaController::class, 'create'])->name('transferencias.create');
+            Route::post('/transferencias', [PortalTransferenciaController::class, 'store'])->name('transferencias.store');
+            Route::get('/transferencias/{transferencia}/archivos/{archivo}', [PortalTransferenciaController::class, 'archivo'])
+                ->whereNumber('transferencia')->whereNumber('archivo')->name('transferencias.archivo');
+        });
+
+        Route::post('/logout', [PortalAuthController::class, 'salir'])->name('logout');
+    });
 });
 
 use App\Http\Controllers\GeiCoreClienteController;
@@ -219,6 +287,25 @@ Route::middleware('auth')->group(function () {
     Route::resource('/archivo/clientes', ClienteController::class)
         ->parameters(['clientes' => 'cliente'])
         ->only(['index', 'show', 'create', 'store', 'edit', 'update']);
+
+
+    // Acceso administrativo protegido aunque se ingrese la URL manualmente.
+    Route::middleware(VerificarFuncionalidadPortal::class.':transferencias')->group(function (): void {
+        Route::get('/archivo/transferencias-informadas', [TransferenciaInformadaController::class, 'index'])
+            ->name('transferencias-informadas.index');
+        Route::get('/archivo/transferencias-informadas/{transferencia}', [TransferenciaInformadaController::class, 'show'])
+            ->whereNumber('transferencia')->name('transferencias-informadas.show');
+        Route::get('/archivo/transferencias-informadas/{transferencia}/archivos/{archivo}', [TransferenciaInformadaController::class, 'archivo'])
+            ->whereNumber('transferencia')->whereNumber('archivo')->name('transferencias-informadas.archivo');
+        Route::post('/archivo/transferencias-informadas/{transferencia}/verificar', [TransferenciaInformadaController::class, 'verificar'])
+            ->whereNumber('transferencia')->name('transferencias-informadas.verificar');
+        Route::post('/archivo/transferencias-informadas/{transferencia}/rechazar', [TransferenciaInformadaController::class, 'rechazar'])
+            ->whereNumber('transferencia')->name('transferencias-informadas.rechazar');
+    });
+
+    Route::post('/archivo/clientes/{cliente}/autogestion/enviar-acceso', [ClientePortalAccesoController::class, 'enviar'])
+        ->whereNumber('cliente')
+        ->name('clientes.autogestion.enviar-acceso');
 
     Route::put(
         '/archivo/clientes/{cliente}/facturacion/{cuentaCorriente}',

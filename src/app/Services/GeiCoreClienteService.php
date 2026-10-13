@@ -187,6 +187,12 @@ final class GeiCoreClienteService
             }
         }
 
+        $personasResultado = collect($resultado)
+            ->flatMap(fn (array $grupo) => $grupo['personas'])
+            ->unique('id')
+            ->values();
+        $this->adjuntarEmails($personasResultado);
+
         return [
             'grupos' => $resultado,
             'total_grupos' => count($resultado),
@@ -306,7 +312,179 @@ final class GeiCoreClienteService
             ->orderByRaw('p.nombre nulls last')
             ->orderBy('p.id');
 
-        return $q->paginate($porPagina)->withQueryString();
+        $pagina = $q->paginate($porPagina)->withQueryString();
+        $this->adjuntarEmails($pagina->getCollection());
+
+        return $pagina;
+    }
+
+    /**
+     * Obtiene emails del maestro operativo public.clientes mediante cuenta COBOL + rol.
+     * No muestra correo cuando la persona se vincula con más de un cliente canónico.
+     * Consulta en bloque para evitar N+1 sobre el listado.
+     */
+    private function adjuntarEmails(Collection $personas): void
+    {
+        if ($personas->isEmpty()) {
+            return;
+        }
+
+        $ids = $personas->pluck('id')->map(fn ($id) => (int) $id)->unique()->values()->all();
+        $cuentas = $this->core()->table('gei_core.personas_cuentas_cobol')
+            ->whereIn('persona_id', $ids)
+            ->whereIn('rol', ['INQUILINO', 'PROPIETARIO'])
+            ->get(['persona_id', 'rol', 'cuenta_cobol']);
+        $claves = $cuentas->map(function ($c): string {
+            return strtoupper(trim((string) $c->rol)).'|'.$this->normalizarCuenta((string) $c->cuenta_cobol);
+        })->filter(fn ($c) => ! str_ends_with($c, '|'))->unique()->values();
+
+        $porClave = collect();
+        if ($claves->isNotEmpty()) {
+            $numeros = $cuentas->pluck('cuenta_cobol')
+                ->map(fn ($c): string => $this->normalizarCuenta((string) $c))
+                ->filter()->unique()->values()->all();
+            $filas = DB::table('clientes_cuentas as cc')
+                ->join('clientes as c', 'c.id', '=', 'cc.cliente_id')
+                ->join('clientes as canon', 'canon.id', '=', DB::raw('coalesce(c.id_cliente_canonico, c.id)'))
+                ->whereIn('cc.rol', ['INQUILINO', 'PROPIETARIO'])
+                ->whereIn(DB::raw("regexp_replace(coalesce(cc.cuenta, ''), '[^0-9]', '', 'g')"), $numeros)
+                ->selectRaw("cc.rol, regexp_replace(coalesce(cc.cuenta, ''), '[^0-9]', '', 'g') as cuenta_norm, canon.id as canon_id, canon.email")
+                ->get();
+            $porClave = $filas->groupBy(fn ($f) => strtoupper(trim((string) $f->rol)).'|'.$f->cuenta_norm);
+        }
+
+        $cuentasPorPersona = $cuentas->groupBy('persona_id');
+        foreach ($personas as $persona) {
+            $persona->email = null;
+            $clienteIds = collect();
+            $emails = collect();
+            foreach ($cuentasPorPersona->get($persona->id, collect()) as $cuenta) {
+                $clave = strtoupper(trim((string) $cuenta->rol)).'|'.$this->normalizarCuenta((string) $cuenta->cuenta_cobol);
+                foreach ($porClave->get($clave, collect()) as $fila) {
+                    $clienteIds->push((int) $fila->canon_id);
+                    $emails->push($fila->email);
+                }
+            }
+            // Sin asociación o con más de un cliente canónico: no adivinar.
+            if ($clienteIds->unique()->count() === 1) {
+                $persona->email = $emails->first(fn ($email) => trim((string) $email) !== '');
+            }
+        }
+    }
+
+    /**
+     * Actualiza el email del cliente operativo canónico vinculado a una persona GeI-Core.
+     *
+     * La pantalla de clientes-core trabaja con gei_core.personas, mientras que el email
+     * pertenece al maestro operativo public.clientes. La vinculación se resuelve por las
+     * cuentas COBOL compartidas entre gei_core.personas_cuentas_cobol y clientes_cuentas.
+     */
+    private function resolverClienteCanonicoId(int $personaId): ?int
+    {
+        $cuentas = collect($this->core()->select(
+            "select rol, cuenta_cobol
+               from gei_core.personas_cuentas_cobol
+              where persona_id = ?",
+            [$personaId]
+        ));
+
+        $clienteIds = collect();
+
+        foreach ($cuentas as $cuenta) {
+            $numero = $this->normalizarCuenta((string) ($cuenta->cuenta_cobol ?? ''));
+            $rol = strtoupper(trim((string) ($cuenta->rol ?? '')));
+
+            if ($numero === '' || ! in_array($rol, ['PROPIETARIO', 'INQUILINO'], true)) {
+                continue;
+            }
+
+            $ids = DB::table('clientes_cuentas as cc')
+                ->join('clientes as c', 'c.id', '=', 'cc.cliente_id')
+                ->where('cc.rol', $rol)
+                ->whereRaw(
+                    "regexp_replace(coalesce(cc.cuenta, ''), '[^0-9]', '', 'g') = ?",
+                    [$numero]
+                )
+                ->selectRaw('coalesce(c.id_cliente_canonico, c.id) as cliente_canonico_id')
+                ->pluck('cliente_canonico_id');
+
+            $clienteIds = $clienteIds->merge($ids);
+        }
+
+        $clienteIds = $clienteIds
+            ->map(static fn ($id): int => (int) $id)
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($clienteIds->isEmpty()) {
+            return null;
+        }
+
+        if ($clienteIds->count() > 1) {
+            throw new RuntimeException(
+                'La persona GeI-Core está vinculada a más de un cliente operativo: '.
+                $clienteIds->implode(', ').'.'
+            );
+        }
+
+        return $clienteIds->first();
+    }
+
+    public function actualizarEmail(int $personaId, ?string $email): void
+    {
+        $cuentas = collect($this->core()->select(
+            "select rol, cuenta_cobol
+               from gei_core.personas_cuentas_cobol
+              where persona_id = ?",
+            [$personaId]
+        ));
+
+        if ($cuentas->isEmpty()) {
+            throw new RuntimeException('La persona GeI-Core no tiene cuentas COBOL vinculadas.');
+        }
+
+        $clienteIds = collect();
+
+        foreach ($cuentas as $cuenta) {
+            $numero = $this->normalizarCuenta((string) ($cuenta->cuenta_cobol ?? ''));
+            $rol = strtoupper(trim((string) ($cuenta->rol ?? '')));
+
+            if ($numero === '' || ! in_array($rol, ['PROPIETARIO', 'INQUILINO'], true)) {
+                continue;
+            }
+
+            $ids = DB::table('clientes_cuentas as cc')
+                ->join('clientes as c', 'c.id', '=', 'cc.cliente_id')
+                ->where('cc.rol', $rol)
+                ->whereRaw("regexp_replace(coalesce(cc.cuenta, ''), '[^0-9]', '', 'g') = ?", [$numero])
+                ->selectRaw('coalesce(c.id_cliente_canonico, c.id) as cliente_canonico_id')->pluck('cliente_canonico_id');
+
+            $clienteIds = $clienteIds->merge($ids);
+        }
+
+        $clienteIds = $clienteIds
+            ->map(static fn ($id): int => (int) $id)
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($clienteIds->isEmpty()) {
+            throw new RuntimeException('No se encontró el cliente operativo correspondiente a la persona GeI-Core.');
+        }
+
+        if ($clienteIds->count() > 1) {
+            throw new RuntimeException(
+                'La persona GeI-Core está vinculada a más de un cliente operativo: '.$clienteIds->implode(', ').'.'
+            );
+        }
+
+        DB::table('clientes')
+            ->where('id', $clienteIds->first())
+            ->update([
+                'email' => $email,
+                'updated_at' => now(),
+            ]);
     }
 
     public function detalle(int $personaId, string $periodo, string $tab = 'datos', ?string $mesActividad = null, array $sedesPermitidas = []): array
@@ -324,6 +502,12 @@ final class GeiCoreClienteService
         if ($persona === null) {
             throw new RuntimeException('No existe el cliente GeI-Core solicitado.');
         }
+
+        $clienteId = $this->resolverClienteCanonicoId($personaId);
+        $persona->cliente_id_operativo = $clienteId;
+        $persona->email = $clienteId !== null
+            ? DB::table('clientes')->where('id', $clienteId)->value('email')
+            : null;
 
         $roles = collect($core->select(
             "select rol, activo, primer_periodo, ultimo_periodo
@@ -761,6 +945,7 @@ final class GeiCoreClienteService
 
         if ($persona === null) {
             throw new RuntimeException('No existe el cliente GeI-Core solicitado.');
+
         }
 
         if ($tipo === 'cuenta-corriente') {
@@ -908,6 +1093,7 @@ final class GeiCoreClienteService
 
         if ($persona === null) {
             throw new RuntimeException('No existe el cliente GeI-Core solicitado.');
+
         }
 
         if ($tipo === 'cuenta-corriente') {
@@ -1042,13 +1228,53 @@ $futuras = [];
                 ];
             });
 
-        return $futuras
+        $incidencias = $futuras
             ->concat($invalidas)
             ->sortBy([
                 ['cuenta_cobol', 'asc'],
                 ['linea', 'asc'],
             ])
             ->values();
+
+        if ($incidencias->isEmpty()) {
+            return $incidencias;
+        }
+
+        $codigos = $incidencias
+            ->pluck('codigo')
+            ->map(static function ($codigo): string {
+                $codigo = trim((string) $codigo);
+
+                return $codigo === '' ? '' : str_pad($codigo, 2, '0', STR_PAD_LEFT);
+            })
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+
+        if ($codigos === []) {
+            return $incidencias;
+        }
+
+        $indiceConceptos = DB::table('conceptos')
+            ->where('dominio', 'INQ')
+            ->whereIn('codigo', $codigos)
+            ->get(['codigo', 'descripcion'])
+            ->keyBy(static function ($concepto): string {
+                return str_pad(trim((string) $concepto->codigo), 2, '0', STR_PAD_LEFT);
+            });
+
+        return $incidencias->map(static function ($incidencia) use ($indiceConceptos) {
+            $codigo = trim((string) ($incidencia->codigo ?? ''));
+            $codigoNormalizado = $codigo === '' ? '' : str_pad($codigo, 2, '0', STR_PAD_LEFT);
+            $concepto = $codigoNormalizado !== ''
+                ? $indiceConceptos->get($codigoNormalizado)
+                : null;
+
+            $incidencia->concepto_descripcion = $concepto?->descripcion;
+
+            return $incidencia;
+        });
     }
 
     private function movimientosMes(int $personaId, string $mes, array $sedesPermitidas = []): Collection

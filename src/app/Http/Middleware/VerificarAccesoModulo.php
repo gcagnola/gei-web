@@ -21,6 +21,7 @@ class VerificarAccesoModulo
         'clientes.store' => 'ARCHIVO_CLIENTES',
         'clientes.edit' => 'ARCHIVO_CLIENTES',
         'clientes.update' => 'ARCHIVO_CLIENTES',
+        'clientes.autogestion.enviar-acceso' => 'ARCHIVO_CLIENTES',
     ];
 
     /**
@@ -36,6 +37,7 @@ class VerificarAccesoModulo
         'core-clientes.' => 'ARCHIVO_CLIENTES',
         'personas.' => 'ARCHIVO_CLIENTES',
         'clientes.facturacion.' => 'ARCHIVO_CLIENTES',
+        'transferencias-informadas.' => 'ARCHIVO_CLIENTES',
         'archivo.impresiones-cobol.' => 'ARCHIVO_IMPRESIONES_COBOL',
         'propietarios.liquidaciones.' => 'PROPIETARIOS_LIQUIDACIONES',
         'contabilidad.' => 'CONTABILIDAD',

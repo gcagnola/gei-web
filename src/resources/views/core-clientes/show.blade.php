@@ -169,6 +169,9 @@
                             >
                             <button type="submit" class="btn btn-sm btn-outline-primary">Guardar email</button>
                         </form>
+
+                        <x-portal-estado-cliente :cliente-id="$p->cliente_id_operativo" />
+
                         <div class="form-text">Es el único dato del cliente habilitado para modificación por ahora.</div>
                     </dd>
                 </dl>

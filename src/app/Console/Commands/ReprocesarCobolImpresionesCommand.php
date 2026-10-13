@@ -49,6 +49,7 @@ class ReprocesarCobolImpresionesCommand extends Command
                     'cuenta' => $datos['cuenta'],
                     'nombre_cliente' => $datos['nombre_cliente'],
                     'fecha_documento' => $datos['fecha_documento'],
+                    'importe_total' => $datos['importe_total'],
                     'estado' => $datos['estado'],
                 ]);
                 $impresion->save();

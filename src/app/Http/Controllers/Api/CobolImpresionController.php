@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\CobolImpresion;
 use App\Services\CobolImpresionParser;
+use App\Services\CobolImpresionPdfService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -12,7 +13,11 @@ use Throwable;
 
 class CobolImpresionController extends Controller
 {
-    public function store(Request $request, CobolImpresionParser $parser)
+    public function store(
+        Request $request,
+        CobolImpresionParser $parser,
+        CobolImpresionPdfService $pdfService
+    )
     {
         $tokenEsperado = (string) config('cobol.print_token', '');
         $tokenRecibido = (string) $request->header('X-Gei-Token', '');
@@ -55,6 +60,8 @@ class CobolImpresionController extends Controller
             ->first();
 
         if ($existente !== null) {
+            $pdfGenerado = $this->generarPdfSiCorresponde($existente, $pdfService);
+
             return response()->json([
                 'ok' => true,
                 'duplicado' => true,
@@ -62,6 +69,8 @@ class CobolImpresionController extends Controller
                 'archivo_guardado' => $existente->archivo_raw,
                 'bytes' => $existente->bytes,
                 'sha256' => $existente->sha256,
+                'pdf_generado' => $pdfGenerado,
+                'pdf_path' => $existente->fresh()->pdf_path,
             ]);
         }
 
@@ -79,6 +88,7 @@ class CobolImpresionController extends Controller
                 'cuenta' => $datos['cuenta'],
                 'nombre_cliente' => $datos['nombre_cliente'],
                 'fecha_documento' => $datos['fecha_documento'],
+                'importe_total' => $datos['importe_total'],
                 'estado' => $datos['estado'],
                 'recibido_en' => now(),
             ]);
@@ -87,15 +97,45 @@ class CobolImpresionController extends Controller
             throw $e;
         }
 
+        $pdfGenerado = $this->generarPdfSiCorresponde($registro, $pdfService);
+
         return response()->json([
             'ok' => true,
             'duplicado' => false,
             'id' => $registro->id,
             'tipo_documento' => $registro->tipo_documento,
             'cuenta' => $registro->cuenta,
+            'importe_total' => $registro->importe_total,
+            'pdf_generado' => $pdfGenerado,
+            'pdf_path' => $registro->fresh()->pdf_path,
             'archivo_guardado' => $registro->archivo_raw,
             'bytes' => $registro->bytes,
             'sha256' => $registro->sha256,
         ]);
     }
+    private function generarPdfSiCorresponde(
+        CobolImpresion $impresion,
+        CobolImpresionPdfService $pdfService
+    ): bool {
+        if ($impresion->pdf_path) {
+            return true;
+        }
+
+        if (! in_array($impresion->tipo_documento, ['LIQUIDACION_DEUDA', 'RECIBO_LIQUIDACION'], true)) {
+            return false;
+        }
+
+        try {
+            $pdfService->generar($impresion);
+
+            return true;
+        } catch (Throwable $e) {
+            // El RAW recibido sigue siendo válido aunque falle el render PDF.
+            // La pantalla mantiene la acción manual como recuperación.
+            report($e);
+
+            return false;
+        }
+    }
+
 }

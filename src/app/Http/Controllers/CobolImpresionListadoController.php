@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\CobolImpresion;
+use App\Models\Usuario;
 use App\Services\CobolImpresionPdfService;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
@@ -41,6 +42,9 @@ class CobolImpresionListadoController extends Controller
             'tipo_documento' => $impresion->tipo_documento,
             'cuenta' => $impresion->cuenta,
             'cliente' => $impresion->nombre_cliente,
+            'importe_total' => $impresion->importe_total !== null
+                ? '$ '.number_format((float) $impresion->importe_total, 2, ',', '.')
+                : '—',
             'archivo' => $impresion->archivo_origen,
             'estado' => $impresion->estado,
             'raw_url' => route('archivo.impresiones-cobol.raw', $impresion),
@@ -61,6 +65,8 @@ class CobolImpresionListadoController extends Controller
 
     public function raw(CobolImpresion $impresion): Response
     {
+        $this->autorizarImpresion($impresion);
+
         if (! Storage::disk('local')->exists($impresion->archivo_raw)) {
             abort(404, 'No se encontró el archivo RAW.');
         }
@@ -77,6 +83,8 @@ class CobolImpresionListadoController extends Controller
 
     public function generarPdf(CobolImpresion $impresion, CobolImpresionPdfService $service): JsonResponse
     {
+        $this->autorizarImpresion($impresion);
+
         try {
             $service->generar($impresion);
         } catch (Throwable $e) {
@@ -96,6 +104,8 @@ class CobolImpresionListadoController extends Controller
 
     public function pdf(CobolImpresion $impresion): Response
     {
+        $this->autorizarImpresion($impresion);
+
         if (! $impresion->pdf_path || ! Storage::disk('local')->exists($impresion->pdf_path)) {
             abort(404, 'El PDF todavía no fue generado.');
         }
@@ -114,9 +124,40 @@ class CobolImpresionListadoController extends Controller
     {
         return CobolImpresion::query()
             ->whereDate('recibido_en', $fecha->toDateString())
+            ->whereIn('origen', $this->origenesPermitidos())
             ->orderByDesc('recibido_en')
             ->orderByDesc('id')
             ->get();
+    }
+
+    private function origenesPermitidos(): array
+    {
+        $usuario = auth()->user();
+
+        if (! $usuario instanceof Usuario) {
+            return [];
+        }
+
+        $codigos = $usuario->codigosSucursales();
+
+        $origenes = [];
+
+        if (in_array('SF', $codigos, true)) {
+            $origenes[] = 'gei-c-central';
+        }
+
+        if (in_array('ST', $codigos, true)) {
+            $origenes[] = 'gei-stotome';
+        }
+
+        return $origenes;
+    }
+
+    private function autorizarImpresion(CobolImpresion $impresion): void
+    {
+        if (! in_array($impresion->origen, $this->origenesPermitidos(), true)) {
+            abort(403, 'No tiene autorización para acceder a esta sucursal.');
+        }
     }
 
     private function resolverFecha(?string $fecha): CarbonImmutable

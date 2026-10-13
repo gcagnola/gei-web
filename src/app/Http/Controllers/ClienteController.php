@@ -85,8 +85,23 @@ class ClienteController extends Controller
         }
 
         DB::transaction(function () use ($request, $cliente): void {
-            $cliente->update($request->datosCliente());
+            $emailAnterior = mb_strtolower(trim((string) $cliente->email));
+            $datosCliente = $request->datosCliente();
+
+            $cliente->update($datosCliente);
             $cliente->roles()->sync($request->rolesIds());
+
+            $emailNuevo = mb_strtolower(trim((string) ($datosCliente['email'] ?? '')));
+            if ($emailAnterior !== $emailNuevo) {
+                $portalUsuario = $cliente->portalUsuario()->first();
+
+                if ($portalUsuario) {
+                    $portalUsuario->tokens()
+                        ->whereNull('usado_at')
+                        ->where('vence_at', '>', now())
+                        ->update(['usado_at' => now(), 'updated_at' => now()]);
+                }
+            }
         });
 
         return redirect()
@@ -280,6 +295,7 @@ class ClienteController extends Controller
             $clienteSeleccionado->load([
                 'roles:id,codigo,nombre',
                 'cuentas' => fn ($query) => $query->orderBy('rol')->orderBy('cuenta'),
+                'portalUsuario.tokens.usuarioEnvio',
             ]);
 
             $inmuebles = $this->inmueblesDelPropietario($clienteSeleccionado);
