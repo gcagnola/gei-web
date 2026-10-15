@@ -433,6 +433,18 @@ final class GeiCoreClienteService
 
     public function actualizarEmail(int $personaId, ?string $email): void
     {
+        $persona = $this->core()->selectOne(
+            "select id
+               from gei_core.personas
+              where id = ?
+                and fusionada_en_id is null",
+            [$personaId]
+        );
+
+        if ($persona === null) {
+            throw new RuntimeException('No existe el cliente GeI-Core solicitado.');
+        }
+
         $cuentas = collect($this->core()->select(
             "select rol, cuenta_cobol
                from gei_core.personas_cuentas_cobol

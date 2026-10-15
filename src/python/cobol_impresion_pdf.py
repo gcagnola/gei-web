@@ -484,6 +484,21 @@ def parse_receipt(texto: str) -> Receipt:
             if 'PESOS ' in line.upper():
                 continue
 
+            # En locales comerciales COBOL puede imprimir IVA discriminado
+            # en una linea de resumen sin codigo de concepto.
+            m_iva = re.match(
+                r'^\s*(\d{1,2},\d)\s+([0-9.]+,[0-9]{2})\s*$',
+                line,
+            )
+            if m_iva and movimiento == 'DEBITO':
+                tasa_iva = m_iva.group(1)
+                importe_iva = monto(m_iva.group(2))
+                item = ReceiptItem('', f'IVA {tasa_iva}%', importe_iva, 'DEBITO')
+                page.items.append(item)
+                r.items.append(item)
+                seen_content = True
+                continue
+
             m = item_rx.match(line)
             if not m:
                 continue

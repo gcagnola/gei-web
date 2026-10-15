@@ -7,14 +7,18 @@
 @php
     // Sedes obtenidas solamente de las cuentas COBOL presentes en el listado.
     // El Service filtra esas cuentas por las sedes permitidas al usuario.
-    $sedesDeCuentas = static function ($cuentas): array {
+    $sedesPermitidas = array_map(
+        static fn ($s): string => strtoupper(trim((string) $s)),
+        auth()->user()?->codigosSucursales() ?? []
+    );
+    $sedesDeCuentas = static function ($cuentas) use ($sedesPermitidas): array {
         $detectadas = [];
         foreach (explode(',', (string) $cuentas) as $cuenta) {
             $numero = preg_replace('/[^0-9]/', '', (string) $cuenta) ?? '';
             $prefijo = substr($numero, 0, 4);
-            if (in_array($prefijo, ['1103', '1202'], true)) {
+            if (in_array($prefijo, ['1103', '1202'], true) && in_array('SF', $sedesPermitidas, true)) {
                 $detectadas['SF'] = true;
-            } elseif (in_array($prefijo, ['2103', '2202'], true)) {
+            } elseif (in_array($prefijo, ['2103', '2202'], true) && in_array('ST', $sedesPermitidas, true)) {
                 $detectadas['ST'] = true;
             }
         }
