@@ -162,22 +162,14 @@ final class KngPdfSyncService
                     $totales['lotes_creados']++;
                 }
                 $objetivo = $carpeta.'/'.$nombre;
-                $fuentes = [$origen.'/lote_'.$lote.'/'.$nombre, $origen.'/'.$nombre];
-                $fuente = null;
-                foreach ($fuentes as $candidata) {
-                    if (is_file($candidata) && is_readable($candidata) && filesize($candidata) > 0) {
-                        $fuente = $candidata;
-                        break;
-                    }
-                }
-                if (is_file($objetivo) && filesize($objetivo) > 0) {
-                    if ($fuente !== null && filesize($fuente) !== filesize($objetivo)) {
-                        $totales['conflictos']++;
-                        $this->pendiente($registro, $nombre, $lote, 'CONFLICTO_TAMANO');
-                    } else {
-                        $totales['ya_existentes']++;
-                        DB::table('kng_pdfs_pendientes')->where('registro', $registro)->delete();
-                    }
+                // Primero Debian: si el PDF ya existe y no está vacío, jamás
+                // consultar Windows/Samba para este registro.
+                [$existeLocal, $fuente, $tamanoFuente] = $this->origenSoloSiFaltaLocal(
+                    $objetivo, $origen, $lote, $nombre
+                );
+                if ($existeLocal) {
+                    $totales['ya_existentes']++;
+                    DB::table('kng_pdfs_pendientes')->where('registro', $registro)->delete();
                     continue;
                 }
                 if ($fuente === null) {
@@ -187,7 +179,7 @@ final class KngPdfSyncService
                 }
                 $temporal = $carpeta.'/.'.basename($nombre).'.tmp.'.bin2hex(random_bytes(6));
                 try {
-                    if (! @copy($fuente, $temporal) || filesize($temporal) !== filesize($fuente)) {
+                    if (! @copy($fuente, $temporal) || filesize($temporal) !== $tamanoFuente) {
                         throw new RuntimeException("Error copiando {$nombre} del lote {$lote}");
                     }
                     if (! @rename($temporal, $objetivo)) {
@@ -208,6 +200,37 @@ final class KngPdfSyncService
         $totales['revisados'] = $procesados;
         $totales['pendientes_total'] = DB::table('kng_pdfs_pendientes')->count();
         return $totales;
+    }
+
+    /**
+     * Consulta el origen KNG únicamente cuando el PDF no existe (o está vacío)
+     * en el repositorio local. Los originales de Windows están todos en la raíz
+     * de Facturas; el subdirectorio por lote se conserva como alternativa.
+     *
+     * @return array{bool, ?string, ?int} [existeLocal, rutaOrigen, tamañoOrigen]
+     */
+    private function origenSoloSiFaltaLocal(
+        string $objetivo,
+        string $origen,
+        string $lote,
+        string $nombre
+    ): array {
+        if (is_file($objetivo) && filesize($objetivo) > 0) {
+            return [true, null, null];
+        }
+
+        // Sólo para archivos ausentes: comprobar SMB de Windows.
+        foreach ([$origen.'/'.$nombre, $origen.'/lote_'.$lote.'/'.$nombre] as $candidata) {
+            if (! is_file($candidata) || ! is_readable($candidata)) {
+                continue;
+            }
+            $tamano = filesize($candidata);
+            if ($tamano !== false && $tamano > 0) {
+                return [false, $candidata, $tamano];
+            }
+        }
+
+        return [false, null, null];
     }
 
     /** El lote de número más alto en LOTES.DBF importado y no eliminado. */

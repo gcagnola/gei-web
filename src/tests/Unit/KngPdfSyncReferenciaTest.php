@@ -52,4 +52,69 @@ final class KngPdfSyncReferenciaTest extends TestCase
             'ID_INQ' => '11031906706', 'LOTE' => '',
         ]));
     }
+
+    public function test_si_el_pdf_ya_existe_en_debian_no_consulta_windows(): void
+    {
+        $carpeta = sys_get_temp_dir().'/gei_kng_pdf_'.bin2hex(random_bytes(6));
+        mkdir($carpeta, 0700, true);
+        $archivo = $carpeta.'/factura.pdf';
+        file_put_contents($archivo, '%PDF-1.4\ncontenido');
+
+        try {
+            $metodo = new ReflectionMethod(KngPdfSyncService::class, 'origenSoloSiFaltaLocal');
+            // Simulamos un recurso externo: cualquier consulta de existencia
+            // sobre él incrementaría el contador, aunque devuelva "no existe".
+            KngOrigenProbe::$consultas = 0;
+            self::assertTrue(stream_wrapper_register('geikngprobe', KngOrigenProbe::class));
+            try {
+                $resultado = $metodo->invoke(new KngPdfSyncService(),
+                    $archivo, 'geikngprobe://windows', '1267', 'factura.pdf');
+                self::assertSame([true, null, null], $resultado);
+                self::assertSame(0, KngOrigenProbe::$consultas);
+            } finally {
+                stream_wrapper_unregister('geikngprobe');
+            }
+        } finally {
+            @unlink($archivo);
+            @rmdir($carpeta);
+        }
+    }
+
+    public function test_solo_busca_el_original_si_falta_o_esta_vacio_el_local(): void
+    {
+        $carpeta = sys_get_temp_dir().'/gei_kng_pdf_'.bin2hex(random_bytes(6));
+        mkdir($carpeta.'/windows', 0700, true);
+        $archivoLocal = $carpeta.'/copia.pdf';
+        $archivoOriginal = $carpeta.'/windows/copia.pdf';
+        file_put_contents($archivoOriginal, '%PDF-1.4\noriginal');
+
+        try {
+            $metodo = new ReflectionMethod(KngPdfSyncService::class, 'origenSoloSiFaltaLocal');
+            $resultado = $metodo->invoke(new KngPdfSyncService(),
+                $archivoLocal, $carpeta.'/windows', '1267', 'copia.pdf');
+            self::assertSame([false, $archivoOriginal, filesize($archivoOriginal)], $resultado);
+
+            file_put_contents($archivoLocal, '');
+            $resultado = $metodo->invoke(new KngPdfSyncService(),
+                $archivoLocal, $carpeta.'/windows', '1267', 'copia.pdf');
+            self::assertSame([false, $archivoOriginal, filesize($archivoOriginal)], $resultado);
+        } finally {
+            @unlink($archivoLocal);
+            @unlink($archivoOriginal);
+            @rmdir($carpeta.'/windows');
+            @rmdir($carpeta);
+        }
+    }
+}
+
+/** Simula consultas a un origen remoto, sin ninguna conexión de red. */
+final class KngOrigenProbe
+{
+    public static int $consultas = 0;
+
+    public function url_stat(string $path, int $flags): array|false
+    {
+        self::$consultas++;
+        return false;
+    }
 }
