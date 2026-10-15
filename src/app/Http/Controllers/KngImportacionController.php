@@ -23,10 +23,8 @@ final class KngImportacionController extends Controller
     {
         @set_time_limit(0);
 
-        $organizarPdfs = $request->boolean('organizar_pdfs');
-
         try {
-            $r = $service->importar($organizarPdfs);
+            $r = $service->importar();
         } catch (Throwable $e) {
             report($e);
 
@@ -45,16 +43,19 @@ final class KngImportacionController extends Controller
             number_format((int) $r['lotes'], 0, ',', '.')
         );
 
-        if ($organizarPdfs) {
-            $pdf = $r['pdfs'] ?? [];
-            $mensaje .= sprintf(
-                ' PDFs: %s movidos, %s ya ubicados, %s sin correspondencia, %s conflictos.',
-                number_format((int) ($pdf['movidos'] ?? 0), 0, ',', '.'),
-                number_format((int) ($pdf['ya_ubicados'] ?? 0), 0, ',', '.'),
-                number_format((int) ($pdf['sin_correspondencia'] ?? 0), 0, ',', '.'),
-                number_format((int) ($pdf['conflictos'] ?? 0), 0, ',', '.')
-            );
-        }
+        $pdf = $r['pdfs'] ?? [];
+        $mensaje .= sprintf(
+            ' Nuevas: %s facturas, %s lotes; actualizadas: %s facturas, %s lotes. PDFs: %s copiados, %s existentes, %s pendientes, %s conflictos, %s sin referencia.',
+            number_format((int) ($r['facturas_nuevas'] ?? 0), 0, ',', '.'),
+            number_format((int) ($r['lotes_nuevos'] ?? 0), 0, ',', '.'),
+            number_format((int) ($r['facturas_actualizadas'] ?? 0), 0, ',', '.'),
+            number_format((int) ($r['lotes_actualizados'] ?? 0), 0, ',', '.'),
+            number_format((int) ($pdf['copiados'] ?? 0), 0, ',', '.'),
+            number_format((int) ($pdf['ya_existentes'] ?? 0), 0, ',', '.'),
+            number_format((int) ($pdf['pendientes_total'] ?? 0), 0, ',', '.'),
+            number_format((int) ($pdf['conflictos'] ?? 0), 0, ',', '.'),
+            number_format((int) ($pdf['sin_referencia'] ?? 0), 0, ',', '.')
+        );
 
         if ($request->expectsJson()) {
             return response()->json(['ok' => true, 'message' => $mensaje, 'result' => $r]);

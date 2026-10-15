@@ -88,7 +88,7 @@
             <div>
                 <h2 class="h5 mb-1">Comprobantes ARCA — KNG</h2>
                 <p class="text-muted mb-0">
-                    Actualiza la copia local de <strong>facturas.DBF</strong> y <strong>LOTES.DBF</strong> para consultas rápidas desde GeI-Core.
+                    Actualiza <strong>facturas.DBF</strong> y <strong>LOTES.DBF</strong> en PostgreSQL y copia automáticamente los PDF a sus lotes.
                 </p>
             </div>
             <span class="badge text-bg-secondary">Importación complementaria</span>
@@ -119,30 +119,21 @@
                                 <span class="badge text-bg-danger">No disponible</span>
                             @endif
                         </div>
-                        <div class="d-flex flex-wrap align-items-center gap-2">
-                            <strong>Facturas/:</strong>
-                            @if($kng['pdf_dir']['escribible'])
-                                <span class="badge text-bg-success">Lectura / escritura</span>
-                            @elseif($kng['pdf_dir']['legible'])
-                                <span class="badge text-bg-warning">Sólo lectura</span>
+                        <div>
+                            <strong>PDF origen:</strong>
+                            @if($kng['pdf_origen']['legible'])
+                                <span class="badge text-bg-success">Disponible (lectura)</span>
                             @else
                                 <span class="badge text-bg-danger">No disponible</span>
                             @endif
-
-                            <div class="form-check form-check-inline mb-0 ms-1">
-                                <input
-                                    class="form-check-input"
-                                    type="checkbox"
-                                    name="organizar_pdfs"
-                                    value="1"
-                                    id="kng-organizar-pdfs"
-                                    form="kng-import-form"
-                                    @disabled(!$kng['pdf_dir']['escribible'])
-                                >
-                                <label class="form-check-label" for="kng-organizar-pdfs">
-                                    Organizar PDFs por lote
-                                </label>
-                            </div>
+                        </div>
+                        <div>
+                            <strong>PDF destino:</strong>
+                            @if($kng['pdf_dir']['escribible'])
+                                <span class="badge text-bg-success">Disponible (escritura)</span>
+                            @else
+                                <span class="badge text-bg-danger">No disponible</span>
+                            @endif
                         </div>
                     </div>
                 </div>
@@ -154,6 +145,15 @@
                     @if($kng['ultima'])
                         <div><strong>FACTURAS:</strong> {{ number_format($kng['ultima']->facturas_registros, 0, ',', '.') }} registros</div>
                         <div><strong>LOTES:</strong> {{ number_format($kng['ultima']->lotes_registros, 0, ',', '.') }} registros</div>
+                        @php
+                            $pdfsUltimos = $kng['ultima']->facturas_metadata_array['pdfs'] ?? [];
+                        @endphp
+                        @if(is_array($pdfsUltimos) && $pdfsUltimos !== [])
+                            <div class="small mt-2">
+                                <strong>PDF copiados:</strong> {{ number_format($pdfsUltimos['copiados'] ?? 0, 0, ',', '.') }} ·
+                                <strong>Pendientes:</strong> {{ number_format($pdfsUltimos['pendientes_total'] ?? 0, 0, ',', '.') }}
+                            </div>
+                        @endif
                         <div class="text-muted small mt-2">
                             {{ $kng['ultima']->finalizado_at ? \Illuminate\Support\Carbon::parse($kng['ultima']->finalizado_at)->timezone('America/Argentina/Buenos_Aires')->format('d/m/Y H:i:s') : '—' }}
                         </div>
@@ -173,13 +173,13 @@
         >
             @csrf
             <button type="submit" class="btn gei-button gei-button--primary" data-kng-submit
-                    @disabled(!$kng['facturas']['legible'] || !$kng['lotes']['legible'])>
+                    @disabled(!$kng['facturas']['legible'] || !$kng['lotes']['legible'] || !$kng['pdf_origen']['legible'] || !$kng['pdf_dir']['escribible'])>
                 Importar FACTURAS y LOTES
             </button>
         </form>
 
         <p class="small text-muted mb-0 mt-2">
-            Esta importación es independiente del período COBOL. Se ejecuta cuando KNG haya actualizado sus tablas.
+            Importa los DBF sin modificarlos; los PDF se copian (no se mueven), por lote. Las facturas sin PDF se vuelven a verificar en posteriores importaciones.
         </p>
     </section>
 
@@ -724,10 +724,7 @@
             return false;
         }
 
-        const organizar = document.getElementById('kng-organizar-pdfs')?.checked === true;
-        const confirmar = organizar
-            ? 'Se actualizará la copia local de FACTURAS.DBF y LOTES.DBF y se organizarán los PDFs dentro de Facturas/lote_N. Los DBF originales no se modifican. ¿Continuar?'
-            : 'Se actualizará la copia local de FACTURAS.DBF y LOTES.DBF. Los PDFs no se moverán. Los DBF originales no se modifican. ¿Continuar?';
+        const confirmar = 'Se actualizarán FACTURAS y LOTES en PostgreSQL y se copiarán automáticamente los PDF nuevos o pendientes a sus lotes. Los DBF y PDF originales no se modifican. ¿Continuar?';
 
         if (!window.confirm(confirmar)) {
             return false;
@@ -755,7 +752,7 @@
             PREPARANDO_BASE: 'Preparando PostgreSQL',
             CARGANDO_FACTURAS: 'Importando FACTURAS',
             CARGANDO_LOTES: 'Importando LOTES',
-            ORGANIZANDO_PDFS: 'Organizando PDFs',
+            ORGANIZANDO_PDFS: 'Copiando PDF a sus lotes',
             COMPLETO: 'Finalizado',
             ERROR: 'Error'
         };

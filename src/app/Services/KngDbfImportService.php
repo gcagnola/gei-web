@@ -16,7 +16,8 @@ final class KngDbfImportService
         $root = rtrim((string) config('gei.kng.root'), DIRECTORY_SEPARATOR);
         $facturas = $root.DIRECTORY_SEPARATOR.(string) config('gei.kng.facturas_dbf', 'facturas.DBF');
         $lotes = $root.DIRECTORY_SEPARATOR.(string) config('gei.kng.lotes_dbf', 'LOTES.DBF');
-        $pdf = $root.DIRECTORY_SEPARATOR.(string) config('gei.kng.facturas_dir', 'Facturas');
+        $pdf = (string) config('gei.kng.pdf_destino', '/archivo-kng/FacturasImportacion');
+        $origenPdf = (string) config('gei.kng.pdf_origen', '/archivo-kng/FacturasOrigen');
 
         $ultima = Schema::hasTable('kng_importaciones')
             ? DB::table('kng_importaciones')->orderByDesc('id_kng_importacion')->first()
@@ -31,6 +32,11 @@ final class KngDbfImportService
             'root' => $root,
             'facturas' => $this->estadoArchivo($facturas),
             'lotes' => $this->estadoArchivo($lotes),
+            'pdf_origen' => [
+                'ruta' => $origenPdf,
+                'existe' => is_dir($origenPdf),
+                'legible' => is_dir($origenPdf) && is_readable($origenPdf),
+            ],
             'pdf_dir' => [
                 'ruta' => $pdf,
                 'existe' => is_dir($pdf),
@@ -71,21 +77,32 @@ final class KngDbfImportService
     }
 
     /** @return array<string, mixed> */
-    public function importar(bool $organizarPdfs = false): array
+    public function importar(): array
     {
-        $this->guardarProgreso([
-            'estado' => 'PROCESANDO',
-            'etapa' => 'PREPARANDO',
-            'detalle' => 'Preparando importación KNG...',
-            'procesados' => 0,
-            'total' => null,
-            'porcentaje' => 0,
-        ]);
+        $lockPath = storage_path('app/private/kng-import/importacion.lock');
+        File::ensureDirectoryExists(dirname($lockPath));
+        $lock = fopen($lockPath, 'c');
+        if ($lock === false || ! flock($lock, LOCK_EX | LOCK_NB)) {
+            if (is_resource($lock)) {
+                fclose($lock);
+            }
+            throw new RuntimeException('Ya se está ejecutando una importación KNG. Espere a que finalice.');
+        }
 
         $root = rtrim((string) config('gei.kng.root'), DIRECTORY_SEPARATOR);
         $tmpDir = '';
 
         try {
+            $this->guardarProgreso([
+                'estado' => 'PROCESANDO',
+                'etapa' => 'PREPARANDO',
+                'detalle' => 'Preparando importación KNG...',
+                'procesados' => 0,
+                'total' => null,
+                'porcentaje' => 0,
+            ]);
+            // No iniciar la importación si falta acceso al origen o al destino de PDF.
+            app(KngPdfSyncService::class)->verificarConfiguracion();
             if ($root === '' || ! is_dir($root) || ! is_readable($root)) {
                 throw new RuntimeException("No se puede leer GEI_KNG_ROOT: {$root}");
             }
@@ -119,20 +136,17 @@ final class KngDbfImportService
                     'porcentaje' => 0,
                 ]);
 
-                DB::statement('TRUNCATE TABLE kng_facturas RESTART IDENTITY');
-                DB::statement('TRUNCATE TABLE kng_lotes RESTART IDENTITY');
-
                 $facturasTotal = (int) ($exportados['facturas']['metadata']['records_exported'] ?? 0);
                 $lotesTotal = (int) ($exportados['lotes']['metadata']['records_exported'] ?? 0);
 
-                $facturas = $this->cargarJsonl(
+                $facturasImportadas = $this->cargarJsonl(
                     'kng_facturas',
                     $exportados['facturas']['jsonl'],
                     'CARGANDO_FACTURAS',
                     'Importando FACTURAS.DBF a PostgreSQL',
                     $facturasTotal
                 );
-                $lotes = $this->cargarJsonl(
+                $lotesImportados = $this->cargarJsonl(
                     'kng_lotes',
                     $exportados['lotes']['jsonl'],
                     'CARGANDO_LOTES',
@@ -143,8 +157,8 @@ final class KngDbfImportService
                 $ahora = now();
                 $id = DB::table('kng_importaciones')->insertGetId([
                     'estado' => 'OK',
-                    'facturas_registros' => $facturas,
-                    'lotes_registros' => $lotes,
+                    'facturas_registros' => $facturasImportadas['total'],
+                    'lotes_registros' => $lotesImportados['total'],
                     'facturas_metadata' => json_encode($exportados['facturas']['metadata'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
                     'lotes_metadata' => json_encode($exportados['lotes']['metadata'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
                     'iniciado_at' => $ahora,
@@ -155,8 +169,13 @@ final class KngDbfImportService
 
                 return [
                     'id' => $id,
-                    'facturas' => $facturas,
-                    'lotes' => $lotes,
+                    'facturas' => $facturasImportadas['total'],
+                    'lotes' => $lotesImportados['total'],
+                    'facturas_nuevas' => $facturasImportadas['nuevos'],
+                    'facturas_actualizadas' => $facturasImportadas['actualizados'],
+                    'lotes_nuevos' => $lotesImportados['nuevos'],
+                    'lotes_actualizados' => $lotesImportados['actualizados'],
+                    'registros_cambiados' => $facturasImportadas['cambiados'],
                 ];
             });
 
@@ -165,9 +184,18 @@ final class KngDbfImportService
                 'lotes_campos' => count($exportados['lotes']['metadata']['fields'] ?? []),
             ];
 
-            if ($organizarPdfs) {
-                $extra['pdfs'] = $this->organizarPdfsPorLote($root);
-            }
+            $extra['pdfs'] = app(KngPdfSyncService::class)->sincronizar(
+                $resultado['registros_cambiados'],
+                false,
+                function (array $progreso): void { $this->guardarProgreso($progreso); }
+            );
+            unset($resultado['registros_cambiados']);
+            $metadata = $exportados['facturas']['metadata'];
+            $metadata['pdfs'] = $extra['pdfs'];
+            DB::table('kng_importaciones')->where('id_kng_importacion', $resultado['id'])->update([
+                'estado' => 'OK', 'finalizado_at' => now(), 'updated_at' => now(),
+                'facturas_metadata' => json_encode($metadata, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            ]);
 
             $this->guardarProgreso([
                 'estado' => 'COMPLETO',
@@ -191,210 +219,11 @@ final class KngDbfImportService
             if ($tmpDir !== '') {
                 File::deleteDirectory($tmpDir);
             }
+            flock($lock, LOCK_UN);
+            fclose($lock);
         }
     }
 
-
-    /** @return array<string, int> */
-    private function organizarPdfsPorLote(string $root): array
-    {
-        $pdfDir = $root.DIRECTORY_SEPARATOR.(string) config('gei.kng.facturas_dir', 'Facturas');
-        if (! is_dir($pdfDir) || ! is_readable($pdfDir) || ! is_writable($pdfDir)) {
-            throw new RuntimeException("La carpeta Facturas no tiene lectura/escritura: {$pdfDir}");
-        }
-
-        $this->guardarProgreso([
-            'estado' => 'PROCESANDO',
-            'etapa' => 'ORGANIZANDO_PDFS',
-            'detalle' => 'Preparando relación de comprobantes y lotes...',
-            'procesados' => 0,
-            'total' => null,
-            'porcentaje' => 0,
-        ]);
-
-        $mapa = $this->mapaFacturasPorComprobante();
-        $totales = [
-            'movidos' => 0,
-            'ya_ubicados' => 0,
-            'sin_correspondencia' => 0,
-            'conflictos' => 0,
-            'ignorados' => 0,
-        ];
-
-        $nombres = scandir($pdfDir, SCANDIR_SORT_NONE);
-        if (! is_array($nombres)) {
-            throw new RuntimeException("No se pudo listar la carpeta Facturas: {$pdfDir}");
-        }
-
-        $archivos = array_values(array_filter($nombres, function (string $nombre) use ($pdfDir): bool {
-            return $nombre !== '.' && $nombre !== '..' && is_file($pdfDir.DIRECTORY_SEPARATOR.$nombre);
-        }));
-        $cantidadArchivos = count($archivos);
-        $procesadosArchivos = 0;
-
-        $this->guardarProgreso([
-            'estado' => 'PROCESANDO',
-            'etapa' => 'ORGANIZANDO_PDFS',
-            'detalle' => 'Organizando PDFs por lote',
-            'procesados' => 0,
-            'total' => $cantidadArchivos,
-            'porcentaje' => 0,
-        ]);
-
-        foreach ($archivos as $nombre) {
-            if ($nombre === '.' || $nombre === '..') {
-                continue;
-            }
-
-            $origen = $pdfDir.DIRECTORY_SEPARATOR.$nombre;
-            $procesadosArchivos++;
-            if ($procesadosArchivos === 1 || $procesadosArchivos % 100 === 0 || $procesadosArchivos === $cantidadArchivos) {
-                $this->guardarProgreso([
-                    'estado' => 'PROCESANDO',
-                    'etapa' => 'ORGANIZANDO_PDFS',
-                    'detalle' => 'Organizando PDFs por lote',
-                    'procesados' => $procesadosArchivos,
-                    'total' => $cantidadArchivos,
-                    'porcentaje' => $cantidadArchivos > 0 ? round($procesadosArchivos * 100 / $cantidadArchivos, 2) : 100,
-                ]);
-            }
-
-            if (preg_match('/^([A-Z]{2})-(\d{4})-(\d{8})-(\d{11})\.pdf$/i', $nombre, $m) !== 1) {
-                $totales['ignorados']++;
-                continue;
-            }
-
-            $tipo = strtoupper($m[1]);
-            $pv = $this->normalizarNumero($m[2]);
-            $numero = $this->normalizarNumero($m[3]);
-            $cuenta = $this->normalizarNumero($m[4]);
-            $claveTipo = $tipo.'|'.$pv.'|'.$numero.'|'.$cuenta;
-            $claveBase = $pv.'|'.$numero.'|'.$cuenta;
-
-            $lotes = $mapa['con_tipo'][$claveTipo] ?? $mapa['sin_tipo'][$claveBase] ?? [];
-            $lotes = array_values(array_unique(array_filter(array_map('strval', $lotes), static fn ($v) => $v !== '' && $v !== '0')));
-
-            if (count($lotes) !== 1) {
-                $totales['sin_correspondencia']++;
-                continue;
-            }
-
-            $lote = preg_replace('/\D+/', '', $lotes[0]) ?: '';
-            if ($lote === '') {
-                $totales['sin_correspondencia']++;
-                continue;
-            }
-
-            $destinoDir = $pdfDir.DIRECTORY_SEPARATOR.'lote_'.$lote;
-            File::ensureDirectoryExists($destinoDir);
-            $destino = $destinoDir.DIRECTORY_SEPARATOR.$nombre;
-
-            if (is_file($destino)) {
-                $mismoTamano = @filesize($origen) === @filesize($destino);
-                if ($mismoTamano) {
-                    $totales['ya_ubicados']++;
-                } else {
-                    $totales['conflictos']++;
-                }
-                continue;
-            }
-
-            if (! @rename($origen, $destino)) {
-                $totales['conflictos']++;
-                continue;
-            }
-
-            $totales['movidos']++;
-        }
-
-        return $totales;
-    }
-
-    /** @return array{con_tipo: array<string, array<int, string>>, sin_tipo: array<string, array<int, string>>} */
-    private function mapaFacturasPorComprobante(): array
-    {
-        $mapa = ['con_tipo' => [], 'sin_tipo' => []];
-
-        DB::table('kng_facturas')
-            ->where('eliminado', false)
-            ->select(['id_kng_factura', 'datos'])
-            ->orderBy('id_kng_factura')
-            ->chunkById(1000, function ($rows) use (&$mapa): void {
-                foreach ($rows as $row) {
-                    $datos = json_decode((string) $row->datos, true);
-                    if (! is_array($datos)) {
-                        continue;
-                    }
-
-                    $pv = $this->valorCampo($datos, ['P_VENTA', 'PVENTA', 'PV', 'PTO_VTA', 'PUNTO_VENTA']);
-                    $numero = $this->valorCampo($datos, ['ID_FACTURA', 'FACTURA', 'NRO_FACTURA', 'NUMERO', 'NRO_COMPROB']);
-                    $lote = $this->valorCampo($datos, ['LOTE', 'ID_LOTE']);
-                    $tipo = $this->valorCampo($datos, ['TIPO', 'TIPO_COMP', 'COMPROBANTE']);
-
-                    if ($pv === null || $numero === null || $lote === null) {
-                        continue;
-                    }
-
-                    $cuentas = [];
-                    foreach (['ID_INQ', 'CTA_ORIG', 'CUENTA', 'NRO_CUENTA'] as $campo) {
-                        $v = $this->valorCampo($datos, [$campo]);
-                        if ($v !== null && $this->normalizarNumero((string) $v) !== '0') {
-                            $cuentas[] = (string) $v;
-                        }
-                    }
-                    $cuentas = array_values(array_unique($cuentas));
-                    if ($cuentas === []) {
-                        continue;
-                    }
-
-                    $pvN = $this->normalizarNumero((string) $pv);
-                    $numN = $this->normalizarNumero((string) $numero);
-                    $tipoN = strtoupper(trim((string) ($tipo ?? '')));
-                    $loteN = trim((string) $lote);
-
-                    foreach ($cuentas as $cuenta) {
-                        $ctaN = $this->normalizarNumero($cuenta);
-                        $claveBase = $pvN.'|'.$numN.'|'.$ctaN;
-                        $mapa['sin_tipo'][$claveBase][] = $loteN;
-                        if ($tipoN !== '') {
-                            $mapa['con_tipo'][$tipoN.'|'.$claveBase][] = $loteN;
-                        }
-                    }
-                }
-            }, 'id_kng_factura');
-
-        return $mapa;
-    }
-
-    /** @param array<string, mixed> $datos */
-    private function valorCampo(array $datos, array $candidatos): mixed
-    {
-        $normalizados = [];
-        foreach ($datos as $k => $v) {
-            $normalizados[$this->normalizarNombreCampo((string) $k)] = $v;
-        }
-
-        foreach ($candidatos as $candidato) {
-            $key = $this->normalizarNombreCampo((string) $candidato);
-            if (array_key_exists($key, $normalizados) && $normalizados[$key] !== '' && $normalizados[$key] !== null) {
-                return $normalizados[$key];
-            }
-        }
-
-        return null;
-    }
-
-    private function normalizarNombreCampo(string $campo): string
-    {
-        return strtoupper((string) preg_replace('/[^A-Z0-9]/i', '', $campo));
-    }
-
-    private function normalizarNumero(string $valor): string
-    {
-        $solo = preg_replace('/\D+/', '', $valor) ?? '';
-        $solo = ltrim($solo, '0');
-        return $solo === '' ? '0' : $solo;
-    }
 
     /** @return array<string, mixed> */
     private function exportarDbf(string $nombre, string $ruta, string $tmpDir): array
@@ -437,7 +266,14 @@ final class KngDbfImportService
         ];
     }
 
-    private function cargarJsonl(string $tabla, string $archivo, string $etapa, string $detalle, int $esperados): int
+    /**
+     * Mantiene el identificador local de los registros ya importados.
+     * Los DBF se exportan completos para detectar también modificaciones;
+     * solamente los registros nuevos o modificados se escriben en PostgreSQL.
+     *
+     * @return array{total:int,nuevos:int,actualizados:int,cambiados:list<int>}
+     */
+    private function cargarJsonl(string $tabla, string $archivo, string $etapa, string $detalle, int $esperados): array
     {
         $fh = fopen($archivo, 'rb');
         if ($fh === false) {
@@ -446,15 +282,14 @@ final class KngDbfImportService
 
         $chunk = [];
         $total = 0;
+        $nuevos = 0;
+        $actualizados = 0;
+        $cambiados = [];
         $ahora = now();
 
         $this->guardarProgreso([
-            'estado' => 'PROCESANDO',
-            'etapa' => $etapa,
-            'detalle' => $detalle,
-            'procesados' => 0,
-            'total' => $esperados,
-            'porcentaje' => 0,
+            'estado' => 'PROCESANDO', 'etapa' => $etapa, 'detalle' => $detalle,
+            'procesados' => 0, 'total' => $esperados, 'porcentaje' => 0,
         ]);
 
         try {
@@ -463,47 +298,53 @@ final class KngDbfImportService
                 if ($line === '') {
                     continue;
                 }
-
-                $row = json_decode($line, true);
-                if (! is_array($row) || ! isset($row['registro']) || ! isset($row['datos']) || ! is_array($row['datos'])) {
+                $row = json_decode($line, true, 512, JSON_THROW_ON_ERROR);
+                if (! is_array($row) || ! isset($row['registro'], $row['datos']) || ! is_array($row['datos'])) {
                     throw new RuntimeException("Registro JSONL inválido en {$archivo}.");
                 }
-
-                $texto = $this->textoBusqueda($row['datos']);
-                $chunk[] = [
-                    'registro' => (int) $row['registro'],
+                $registro = (int) $row['registro'];
+                if ($registro < 0) {
+                    throw new RuntimeException("Número de registro DBF inválido en {$archivo}.");
+                }
+                if (isset($chunk[$registro])) {
+                    throw new RuntimeException("Número de registro DBF duplicado: {$registro} en {$archivo}.");
+                }
+                $chunk[$registro] = [
+                    'registro' => $registro,
                     'eliminado' => (bool) ($row['eliminado'] ?? false),
-                    'datos' => json_encode($row['datos'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-                    'texto_busqueda' => $texto,
-                    'importado_at' => $ahora,
-                    'created_at' => $ahora,
-                    'updated_at' => $ahora,
+                    'datos_array' => $row['datos'],
+                    'datos' => json_encode($row['datos'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
+                    'texto_busqueda' => $this->textoBusqueda($row['datos']),
                 ];
 
                 if (count($chunk) >= 500) {
-                    DB::table($tabla)->insert($chunk);
+                    [$ins, $upd, $ids] = $this->guardarLoteIncremental($tabla, $chunk, $ahora);
+                    $nuevos += $ins;
+                    $actualizados += $upd;
+                    if ($tabla === 'kng_facturas') {
+                        array_push($cambiados, ...$ids);
+                    }
                     $total += count($chunk);
                     $chunk = [];
                     $this->guardarProgreso([
-                        'estado' => 'PROCESANDO',
-                        'etapa' => $etapa,
-                        'detalle' => $detalle,
-                        'procesados' => $total,
-                        'total' => $esperados,
-                        'porcentaje' => $esperados > 0 ? round($total * 100 / $esperados, 2) : 0,
+                        'estado' => 'PROCESANDO', 'etapa' => $etapa, 'detalle' => $detalle,
+                        'procesados' => $total, 'total' => $esperados,
+                        'porcentaje' => $esperados > 0 ? round($total * 100 / $esperados, 2) : 100,
                     ]);
                 }
             }
 
             if ($chunk !== []) {
-                DB::table($tabla)->insert($chunk);
+                [$ins, $upd, $ids] = $this->guardarLoteIncremental($tabla, $chunk, $ahora);
+                $nuevos += $ins;
+                $actualizados += $upd;
+                if ($tabla === 'kng_facturas') {
+                    array_push($cambiados, ...$ids);
+                }
                 $total += count($chunk);
                 $this->guardarProgreso([
-                    'estado' => 'PROCESANDO',
-                    'etapa' => $etapa,
-                    'detalle' => $detalle,
-                    'procesados' => $total,
-                    'total' => $esperados,
+                    'estado' => 'PROCESANDO', 'etapa' => $etapa, 'detalle' => $detalle,
+                    'procesados' => $total, 'total' => $esperados,
                     'porcentaje' => $esperados > 0 ? round($total * 100 / $esperados, 2) : 100,
                 ]);
             }
@@ -511,7 +352,54 @@ final class KngDbfImportService
             fclose($fh);
         }
 
-        return $total;
+        if ($esperados !== $total) {
+            throw new RuntimeException("Cantidad de registros inconsistente en {$archivo}: exportados {$esperados}, procesados {$total}.");
+        }
+
+        return ['total' => $total, 'nuevos' => $nuevos, 'actualizados' => $actualizados, 'cambiados' => $cambiados];
+    }
+
+    /** @param array<int,array<string,mixed>> $chunk
+     * @return array{int,int,list<int>}
+     */
+    private function guardarLoteIncremental(string $tabla, array $chunk, mixed $ahora): array
+    {
+        $enBase = DB::table($tabla)->whereIn('registro', array_keys($chunk))
+            ->get(['registro', 'datos', 'eliminado'])->keyBy('registro');
+        if ($enBase->count() !== DB::table($tabla)->whereIn('registro', array_keys($chunk))->count()) {
+            throw new RuntimeException("Hay registros duplicados por número de DBF en {$tabla}. No se actualizó esa tanda.");
+        }
+
+        $insertar = [];
+        $actualizados = 0;
+        $cambiados = [];
+        foreach ($chunk as $registro => $row) {
+            $anterior = $enBase->get($registro);
+            if ($anterior === null) {
+                $insertar[] = [
+                    'registro' => $registro, 'eliminado' => $row['eliminado'],
+                    'datos' => $row['datos'], 'texto_busqueda' => $row['texto_busqueda'],
+                    'importado_at' => $ahora, 'created_at' => $ahora, 'updated_at' => $ahora,
+                ];
+                $cambiados[] = $registro;
+                continue;
+            }
+            $datosAnteriores = json_decode((string) $anterior->datos, true);
+            if ((bool) $anterior->eliminado === $row['eliminado'] && $datosAnteriores == $row['datos_array']) {
+                continue;
+            }
+            DB::table($tabla)->where('registro', $registro)->update([
+                'eliminado' => $row['eliminado'], 'datos' => $row['datos'],
+                'texto_busqueda' => $row['texto_busqueda'],
+                'importado_at' => $ahora, 'updated_at' => $ahora,
+            ]);
+            $actualizados++;
+            $cambiados[] = $registro;
+        }
+        if ($insertar !== []) {
+            DB::table($tabla)->insert($insertar);
+        }
+        return [count($insertar), $actualizados, $cambiados];
     }
 
     /** @param array<string, mixed> $cambios */

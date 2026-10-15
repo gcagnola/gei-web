@@ -14,7 +14,9 @@ services:
       - ./src:/var/www/html
       - ${KNG_FACTURAS_DBF_HOST:-../../dockers/samba-server/archivos/KNG/facturas.DBF}:/archivo-kng/facturas.DBF:ro
       - ${KNG_LOTES_DBF_HOST:-../../dockers/samba-server/archivos/KNG/LOTES.DBF}:/archivo-kng/LOTES.DBF:ro
-      - ${KNG_FACTURAS_DIR_HOST:-../../dockers/samba-server/archivos/KNG/Facturas}:/archivo-kng/Facturas:rw
+      - ${KNG_FACTURAS_DIR_HOST:-../../dockers/samba-server/archivos/KNG/Facturas}:/archivo-kng/Facturas:ro
+      - ${KNG_FACTURAS_ORIGEN_HOST:?Defina KNG_FACTURAS_ORIGEN_HOST}:/archivo-kng/FacturasOrigen:ro
+      - ${KNG_FACTURAS_IMPORT_DEST_HOST:?Defina KNG_FACTURAS_IMPORT_DEST_HOST}:/archivo-kng/FacturasImportacion:rw
       - ./docker/php/php.ini:/usr/local/etc/php/conf.d/gei.ini:ro
     networks:
       - gei-network

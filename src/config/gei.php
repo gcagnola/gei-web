@@ -67,11 +67,16 @@ return [
 
     'kng' => [
         // El recurso SMB se monta fuera de Laravel. El código abre los DBF
-        // únicamente en modo lectura; la carpeta Facturas debe quedar escribible.
+        // únicamente en modo lectura. Separa origen, consulta y destino de PDF.
         'root' => env('GEI_KNG_ROOT', '/archivo-kng'),
         'facturas_dbf' => env('GEI_KNG_FACTURAS_DBF', 'facturas.DBF'),
         'lotes_dbf' => env('GEI_KNG_LOTES_DBF', 'LOTES.DBF'),
         'facturas_dir' => env('GEI_KNG_FACTURAS_DIR', 'Facturas'),
+        'pdf_origen' => env('GEI_KNG_PDF_ORIGEN', '/archivo-kng/FacturasOrigen'),
+        'pdf_destino' => env('GEI_KNG_PDF_DESTINO', '/archivo-kng/FacturasImportacion'),
+        'pdf_revisar_ultimos' => (int) env('GEI_KNG_PDF_REVISAR_ULTIMOS', 5000),
+        // Desactivado por defecto. En desarrollo limita los PDF a un solo lote.
+        'pdf_prueba_ultimo_lote' => (bool) env('GEI_KNG_PDF_PRUEBA_ULTIMO_LOTE', false),
         'encoding' => env('GEI_KNG_DBF_ENCODING', 'cp1252'),
         'python' => env('GEI_KNG_PYTHON', env('GEI_PYTHON_BIN', '/usr/bin/python3')),
         'export_script' => env('GEI_KNG_EXPORT_SCRIPT', base_path('python/kng_dbf_export.py')),
