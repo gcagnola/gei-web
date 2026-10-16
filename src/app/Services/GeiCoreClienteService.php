@@ -180,24 +180,123 @@ final class GeiCoreClienteService
             return $oa <=> $ob ?: strcasecmp((string) $a['titulo'], (string) $b['titulo']);
         });
 
-        $ids = [];
-        foreach ($resultado as $grupo) {
-            foreach ($grupo['personas'] as $persona) {
-                $ids[(int) $persona->id] = true;
-            }
-        }
-
+        // El snapshot puede contener dos personas históricas que ya apuntan al
+        // MISMO cliente canónico en public.clientes. Resolver por cuenta+rol,
+        // nunca suponiendo que gei_core.personas.id == clientes.id.
         $personasResultado = collect($resultado)
             ->flatMap(fn (array $grupo) => $grupo['personas'])
             ->unique('id')
             ->values();
-        $this->adjuntarEmails($personasResultado);
+        $this->vincularCandidatosOperativos($personasResultado, $sedesPermitidas);
+
+        // Las decisiones del maestro operativo persisten aunque se vuelva a
+        // procesar un período COBOL. Sólo ocultamos un grupo cuando está
+        // completamente resuelto; la evidencia histórica sigue intacta.
+        $idsOperativos = $personasResultado
+            ->flatMap(fn ($p) => $p->clientes_operativos_ids ?? [])
+            ->unique()->values()->all();
+        $decisiones = collect();
+        if ($idsOperativos !== []) {
+            $decisiones = DB::table('unificaciones_candidatos')
+                ->where('tipo', 'CLIENTE')
+                ->where('estado', 'MANTENER_SEPARADOS')
+                ->whereIn('id_registro_a', $idsOperativos)
+                ->whereIn('id_registro_b', $idsOperativos)
+                ->get(['id_registro_a', 'id_registro_b'])
+                ->keyBy(fn ($f): string => $f->id_registro_a.'|'.$f->id_registro_b);
+        }
+
+        $pendientes = [];
+        foreach ($resultado as $grupo) {
+            $vinculos = array_map(
+                static fn ($persona): array => $persona->clientes_operativos_ids ?? [],
+                $grupo['personas']
+            );
+            $ids = array_values(array_unique(array_merge([], ...$vinculos)));
+            sort($ids);
+            $vinculosUnicos = count(array_filter($vinculos, static fn (array $x): bool => count($x) === 1)) === count($vinculos);
+
+            // Dos registros históricos pueden compartir ya una identidad.
+            if ($vinculosUnicos && count($ids) === 1) {
+                continue;
+            }
+
+            $grupo['pares_comparacion'] = [];
+            $grupo['revision_estado'] = $vinculosUnicos ? 'REVISAR' : 'VINCULO_INCOMPLETO';
+            if ($vinculosUnicos) {
+                for ($i = 0; $i < count($ids); $i++) {
+                    for ($j = $i + 1; $j < count($ids); $j++) {
+                        $clave = $ids[$i].'|'.$ids[$j];
+                        if ($decisiones->has($clave)) {
+                            continue;
+                        }
+                        $grupo['pares_comparacion'][] = ['principal' => $ids[$i], 'secundario' => $ids[$j]];
+                    }
+                }
+                if ($grupo['pares_comparacion'] === []) {
+                    // Todos los pares fueron marcados como personas distintas.
+                    continue;
+                }
+            }
+            $pendientes[] = $grupo;
+        }
+        $resultado = $pendientes;
+        $personasVisibles = collect($resultado)
+            ->flatMap(fn (array $grupo) => $grupo['personas'])
+            ->unique('id')->values();
+        $this->adjuntarEmails($personasVisibles);
 
         return [
             'grupos' => $resultado,
             'total_grupos' => count($resultado),
-            'total_personas' => count($ids),
+            'total_personas' => $personasVisibles->count(),
         ];
+    }
+
+    /**
+     * Resuelve la correspondencia de personas del snapshot con el maestro
+     * canónico. Una identidad ambigua no se asigna por intuición.
+     */
+    private function vincularCandidatosOperativos(Collection $personas, array $sedesPermitidas): void
+    {
+        $prefijosSedes = $this->prefijosCuentaPorSedes($sedesPermitidas);
+        if ($personas->isEmpty() || $prefijosSedes === []) {
+            return;
+        }
+
+        $cuentas = $this->core()->table('gei_core.personas_cuentas_cobol')
+            ->whereIn('persona_id', $personas->pluck('id')->all())
+            ->whereIn('rol', ['INQUILINO', 'PROPIETARIO'])
+            ->whereIn(DB::raw("left(regexp_replace(coalesce(cuenta_cobol, ''), '[^0-9]', '', 'g'), 4)"), $prefijosSedes)
+            ->get(['persona_id', 'rol', 'cuenta_cobol']);
+        $numeros = $cuentas->pluck('cuenta_cobol')
+            ->map(fn ($numero): string => $this->normalizarCuenta((string) $numero))
+            ->filter()->unique()->values()->all();
+
+        $asociaciones = collect();
+        if ($numeros !== []) {
+            $asociaciones = DB::table('clientes_cuentas as cc')
+                ->join('clientes as c', 'c.id', '=', 'cc.cliente_id')
+                ->join('clientes as canon', 'canon.id', '=', DB::raw('coalesce(c.id_cliente_canonico, c.id)'))
+                ->whereIn('cc.rol', ['INQUILINO', 'PROPIETARIO'])
+                ->whereIn(DB::raw("regexp_replace(coalesce(cc.cuenta, ''), '[^0-9]', '', 'g')"), $numeros)
+                ->selectRaw("cc.rol, regexp_replace(coalesce(cc.cuenta, ''), '[^0-9]', '', 'g') as cuenta_normalizada, canon.id as cliente_id")
+                ->distinct()->get()
+                ->groupBy(fn ($f): string => strtoupper(trim((string) $f->rol)).'|'.$f->cuenta_normalizada);
+        }
+
+        $cuentasPorPersona = $cuentas->groupBy('persona_id');
+        foreach ($personas as $persona) {
+            $ids = [];
+            foreach ($cuentasPorPersona->get($persona->id, collect()) as $cuenta) {
+                $clave = strtoupper(trim((string) $cuenta->rol)).'|'.$this->normalizarCuenta((string) $cuenta->cuenta_cobol);
+                foreach ($asociaciones->get($clave, collect()) as $asociacion) {
+                    $ids[(int) $asociacion->cliente_id] = true;
+                }
+            }
+            $persona->clientes_operativos_ids = array_keys($ids);
+            sort($persona->clientes_operativos_ids);
+        }
     }
 
     /** @param array<string,array<string,mixed>> $grupos */

@@ -19,20 +19,31 @@ final class UnificacionClientesService
 
     private const TIPO = 'CLIENTE';
 
-    private const FKS_ESPERADAS = [
-        'clientes',
-        'clientes_conflictos',
-        'clientes_cuentas',
-        'clientes_migracion_conflictos',
-        'clientes_origenes',
-        'clientes_roles',
-        'clientes_resoluciones_origen',
-        'contratos_inquilinos',
-        'cuentas_corrientes',
-        'inmuebles_propietarios',
-        'liquidaciones_propietarios',
-        'liquidaciones_propietarios_envios',
-        'repartos_propietarios',
+    /**
+     * Columnas que realmente referencian public.clientes.id.
+     * No basta revisar nombres de tablas: una segunda FK en una tabla
+     * existente también debe bloquear una unificación hasta ser auditada.
+     */
+    private const FK_COLUMNAS_ESPERADAS = [
+        'clientes.id_cliente_canonico',
+        'clientes_actividad_periodos.cliente_id',
+        'clientes_conflictos.cliente_resuelto_id',
+        'clientes_cuentas.cliente_id',
+        'clientes_migracion_conflictos.cliente_id',
+        'clientes_origenes.cliente_id',
+        'clientes_roles.cliente_id',
+        'clientes_resoluciones_origen.cliente_id',
+        'contratos_inquilinos.cliente_id',
+        'cuentas_corrientes.cliente_id',
+        'cuentas_facturacion_beneficiarios.cliente_id',
+        'facturas.cliente_id',
+        'facturas_items.beneficiario_cliente_id',
+        'inmuebles_propietarios.cliente_id',
+        'liquidaciones_propietarios.cliente_id',
+        'liquidaciones_propietarios_envios.cliente_id',
+        'portal_usuarios.cliente_id',
+        'repartos_propietarios.cliente_id',
+        'transferencias_informadas.cliente_id',
     ];
 
     private const CAMPOS_MAESTROS = [
@@ -332,6 +343,7 @@ final class UnificacionClientesService
         if ($principalId === $secundarioId) {
             throw new DomainException('El cliente principal y el absorbido deben ser distintos.');
         }
+        $this->validarForeignKeysConocidas();
         $principal = $this->cargarCliente($principalId);
         $secundario = $this->cargarCliente($secundarioId);
         $plan = $this->construirPlan($principal, $secundario);
@@ -364,9 +376,10 @@ final class UnificacionClientesService
                     throw new DomainException('El cliente secundario ya fue absorbido por otro cliente.');
                 }
 
-                foreach (['clientes_roles', 'clientes_cuentas', 'clientes_origenes', 'inmuebles_propietarios', 'contratos_inquilinos', 'cuentas_corrientes', 'liquidaciones_propietarios', 'liquidaciones_propietarios_envios', 'repartos_propietarios', 'clientes_conflictos', 'clientes_migracion_conflictos', 'clientes_resoluciones_origen'] as $tabla) {
+                foreach (['clientes_roles', 'clientes_cuentas', 'clientes_origenes', 'inmuebles_propietarios', 'contratos_inquilinos', 'cuentas_corrientes', 'liquidaciones_propietarios', 'liquidaciones_propietarios_envios', 'repartos_propietarios', 'transferencias_informadas', 'clientes_actividad_periodos', 'portal_usuarios', 'clientes_conflictos', 'clientes_migracion_conflictos', 'clientes_resoluciones_origen', 'cuentas_facturacion_beneficiarios', 'facturas', 'facturas_items'] as $tabla) {
                     $columna = match ($tabla) {
                         'clientes_conflictos' => 'cliente_resuelto_id',
+                        'facturas_items' => 'beneficiario_cliente_id',
                         default => 'cliente_id',
                     };
                     DB::table($tabla)->whereIn($columna, [$principalId, $secundarioId])->lockForUpdate()->get();
@@ -469,13 +482,27 @@ final class UnificacionClientesService
                             $registrar($tabla, 'REASIGNADO_CUENTA_CANONICA', (int) $fila->id, $antes, $despues, ['cliente_cuenta_id_principal' => $idDestino]);
                         }
                     }
+                    // La transferencia conserva importe, estado y documentación;
+                    // sólo se actualiza la referencia a la misma cuenta COBOL.
+                    foreach (DB::table('transferencias_informadas')->where('cliente_cuenta_id', $idOrigen)->orderBy('id')->get() as $transferencia) {
+                        $antes = (array) $transferencia;
+                        DB::table('transferencias_informadas')->where('id', $transferencia->id)->update([
+                            'cliente_cuenta_id' => $idDestino,
+                            'cliente_id' => $principalId,
+                            'updated_at' => now(),
+                        ]);
+                        $despues = $antes;
+                        $despues['cliente_cuenta_id'] = $idDestino;
+                        $despues['cliente_id'] = $principalId;
+                        $registrar('transferencias_informadas', 'REASIGNADO_CUENTA_CANONICA', (int) $transferencia->id, $antes, $despues);
+                    }
                     $antesCuenta = (array) DB::table('clientes_cuentas')->where('id', $idOrigen)->first();
                     DB::table('clientes_cuentas')->where('id', $idOrigen)->delete();
                     $registrar('clientes_cuentas', 'ELIMINADO_DUPLICADO_EXACTO', $idOrigen, $antesCuenta, null, ['id_registro_conservado' => $idDestino]);
                 }
 
                 // Relaciones directas restantes por cliente_id.
-                foreach (['clientes_origenes', 'clientes_migracion_conflictos', 'liquidaciones_propietarios', 'liquidaciones_propietarios_envios', 'repartos_propietarios', 'clientes_resoluciones_origen'] as $tabla) {
+                foreach (['clientes_origenes', 'clientes_migracion_conflictos', 'liquidaciones_propietarios', 'liquidaciones_propietarios_envios', 'repartos_propietarios', 'clientes_resoluciones_origen', 'transferencias_informadas'] as $tabla) {
                     $filas = DB::table($tabla)->where('cliente_id', $secundarioId)->orderBy($this->clavePrimariaTabla($tabla))->get();
                     foreach ($filas as $fila) {
                         $pk = $this->clavePrimariaTabla($tabla);
@@ -495,6 +522,55 @@ final class UnificacionClientesService
                         $despues = $antes; $despues['cliente_id'] = $principalId;
                         $registrar($tabla, 'REASIGNADO_CLIENTE', (int) $fila->id, $antes, $despues);
                     }
+                }
+
+                // Facturación: sólo redirigir las FK de identidad al cliente canónico.
+                // NO modificar facturas.cliente_nombre, CUIT, documentos, importes,
+                // CAE, items, porcentaje, beneficiario_identificador_origen, etc.:
+                // esos campos son evidencia fiscal/histórica de la operación.
+                foreach ([
+                    'cuentas_facturacion_beneficiarios' => ['id_cuenta_facturacion_beneficiario', 'cliente_id'],
+                    'facturas' => ['id_factura', 'cliente_id'],
+                    'facturas_items' => ['id_factura_item', 'beneficiario_cliente_id'],
+                ] as $tabla => [$pk, $fk]) {
+                    $filas = DB::table($tabla)->where($fk, $secundarioId)->orderBy($pk)->get();
+                    foreach ($filas as $fila) {
+                        $antes = (array) $fila;
+                        DB::table($tabla)->where($pk, $fila->{$pk})->update([$fk => $principalId, 'updated_at' => now()]);
+                        $despues = $antes;
+                        $despues[$fk] = $principalId;
+                        $registrar($tabla, 'REASIGNADO_CLIENTE_CANONICO', (int) $fila->{$pk}, $antes, $despues, [
+                            'clave_primaria' => $pk,
+                            'columna_fk' => $fk,
+                            'snapshot_fiscal' => 'SIN_MODIFICACIONES',
+                        ]);
+                    }
+                }
+
+                // Actividad derivada por período: unir evidencias mediante OR.
+                // No sumar ni modificar ninguna operación financiera.
+                foreach (DB::table('clientes_actividad_periodos')->where('cliente_id', $secundarioId)->orderBy('id')->get() as $actividad) {
+                    $antes = (array) $actividad;
+                    $existente = DB::table('clientes_actividad_periodos')
+                        ->where('cliente_id', $principalId)
+                        ->where('periodo', $actividad->periodo)->first();
+                    if ($existente === null) {
+                        DB::table('clientes_actividad_periodos')->where('id', $actividad->id)->update(['cliente_id' => $principalId, 'updated_at' => now()]);
+                        $despues = $antes;
+                        $despues['cliente_id'] = $principalId;
+                        $registrar('clientes_actividad_periodos', 'REASIGNADO', (int) $actividad->id, $antes, $despues);
+                        continue;
+                    }
+
+                    $nuevo = [];
+                    foreach (['activo_cobol', 'activo_arca', 'activo_liquidaciones', 'activo_impuestos'] as $campo) {
+                        $nuevo[$campo] = (bool) $existente->{$campo} || (bool) $actividad->{$campo};
+                    }
+                    $antesExistente = (array) $existente;
+                    DB::table('clientes_actividad_periodos')->where('id', $existente->id)->update([...$nuevo, 'updated_at' => now()]);
+                    $registrar('clientes_actividad_periodos', 'CONSOLIDADO_PERIODO', (int) $existente->id, $antesExistente, [...$antesExistente, ...$nuevo]);
+                    DB::table('clientes_actividad_periodos')->where('id', $actividad->id)->delete();
+                    $registrar('clientes_actividad_periodos', 'ELIMINADO_DUPLICADO_PERIODO', (int) $actividad->id, $antes, null, ['id_registro_conservado' => (int) $existente->id]);
                 }
 
                 $conflictos = DB::table('clientes_conflictos')->where('cliente_resuelto_id', $secundarioId)->orderBy('id')->get();
@@ -1318,6 +1394,9 @@ final class UnificacionClientesService
             'inmuebles' => DB::table('inmuebles_propietarios as ip')->join('inmuebles as i', 'i.id', '=', 'ip.inmueble_id')->leftJoin('clientes_cuentas as cc', 'cc.id', '=', 'ip.cliente_cuenta_id')->where('ip.cliente_id', $id)->select('ip.*', 'i.domicilio', 'i.estado as inmueble_estado', 'cc.cuenta')->orderBy('i.domicilio')->get(),
             'contratos' => DB::table('contratos_inquilinos as ci')->join('contratos as c', 'c.id', '=', 'ci.contrato_id')->leftJoin('clientes_cuentas as cc', 'cc.id', '=', 'ci.cliente_cuenta_id')->where('ci.cliente_id', $id)->select('ci.*', 'c.cuenta_inquilino', 'c.fecha_inicio', 'c.fecha_fin', 'c.estado as contrato_estado', 'cc.cuenta')->orderByDesc('c.fecha_inicio')->get(),
             'cuentas_corrientes' => DB::table('cuentas_corrientes')->where('cliente_id', $id)->orderBy('dominio')->orderBy('cuenta')->get(),
+            'facturacion_beneficiarios_count' => DB::table('cuentas_facturacion_beneficiarios')->where('cliente_id', $id)->count(),
+            'facturas_count' => DB::table('facturas')->where('cliente_id', $id)->count(),
+            'facturas_items_beneficiarios_count' => DB::table('facturas_items')->where('beneficiario_cliente_id', $id)->count(),
             'liquidaciones_count' => DB::table('liquidaciones_propietarios')->where('cliente_id', $id)->count(),
             'liquidaciones' => DB::table('liquidaciones_propietarios')->where('cliente_id', $id)->select('id', 'periodo', 'fecha', 'cuenta', 'propietario', 'total')->orderByDesc('periodo')->orderByDesc('id')->limit(20)->get(),
             'envios_count' => DB::table('liquidaciones_propietarios_envios')->where('cliente_id', $id)->count(),
@@ -1339,6 +1418,11 @@ final class UnificacionClientesService
         $p = $principal['cliente'];
         $s = $secundario['cliente'];
         $bloqueos = [];
+        // Las credenciales, tokens y acceso a documentos de autogestión no
+        // deben transferirse implícitamente a otra identidad.
+        if (DB::table('portal_usuarios')->where('cliente_id', (int) $s->id)->exists()) {
+            $bloqueos[] = 'El cliente a absorber tiene usuario de autogestión. Revisar credenciales y acceso antes de unificar; operación bloqueada.';
+        }
         $camposCompletar = [];
         $diferencias = [];
 
@@ -1411,6 +1495,9 @@ final class UnificacionClientesService
                 'liquidaciones' => $secundario['liquidaciones_count'],
                 'envios' => $secundario['envios_count'],
                 'repartos' => $secundario['repartos']->count(),
+                'facturacion_beneficiarios' => $secundario['facturacion_beneficiarios_count'],
+                'facturas' => $secundario['facturas_count'],
+                'facturas_items_beneficiarios' => $secundario['facturas_items_beneficiarios_count'],
                 'duplicados_exactos_eliminados' => count($duplicadosHijos) + count($rolesDuplicados) + count(array_filter($accionesCuentas, fn ($x) => $x['accion'] === 'CONSOLIDAR')),
                 'diferencias_maestras' => count($diferencias),
                 'bloqueos' => count($bloqueos),
@@ -1452,24 +1539,34 @@ final class UnificacionClientesService
 
     private function validarForeignKeysConocidas(): void
     {
-        $tablas = DB::select(<<<'SQL'
-SELECT DISTINCT origen.relname AS tabla
+        // Revisar tablas Y columnas. No ignorar silenciosamente claves nuevas.
+        $filas = DB::select(<<<'SQL'
+SELECT DISTINCT origen.relname AS tabla, a.attname AS columna
 FROM pg_constraint c
 JOIN pg_class destino ON destino.oid = c.confrelid
 JOIN pg_namespace nd ON nd.oid = destino.relnamespace
 JOIN pg_class origen ON origen.oid = c.conrelid
 JOIN pg_namespace no ON no.oid = origen.relnamespace
+JOIN LATERAL unnest(c.conkey) AS fk(attnum) ON TRUE
+JOIN pg_attribute a ON a.attrelid = origen.oid AND a.attnum = fk.attnum
 WHERE c.contype = 'f'
   AND nd.nspname = 'public'
   AND no.nspname = 'public'
   AND destino.relname = 'clientes'
-ORDER BY origen.relname
+ORDER BY origen.relname, a.attname
 SQL);
-        $detectadas = array_map(fn ($f): string => (string) $f->tabla, $tablas);
+        $detectadas = array_map(fn ($f): string => (string) $f->tabla.'.'.(string) $f->columna, $filas);
         sort($detectadas);
-        $esperadas = self::FKS_ESPERADAS; sort($esperadas);
+        $esperadas = self::FK_COLUMNAS_ESPERADAS;
+        sort($esperadas);
         if ($detectadas !== $esperadas) {
-            throw new DomainException('Cambió el esquema de relaciones de clientes. No se ejecutó la unificación. FK detectadas: '.implode(', ', $detectadas).'.');
+            $nuevas = array_values(array_diff($detectadas, $esperadas));
+            $faltantes = array_values(array_diff($esperadas, $detectadas));
+            throw new DomainException(
+                'Cambió el esquema de relaciones de clientes. No se ejecutó la unificación.'
+                .' FK nuevas: '.($nuevas ? implode(', ', $nuevas) : 'ninguna').'.'
+                .' FK esperadas ausentes: '.($faltantes ? implode(', ', $faltantes) : 'ninguna').'.'
+            );
         }
     }
 

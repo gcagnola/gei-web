@@ -4,6 +4,8 @@ namespace App\Http\Controllers;
 
 use App\Models\Usuario;
 use App\Services\GeiCoreClienteService;
+use App\Services\UnificacionClientesService;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
@@ -24,7 +26,32 @@ final class GeiCoreClienteController extends Controller
         $estado = (string) $request->query('estado', 'activos');
         $buscar = trim((string) $request->query('buscar', ''));
         $modo = (string) $request->query('modo', 'clientes');
-        $modo = in_array($modo, ['clientes', 'duplicados'], true) ? $modo : 'clientes';
+        $modo = in_array($modo, ['clientes', 'duplicados', 'revisiones', 'historial'], true) ? $modo : 'clientes';
+
+        // Sólo administradores pueden consultar conciliaciones y auditoría de identidades.
+        if (in_array($modo, ['revisiones', 'historial'], true)) {
+            Gate::authorize('administrar-unificaciones');
+        }
+
+        $administracion = [];
+        if ($modo === 'revisiones') {
+            $unificacion = app(UnificacionClientesService::class);
+            $resultados = $unificacion->listarClasificados($buscar, 'activos_revision', 'todos', [], 50);
+            $ids = $resultados->getCollection()->pluck('id')->map(fn ($id) => (int) $id)->all();
+            $administracion = [
+                'resumenRevision' => $unificacion->resumenClasificacion([]),
+                'resultadosRevision' => $resultados,
+                'conflictosRevision' => $unificacion->conflictosPendientesPorClientes($ids),
+                'conflictosSinCliente' => $unificacion->conflictosPendientesSinCliente(),
+                'conflictosSinClienteTotal' => $unificacion->conflictosPendientesSinClienteTotal(),
+            ];
+        } elseif ($modo === 'historial') {
+            $unificacion = app(UnificacionClientesService::class);
+            $administracion = [
+                'ultimasUnificaciones' => $unificacion->ultimasUnificaciones(),
+                'revisionesCobolResueltas' => $unificacion->revisionesCobolResueltas(),
+            ];
+        }
 
         $duplicados = $this->service->duplicadosActivos(
             $periodo,
@@ -44,6 +71,7 @@ final class GeiCoreClienteController extends Controller
                 ? $this->service->listar($periodo, $rol, $estado, $buscar, 50, $sedesPermitidas)
                 : null,
             'duplicados' => $duplicados,
+            ...$administracion,
         ]);
     }
 

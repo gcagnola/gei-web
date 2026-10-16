@@ -369,7 +369,13 @@ final class MigracionClientesCobolService
                 $origenExistente['datos_origen'] ?? [],
                 $datos
             );
-            if ($identidadCambiada !== []) {
+            $cuitComprobado = $this->cuitFaltanteVerificable(
+                $identidadCambiada,
+                $datos,
+                $clienteId,
+                $estado
+            );
+            if ($identidadCambiada !== [] && ! $cuitComprobado) {
                 $this->guardarConflicto(
                     $entidad,
                     $datos,
@@ -382,6 +388,17 @@ final class MigracionClientesCobolService
                 );
 
                 return;
+            }
+
+            if ($cuitComprobado) {
+                // Sólo completa el CUIT vacío del maestro; no altera otras identidades.
+                $this->completarVaciosCliente(
+                    $clienteId,
+                    ['cuit' => $datos['cuit']],
+                    $confirmar,
+                    $estado,
+                    $resultado
+                );
             }
 
             $this->actualizarDatosCompletables(
@@ -935,6 +952,78 @@ final class MigracionClientesCobolService
         }
 
         return $cambios;
+    }
+
+    /**
+     * Permite completar un CUIT ausente en una cuenta ya asociada sólo cuando
+     * el DNI del maestro, el nombre, la cuenta de origen y el CUIT concuerdan.
+     * No es una resolución genérica de conflictos de identidad.
+     *
+     * @param array<string, array{anterior:mixed,nuevo:mixed}> $cambios
+     * @param array<string, mixed> $datos
+     * @param array<string, mixed> $estado
+     */
+    private function cuitFaltanteVerificable(
+        array $cambios,
+        array $datos,
+        int $clienteId,
+        array $estado
+    ): bool {
+        if (count($cambios) !== 1 || ! isset($cambios['cuit'])) {
+            return false;
+        }
+        if (! in_array($cambios['cuit']['anterior'], [null, ''], true)) {
+            return false;
+        }
+
+        $cuit = (string) ($datos['cuit'] ?? '');
+        if (! $this->cuitFisicoValido($cuit)
+            || ! $this->iguales($cuit, $cambios['cuit']['nuevo'] ?? null)
+            || ($datos['tipo_documento'] ?? null) !== 'DNI') {
+            return false;
+        }
+
+        $cliente = $estado['clientes'][$clienteId] ?? null;
+        if (! is_array($cliente)
+            || ($cliente['tipo_persona'] ?? null) === 'JURIDICA'
+            || ! in_array($cliente['tipo_documento'] ?? null, [null, '', 'DNI'], true)
+            || ! in_array($cliente['cuit'] ?? null, [null, '', $cuit], true)
+            || ! $this->nombresCompatibles(
+                (string) ($cliente['nombre'] ?? ''),
+                (string) ($datos['nombre'] ?? '')
+            )) {
+            return false;
+        }
+
+        $dni = ltrim(substr($cuit, 2, 8), '0');
+        $dniActual = ltrim((string) ($cliente['numero_documento'] ?? ''), '0');
+        $dniOrigen = ltrim((string) ($datos['numero_documento'] ?? ''), '0');
+        if ($dni === '' || $dniActual === '' || $dniOrigen === ''
+            || $dni !== $dniActual || $dni !== $dniOrigen) {
+            return false;
+        }
+
+        // No capturar el CUIT si está asignado a otro cliente o es ambiguo.
+        $coincidencia = $this->valorIndice($estado['por_cuit'], $cuit);
+
+        return $coincidencia === false || $coincidencia === $clienteId;
+    }
+
+    private function cuitFisicoValido(string $cuit): bool
+    {
+        if (! preg_match('/^(20|23|24|27)[0-9]{9}$/D', $cuit)) {
+            return false;
+        }
+
+        $pesos = [5, 4, 3, 2, 7, 6, 5, 4, 3, 2];
+        $suma = 0;
+        foreach ($pesos as $posicion => $peso) {
+            $suma += (int) $cuit[$posicion] * $peso;
+        }
+        $digito = 11 - ($suma % 11);
+        $digito = $digito === 11 ? 0 : ($digito === 10 ? -1 : $digito);
+
+        return $digito === (int) $cuit[10];
     }
 
     /**

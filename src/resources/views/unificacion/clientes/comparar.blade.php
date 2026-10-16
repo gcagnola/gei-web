@@ -12,7 +12,13 @@
 <div class="container-fluid py-3 pb-5">
     <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
         <div><h1 class="h3 mb-1">Comparar clientes</h1><p class="text-muted mb-0">La columna izquierda permanece. La derecha será absorbida.</p></div>
-        <a class="btn btn-outline-secondary" href="{{ route('archivo.unificacion.clientes.index') }}">Volver</a>
+        <div class="d-flex flex-wrap gap-2">
+            <a class="btn btn-outline-primary"
+               href="{{ route('archivo.unificacion.clientes.comparar', ['principal' => $s->id, 'secundario' => $p->id, 'periodo' => request('periodo')]) }}">
+                Intercambiar cliente que permanece
+            </a>
+            <a class="btn btn-outline-secondary" href="{{ route('core-clientes.index', ['modo' => 'duplicados', 'periodo' => request('periodo')]) }}">Volver</a>
+        </div>
     </div>
 
     @if ($errors->any())<div class="alert alert-danger">@foreach ($errors->all() as $error)<div>{{ $error }}</div>@endforeach</div>@endif
@@ -101,11 +107,25 @@
         <div class="col-12"><small class="text-muted">Las liquidaciones conservan nombre, CUIT, cuenta, domicilio e importes históricos. Sólo cambia su referencia cliente_id al canónico. Los email_destino de envíos pasados tampoco se modifican.</small></div>
     </div></div>
 
+    <div class="card mb-3"><div class="card-header fw-semibold">Relaciones de facturación</div>
+        <div class="card-body">
+            <div class="table-responsive"><table class="table table-sm mb-2">
+                <thead><tr><th>Relación</th><th>Cliente que queda</th><th>Cliente a absorber</th></tr></thead>
+                <tbody>
+                    <tr><td>Beneficiarios configurados</td><td>{{ $principal['facturacion_beneficiarios_count'] }}</td><td>{{ $secundario['facturacion_beneficiarios_count'] }}</td></tr>
+                    <tr><td>Facturas</td><td>{{ $principal['facturas_count'] }}</td><td>{{ $secundario['facturas_count'] }}</td></tr>
+                    <tr><td>Ítems de factura como beneficiario</td><td>{{ $principal['facturas_items_beneficiarios_count'] }}</td><td>{{ $secundario['facturas_items_beneficiarios_count'] }}</td></tr>
+                </tbody>
+            </table></div>
+            <small class="text-muted">Se reasigna únicamente la referencia a la identidad canónica. Permanecen los datos fiscales emitidos, CUIT/documentos históricos, CAE, importes, porcentajes e identificadores originales. Cada referencia modificada se registra en unificaciones_cambios.</small>
+        </div>
+    </div>
+
     <div class="card border-danger mb-5"><div class="card-header text-bg-danger bg-opacity-10 fw-semibold">Confirmación</div><div class="card-body">
         <p>Permanecerá <strong>#{{ $p->id }} — {{ $p->nombre }}</strong>.</p><p>Se absorberá <strong>#{{ $s->id }} — {{ $s->nombre }}</strong>.</p>
         @if ($plan['bloqueos'] === [])
             <form method="POST" action="{{ route('archivo.unificacion.clientes.unificar') }}" onsubmit="return confirm('¿Confirma absorber el cliente #{{ $s->id }} en #{{ $p->id }}?');">@csrf
-                <input type="hidden" name="principal" value="{{ $p->id }}"><input type="hidden" name="secundario" value="{{ $s->id }}"><input type="hidden" name="confirmacion" value="UNIFICAR">
+                <input type="hidden" name="principal" value="{{ $p->id }}"><input type="hidden" name="secundario" value="{{ $s->id }}"><input type="hidden" name="confirmacion" value="UNIFICAR"><input type="hidden" name="periodo" value="{{ request('periodo') }}">
                 <button class="btn btn-danger">Confirmar: absorber #{{ $s->id }} en #{{ $p->id }}</button>
             </form>
         @else

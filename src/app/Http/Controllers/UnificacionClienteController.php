@@ -16,7 +16,7 @@ final class UnificacionClienteController extends Controller
     ) {
     }
 
-    public function index(Request $request): View
+    public function index(Request $request): View|RedirectResponse
     {
         $datos = $request->validate([
             'q' => ['nullable', 'string', 'max:180'],
@@ -27,6 +27,14 @@ final class UnificacionClienteController extends Controller
         $texto = trim((string) ($datos['q'] ?? ''));
         $vista = (string) ($datos['vista'] ?? 'activos_ok');
         $filtroInactivos = (string) ($datos['conflicto'] ?? 'todos');
+
+        // Compatibilidad: enlaces históricos llevan a las vistas canónicas de Clientes.
+        if ($vista === 'activos_revision' || $vista === 'activos_ok') {
+            return redirect()->route('core-clientes.index', [
+                'modo' => $vista === 'activos_revision' ? 'revisiones' : 'clientes',
+                'buscar' => $texto !== '' ? $texto : null,
+            ]);
+        }
 
         $inmuebles = app(\App\Services\UnificacionInmueblesService::class);
         if ($vista === 'avisos_propietarios') {
@@ -86,7 +94,7 @@ final class UnificacionClienteController extends Controller
         try {
             $comparacion = $this->service->comparar((int) $datos['principal'], (int) $datos['secundario']);
         } catch (DomainException $error) {
-            return redirect()->route('archivo.unificacion.clientes.index')->withErrors(['unificacion' => $error->getMessage()]);
+            return redirect()->route('core-clientes.index', ['modo' => 'duplicados', 'periodo' => $request->query('periodo')])->withErrors(['unificacion' => $error->getMessage()]);
         }
 
         return view('unificacion.clientes.comparar', $comparacion);
@@ -99,7 +107,7 @@ final class UnificacionClienteController extends Controller
             $revision = $this->service->revisionCobol($conflicto);
         } catch (DomainException $error) {
             return redirect()
-                ->route('archivo.unificacion.clientes.index', ['vista' => 'activos_revision'])
+                ->route('core-clientes.index', ['modo' => 'revisiones'])
                 ->withErrors(['unificacion' => $error->getMessage()]);
         }
 
@@ -112,17 +120,18 @@ final class UnificacionClienteController extends Controller
             'principal' => ['required', 'integer', 'min:1'],
             'secundario' => ['required', 'integer', 'min:1', 'different:principal'],
             'confirmacion' => ['required', 'in:UNIFICAR'],
+            'periodo' => ['nullable', 'regex:/^(19|20)\d{2}(0[1-9]|1[0-2])$/'],
         ]);
         try {
             $resultado = $this->service->unificar((int) $datos['principal'], (int) $datos['secundario'], auth()->id() === null ? null : (int) auth()->id());
         } catch (DomainException $error) {
-            return redirect()->route('archivo.unificacion.clientes.comparar', ['principal' => $datos['principal'], 'secundario' => $datos['secundario']])->withErrors(['unificacion' => $error->getMessage()]);
+            return redirect()->route('archivo.unificacion.clientes.comparar', ['principal' => $datos['principal'], 'secundario' => $datos['secundario'], 'periodo' => $datos['periodo'] ?? null])->withErrors(['unificacion' => $error->getMessage()]);
         } catch (Throwable $error) {
             report($error);
-            return redirect()->route('archivo.unificacion.clientes.comparar', ['principal' => $datos['principal'], 'secundario' => $datos['secundario']])->withErrors(['unificacion' => 'La operación falló y fue revertida completamente. '.$error->getMessage()]);
+            return redirect()->route('archivo.unificacion.clientes.comparar', ['principal' => $datos['principal'], 'secundario' => $datos['secundario'], 'periodo' => $datos['periodo'] ?? null])->withErrors(['unificacion' => 'La operación falló y fue revertida completamente. '.$error->getMessage()]);
         }
 
-        return redirect()->route('archivo.unificacion.clientes.index')->with('estado', 'Unificación aplicada. Cliente '.$datos['secundario'].' absorbido por '.$datos['principal'].'. Auditoría #'.$resultado['id_unificacion'].'.');
+        return redirect()->route('core-clientes.index', ['modo' => 'duplicados', 'periodo' => $datos['periodo'] ?? null])->with('estado', 'Unificación aplicada. Cliente '.$datos['secundario'].' absorbido por '.$datos['principal'].'. Auditoría #'.$resultado['id_unificacion'].'.');
     }
 
     public function resolverCandidato(Request $request): RedirectResponse

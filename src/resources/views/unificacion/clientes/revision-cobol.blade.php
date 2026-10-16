@@ -58,7 +58,7 @@
             </p>
         </div>
         <a class="btn btn-outline-secondary"
-           href="{{ route('archivo.unificacion.clientes.index', ['vista' => 'activos_revision']) }}">
+           href="{{ route('core-clientes.index', ['modo' => 'revisiones']) }}">
             Volver
         </a>
     </div>
