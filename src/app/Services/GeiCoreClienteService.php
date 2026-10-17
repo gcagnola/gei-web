@@ -41,34 +41,16 @@ final class GeiCoreClienteService
         return (string) $periodo;
     }
 
+    /** @var array<string, Collection> */
+    private array $listadosCanonicos = [];
+
     public function resumen(string $periodo, string $rol, array $sedesPermitidas = []): array
     {
-        $rol = $this->rol($rol);
-        $bindings = [$periodo];
-        $filtroRol = '';
-        [$filtroSede, $bindingsSede] = $this->sqlFiltroCuentaPorSedes('po.cuenta_cobol', $sedesPermitidas);
-
-        if ($rol !== 'TODOS') {
-            $filtroRol = ' and pp.rol = ?';
-            $bindings[] = $rol;
-        }
-
-        $fila = $this->core()->selectOne(
-            "select
-                count(distinct pp.persona_id) as personas,
-                count(distinct pp.persona_id) filter (where pp.activo) as activas
-             from gei_core.personas_periodos pp
-             join gei_core.personas_origenes po
-               on po.persona_id = pp.persona_id
-              and po.periodo = pp.periodo
-              and po.rol = pp.rol
-             where pp.periodo = ? {$filtroRol} {$filtroSede}",
-            [...$bindings, ...$bindingsSede]
-        );
+        $filas = $this->filasPorClienteCanonico($periodo, $this->rol($rol), $sedesPermitidas);
 
         return [
-            'personas' => (int) ($fila->personas ?? 0),
-            'activas' => (int) ($fila->activas ?? 0),
+            'personas' => $filas->count(),
+            'activas' => $filas->filter(static fn ($fila): bool => (bool) $fila->activo)->count(),
         ];
     }
 
@@ -357,6 +339,123 @@ final class GeiCoreClienteService
         return trim($nombre);
     }
 
+    /**
+     * La lista se identifica por public.clientes (cliente canónico), no por el
+     * id de gei_core.personas. Sólo se agrupan snapshots con una correspondencia
+     * ÚNICA por rol + cuenta COBOL. Los casos ambiguos quedan visibles separados.
+     *
+     * Las bases histórica y operativa son conexiones PostgreSQL diferentes;
+     * por eso resolvemos correspondencias por lotes, y paginamos DESPUÉS de
+     * agrupar. No se altera ningún dato ni se confunden identificadores.
+     */
+    private function filasPorClienteCanonico(string $periodo, string $rol, array $sedesPermitidas): Collection
+    {
+        $sedes = $this->prefijosCuentaPorSedes($sedesPermitidas);
+        if ($sedes === []) {
+            return collect();
+        }
+        $claveCache = $periodo.'|'.$rol.'|'.implode(',', $sedes);
+        if (isset($this->listadosCanonicos[$claveCache])) {
+            return $this->listadosCanonicos[$claveCache];
+        }
+
+        $base = $this->core()->table('gei_core.personas_periodos as pp')
+            ->join('gei_core.personas as p', 'p.id', '=', 'pp.persona_id')
+            ->join('gei_core.personas_origenes as po', function ($join): void {
+                $join->on('po.persona_id', '=', 'pp.persona_id')
+                    ->on('po.rol', '=', 'pp.rol')
+                    ->on('po.periodo', '=', 'pp.periodo');
+            })
+            ->where('pp.periodo', $periodo)
+            ->whereNull('p.fusionada_en_id')
+            ->when($rol !== 'TODOS', fn ($q) => $q->where('pp.rol', $rol))
+            ->whereIn(DB::raw("left(regexp_replace(coalesce(po.cuenta_cobol, ''), '[^0-9]', '', 'g'), 4)"), $sedes)
+            ->groupBy(['p.id', 'p.nombre', 'p.nro_iva', 'p.nro_documento', 'p.domicilio', 'p.localidad', 'p.provincia'])
+            ->selectRaw("p.id, p.nombre, p.nro_iva, p.nro_documento, p.domicilio, p.localidad, p.provincia,
+                bool_or(pp.activo) as activo,
+                string_agg(distinct pp.rol, ', ' order by pp.rol) as roles,
+                string_agg(distinct po.cuenta_cobol, ', ' order by po.cuenta_cobol) as cuentas,
+                string_agg(distinct (po.rol || '|' || regexp_replace(coalesce(po.cuenta_cobol, ''), '[^0-9]', '', 'g')),
+                    ',' order by (po.rol || '|' || regexp_replace(coalesce(po.cuenta_cobol, ''), '[^0-9]', '', 'g'))) as claves_origen");
+
+        $historicos = $base->get();
+        $numeros = $historicos->flatMap(static fn ($p): array => array_map(
+            static fn ($clave): string => explode('|', $clave, 2)[1] ?? '',
+            explode(',', (string) ($p->claves_origen ?? ''))
+        ))->filter()->unique()->values();
+
+        $asociaciones = collect();
+        $canonicos = collect();
+        foreach ($numeros->chunk(900) as $lote) {
+            $relaciones = DB::table('clientes_cuentas as cc')
+                ->join('clientes as original', 'original.id', '=', 'cc.cliente_id')
+                ->join('clientes as canon', 'canon.id', '=', DB::raw('coalesce(original.id_cliente_canonico, original.id)'))
+                ->whereIn('cc.rol', ['PROPIETARIO', 'INQUILINO'])
+                ->whereIn(DB::raw("regexp_replace(coalesce(cc.cuenta, ''), '[^0-9]', '', 'g')"), $lote->all())
+                ->selectRaw("cc.rol, regexp_replace(coalesce(cc.cuenta, ''), '[^0-9]', '', 'g') as numero, canon.id, canon.nombre, canon.cuit, canon.numero_documento, canon.email")
+                ->get();
+            foreach ($relaciones as $relacion) {
+                $clave = strtoupper(trim((string) $relacion->rol)).'|'.$relacion->numero;
+                $ids = $asociaciones->get($clave, []);
+                $ids[(int) $relacion->id] = true;
+                $asociaciones->put($clave, $ids);
+                $canonicos->put((int) $relacion->id, $relacion);
+            }
+        }
+
+        $agrupados = collect();
+        foreach ($historicos as $historico) {
+            $ids = [];
+            foreach (explode(',', (string) ($historico->claves_origen ?? '')) as $clave) {
+                foreach (array_keys($asociaciones->get($clave, [])) as $id) {
+                    $ids[$id] = true;
+                }
+            }
+            $ids = array_keys($ids);
+            sort($ids);
+            $unico = count($ids) === 1;
+            $canonicoId = $unico ? $ids[0] : null;
+            $clave = $unico ? 'C:'.$canonicoId : 'H:'.$historico->id;
+            if (! $agrupados->has($clave)) {
+                $fila = clone $historico;
+                $fila->cliente_id_operativo = $canonicoId;
+                $fila->clientes_operativos_ids = $ids;
+                $fila->snapshots_ids = [(int) $historico->id];
+                $fila->nombres_historicos = [(string) $historico->nombre];
+                if ($unico && ($cliente = $canonicos->get($canonicoId))) {
+                    // public.clientes es la identidad canónica. Los campos de
+                    // presentación sin valor se conservan del snapshot.
+                    $fila->nombre = $cliente->nombre ?: $fila->nombre;
+                    $fila->nro_iva = $cliente->cuit ?: $fila->nro_iva;
+                    $fila->nro_documento = $cliente->numero_documento ?: $fila->nro_documento;
+                    $fila->email = $cliente->email;
+                } else {
+                    $fila->email = null;
+                }
+                $agrupados->put($clave, $fila);
+                continue;
+            }
+            $fila = $agrupados->get($clave);
+            $fila->snapshots_ids[] = (int) $historico->id;
+            $fila->nombres_historicos[] = (string) $historico->nombre;
+            $fila->activo = (bool) $fila->activo || (bool) $historico->activo;
+            $fila->roles = implode(', ', array_unique(array_filter(array_merge(
+                array_map('trim', explode(',', (string) $fila->roles)),
+                array_map('trim', explode(',', (string) $historico->roles))
+            ))));
+            $fila->cuentas = implode(', ', array_unique(array_filter(array_merge(
+                array_map('trim', explode(',', (string) $fila->cuentas)),
+                array_map('trim', explode(',', (string) $historico->cuentas))
+            ))));
+        }
+
+        return $this->listadosCanonicos[$claveCache] = $agrupados->values()
+            ->sort(static fn ($a, $b): int => strcasecmp((string) $a->nombre, (string) $b->nombre)
+                ?: ((int) ($a->cliente_id_operativo ?? 0)) <=> ((int) ($b->cliente_id_operativo ?? 0))
+                ?: ((int) $a->id) <=> ((int) $b->id))
+            ->values();
+    }
+
     public function listar(
         string $periodo,
         string $rol,
@@ -365,56 +464,214 @@ final class GeiCoreClienteService
         int $porPagina = 50,
         array $sedesPermitidas = []
     ): LengthAwarePaginator {
-        $rol = $this->rol($rol);
+        $filas = $this->filasPorClienteCanonico($periodo, $this->rol($rol), $sedesPermitidas);
         $estado = in_array($estado, ['activos', 'todos'], true) ? $estado : 'activos';
         $buscar = trim($buscar);
-        $prefijosSede = $this->prefijosCuentaPorSedes($sedesPermitidas);
+        if ($estado === 'activos') {
+            $filas = $filas->filter(static fn ($p): bool => (bool) $p->activo);
+        }
+        if ($buscar !== '') {
+            $buscar = mb_strtoupper($buscar, 'UTF-8');
+            $filas = $filas->filter(static function ($p) use ($buscar): bool {
+                $texto = mb_strtoupper(implode(' ', [
+                    (string) $p->nombre, (string) $p->nro_iva, (string) $p->nro_documento,
+                    (string) $p->domicilio, (string) $p->cuentas, (string) ($p->email ?? ''),
+                    implode(' ', $p->nombres_historicos ?? []),
+                ]), 'UTF-8');
 
-        $q = $this->core()->table('gei_core.personas_periodos as pp')
-            ->join('gei_core.personas as p', 'p.id', '=', 'pp.persona_id')
-            ->leftJoin('gei_core.personas_origenes as po', function ($join): void {
-                $join->on('po.persona_id', '=', 'pp.persona_id')
-                    ->on('po.rol', '=', 'pp.rol')
-                    ->on('po.periodo', '=', 'pp.periodo');
-            })
-            ->where('pp.periodo', $periodo)
-            ->when($rol !== 'TODOS', fn ($x) => $x->where('pp.rol', $rol))
-            ->when($estado === 'activos', fn ($x) => $x->where('pp.activo', true))
-            ->when($prefijosSede !== [], fn ($x) => $x->whereIn(
-                DB::raw("left(regexp_replace(coalesce(po.cuenta_cobol, ''), '[^0-9]', '', 'g'), 4)"),
-                $prefijosSede
-            ))
-            ->when($buscar !== '', function ($x) use ($buscar): void {
-                $like = '%'.$buscar.'%';
-                $x->where(function ($s) use ($like): void {
-                    $s->whereRaw("coalesce(p.nombre, '') ilike ?", [$like])
-                        ->orWhereRaw("coalesce(p.nro_iva, '') ilike ?", [$like])
-                        ->orWhereRaw("coalesce(p.nro_documento, '') ilike ?", [$like])
-                        ->orWhereRaw("coalesce(p.domicilio, '') ilike ?", [$like])
-                        ->orWhereRaw("coalesce(po.cuenta_cobol, '') ilike ?", [$like]);
-                });
-            })
-            ->groupBy([
-                'p.id', 'p.nombre', 'p.nro_iva', 'p.nro_documento',
-                'p.domicilio', 'p.localidad', 'p.provincia',
-            ])
-            ->selectRaw(
-                "p.id, p.nombre, p.nro_iva, p.nro_documento,
-                 p.domicilio, p.localidad, p.provincia,
-                 bool_or(pp.activo) as activo,
-                 string_agg(distinct pp.rol, ', ' order by pp.rol) as roles,
-                 string_agg(
-                    distinct po.cuenta_cobol,
-                    ', ' order by po.cuenta_cobol
-                 ) filter (where po.cuenta_cobol is not null) as cuentas"
-            )
-            ->orderByRaw('p.nombre nulls last')
-            ->orderBy('p.id');
+                return str_contains($texto, $buscar);
+            });
+        }
+        $filas = $filas->values();
+        $pagina = LengthAwarePaginator::resolveCurrentPage();
+        return (new LengthAwarePaginator(
+            $filas->forPage($pagina, max(1, $porPagina))->values(),
+            $filas->count(),
+            max(1, $porPagina),
+            $pagina,
+            ['path' => LengthAwarePaginator::resolveCurrentPath()]
+        ))->withQueryString();
+    }
 
-        $pagina = $q->paginate($porPagina)->withQueryString();
-        $this->adjuntarEmails($pagina->getCollection());
+    /**
+     * Snapshots inequívocamente asociados al cliente canónico en ESTE período
+     * y exclusivamente en las sedes habilitadas. Una cuenta de otro cliente
+     * nunca se incorpora al detalle por coincidencia de nombre o CUIT.
+     *
+     * @return array<int,int>
+     */
+    public function snapshotsDelCliente(int $clienteId, string $periodo, array $sedesPermitidas): array
+    {
+        $prefijos = $this->prefijosCuentaPorSedes($sedesPermitidas);
+        if ($prefijos === []) {
+            return [];
+        }
+        $cuentas = DB::table('clientes_cuentas as cc')
+            ->join('clientes as c', 'c.id', '=', 'cc.cliente_id')
+            ->whereRaw('coalesce(c.id_cliente_canonico, c.id) = ?', [$clienteId])
+            ->whereIn('cc.rol', ['PROPIETARIO', 'INQUILINO'])
+            ->get(['cc.rol', 'cc.cuenta']);
+        $claves = $cuentas->map(fn ($c): string => strtoupper(trim((string) $c->rol)).'|'.$this->normalizarCuenta((string) $c->cuenta))
+            ->filter(static fn ($clave): bool => ! str_ends_with($clave, '|'))
+            ->filter(static fn ($clave): bool => in_array(substr(explode('|', $clave, 2)[1], 0, 4), $prefijos, true))
+            ->unique()->values();
+        if ($claves->isEmpty()) {
+            return [];
+        }
+        $numeros = $claves->map(static fn ($clave): string => explode('|', $clave, 2)[1])->unique()->values()->all();
+        $filas = $this->core()->table('gei_core.personas_origenes as po')
+            ->join('gei_core.personas as p', 'p.id', '=', 'po.persona_id')
+            ->whereNull('p.fusionada_en_id')
+            ->where('po.periodo', $periodo)
+            ->whereIn('po.rol', ['PROPIETARIO', 'INQUILINO'])
+            ->whereIn(DB::raw("regexp_replace(coalesce(po.cuenta_cobol, ''), '[^0-9]', '', 'g')"), $numeros)
+            ->select('po.persona_id', 'po.rol', 'po.cuenta_cobol')
+            ->get();
+        $candidatos = $filas
+            ->filter(fn ($po): bool => $claves->contains(strtoupper(trim((string) $po->rol)).'|'.$this->normalizarCuenta((string) $po->cuenta_cobol)))
+            ->pluck('persona_id')->map(static fn ($id): int => (int) $id)
+            ->unique()->values();
 
-        return $pagina;
+        // El snapshot puede representar varias identidades operativas: esos
+        // casos se consultan sólo por su ficha histórica, nunca se agregan.
+        return $candidatos->filter(fn ($id): bool => $this->resolverClientesCanonicosIds($id) === [$clienteId])
+            ->values()->all();
+    }
+
+    /** Relación operativa exacta por rol + cuenta, limitada a sedes habilitadas. */
+    private function clavesCuentasDelCliente(int $clienteId, array $sedesPermitidas): Collection
+    {
+        $prefijos = $this->prefijosCuentaPorSedes($sedesPermitidas);
+        if ($prefijos === []) {
+            return collect();
+        }
+        return DB::table('clientes_cuentas as cc')
+            ->join('clientes as c', 'c.id', '=', 'cc.cliente_id')
+            ->whereRaw('coalesce(c.id_cliente_canonico, c.id) = ?', [$clienteId])
+            ->whereIn('cc.rol', ['PROPIETARIO', 'INQUILINO'])
+            ->get(['cc.rol', 'cc.cuenta'])
+            ->map(fn ($cc): string => strtoupper(trim((string) $cc->rol)).'|'.$this->normalizarCuenta((string) $cc->cuenta))
+            ->filter(static fn ($clave): bool => ! str_ends_with($clave, '|'))
+            ->filter(static fn ($clave): bool => in_array(substr(explode('|', $clave, 2)[1], 0, 4), $prefijos, true))
+            ->unique()->values();
+    }
+
+    /**
+     * Vista del cliente operativo con historial de todos sus snapshots
+     * inequívocos. No se fusionan los ledgers ni se modifican movimientos.
+     */
+    public function detalleCanonico(int $clienteId, int $personaPrincipal, string $periodo, string $tab, string $mes, array $sedesPermitidas): array
+    {
+        $ids = $this->snapshotsDelCliente($clienteId, $periodo, $sedesPermitidas);
+        abort_unless(in_array($personaPrincipal, $ids, true), 403);
+        // Mantener estable la URL histórica usada como ancla de esta ficha.
+        $ids = array_values(array_unique([$personaPrincipal, ...$ids]));
+        $cliente = DB::table('clientes')->where('id', $clienteId)->whereNull('id_cliente_canonico')->first();
+        abort_unless($cliente !== null, 404);
+
+        $partes = collect($ids)->map(fn ($id): array => $this->detalle($id, $periodo, $tab, $mes, $sedesPermitidas));
+        $combinado = $partes->first();
+        $persona = $combinado['persona'];
+        $persona->nombre = $cliente->nombre ?: $persona->nombre;
+        $persona->nro_iva = $cliente->cuit ?: $persona->nro_iva;
+        $persona->nro_documento = $cliente->numero_documento ?: $persona->nro_documento;
+        $persona->email = $cliente->email;
+        $persona->cliente_id_operativo = $clienteId;
+        $persona->clientes_operativos_ids = [$clienteId];
+        $combinado['persona'] = $persona;
+        $clavesPermitidas = $this->clavesCuentasDelCliente($clienteId, $sedesPermitidas);
+        $numerosPermitidos = $clavesPermitidas->map(static fn ($clave): string => explode('|', $clave, 2)[1])->unique();
+        $combinado['snapshots_ids'] = $ids;
+        $combinado['cliente_id_canonico'] = $clienteId;
+
+        foreach (['roles', 'cuentas', 'contratos', 'cuentasCorrientes', 'ultimosMovimientos',
+            'incidenciasFechasFuturas', 'liquidaciones', 'impuestos', 'facturas', 'arca'] as $campo) {
+            $unidos = $partes->flatMap(static fn ($d) => $d[$campo])->values();
+            if (in_array($campo, ['cuentas', 'cuentasCorrientes', 'ultimosMovimientos'], true)) {
+                $unidos = $unidos->filter(function ($x) use ($campo, $clavesPermitidas): bool {
+                    $rol = $campo === 'cuentasCorrientes' || $campo === 'ultimosMovimientos'
+                        ? (string) $x->tipo : (string) $x->rol;
+                    $numero = $this->normalizarCuenta((string) $x->cuenta_cobol);
+                    return $clavesPermitidas->contains(strtoupper(trim($rol)).'|'.$numero);
+                })->values();
+            }
+            if (in_array($campo, ['liquidaciones', 'impuestos'], true)) {
+                // liquidaciones() también busca por CUIT histórico: filtramos
+                // explícitamente por cuentas habilitadas para evitar mezclar sedes.
+                $unidos = $unidos->filter(fn ($x): bool => $numerosPermitidos->contains(
+                    $this->normalizarCuenta((string) ($x->cuenta ?? ''))
+                ))->values();
+            }
+            // Entidades con clave única se deduplican. Los movimientos no se
+            // deduplican por importe/fecha: dos cargos iguales pueden ser reales.
+            $clave = match ($campo) {
+                'roles' => static fn ($x): string => (string) $x->rol,
+                'cuentas' => static fn ($x): string => $x->rol.'|'.$x->cuenta_cobol,
+                'contratos' => static fn ($x): string => (string) $x->contrato_id.'|'.$x->periodo,
+                'cuentasCorrientes' => static fn ($x): string => $x->tipo.'|'.$x->cuenta_cobol,
+                'liquidaciones', 'impuestos', 'facturas' => static fn ($x): string => (string) ($x->id ?? spl_object_id($x)),
+                default => null,
+            };
+            $combinado[$campo] = $clave === null ? $unidos : $unidos->unique($clave)->values();
+        }
+        if ($tab === 'facturas') {
+            // kng_facturas no tiene id propio en la proyección usada para la
+            // ficha: consultamos una sola vez las cuentas canónicas permitidas.
+            $combinado['facturas'] = $this->facturasKng($numerosPermitidos->all(), $mes);
+        }
+        $combinado['roles'] = $combinado['roles']->filter(fn ($r): bool => $combinado['cuentas']
+            ->contains(static fn ($c): bool => $c->rol === $r->rol))->values();
+
+        // Los historiales están indexados por contrato y por inmueble.
+        foreach (['historialContratos', 'partidasPorInmueble'] as $campo) {
+            $conjunto = collect();
+            foreach ($partes as $parte) {
+                foreach ($parte[$campo] as $id => $filas) {
+                    $conjunto->put($id, $filas);
+                }
+            }
+            $combinado[$campo] = $conjunto;
+        }
+
+        return $combinado;
+    }
+
+    public function actividadCanonica(int $clienteId, string $periodo, string $tipo, string $mes, array $sedesPermitidas): Collection
+    {
+        $ids = $this->snapshotsDelCliente($clienteId, $periodo, $sedesPermitidas);
+        $claves = $this->clavesCuentasDelCliente($clienteId, $sedesPermitidas);
+        $numeros = $claves->map(static fn ($clave): string => explode('|', $clave, 2)[1])->unique()->values();
+        if ($tipo === 'facturas') {
+            return $this->facturasKng($numeros->all(), $mes);
+        }
+        $datos = collect($ids)->flatMap(fn ($id) => $this->actividad($id, $tipo, $mes, $sedesPermitidas))->values();
+        if ($tipo === 'cuenta-corriente') {
+            return $datos->filter(fn ($x): bool => $claves->contains(
+                strtoupper(trim((string) $x->tipo)).'|'.$this->normalizarCuenta((string) $x->cuenta_cobol)
+            ))->values();
+        }
+        return $datos->filter(fn ($x): bool => $numeros->contains(
+            $this->normalizarCuenta((string) ($x->cuenta ?? ''))
+        ))->unique(static fn ($x): string => (string) ($x->id ?? spl_object_id($x)))->values();
+    }
+
+    public function incidenciasCanonicas(int $clienteId, string $periodo, string $mes, array $sedesPermitidas): Collection
+    {
+        return collect($this->snapshotsDelCliente($clienteId, $periodo, $sedesPermitidas))
+            ->flatMap(fn ($id) => $this->incidenciasFechasFuturasMes($id, $mes, $sedesPermitidas))->values();
+    }
+
+    public function mesActividadCanonica(int $clienteId, string $periodo, string $tipo, string $mesPreferido, array $sedesPermitidas): string
+    {
+        $ids = $this->snapshotsDelCliente($clienteId, $periodo, $sedesPermitidas);
+        if ($ids === []) {
+            return $mesPreferido;
+        }
+        if ($this->actividadCanonica($clienteId, $periodo, $tipo, $mesPreferido, $sedesPermitidas)->isNotEmpty()) {
+            return $mesPreferido;
+        }
+        return collect($ids)->map(fn ($id): string => $this->resolverMesActividad($id, $tipo, $mesPreferido, $sedesPermitidas))
+            ->sortDesc()->first() ?: $mesPreferido;
     }
 
     /**

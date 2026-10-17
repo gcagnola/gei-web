@@ -48,16 +48,14 @@ final class GeiCoreClienteController extends Controller
         } elseif ($modo === 'historial') {
             $unificacion = app(UnificacionClientesService::class);
             $administracion = [
-                'ultimasUnificaciones' => $unificacion->ultimasUnificaciones(),
-                'revisionesCobolResueltas' => $unificacion->revisionesCobolResueltas(),
+                'unificacionesPaginadas' => $unificacion->unificacionesPaginadas(20),
+                'decisionesCobolPaginadas' => $unificacion->revisionesCobolResueltasPaginadas(20),
             ];
         }
 
-        $duplicados = $this->service->duplicadosActivos(
-            $periodo,
-            $modo === 'duplicados' ? $buscar : '',
-            $sedesPermitidas
-        );
+        $duplicados = $modo === 'duplicados'
+            ? $this->service->duplicadosActivos($periodo, $buscar, $sedesPermitidas)
+            : ['grupos' => [], 'total_grupos' => 0, 'total_personas' => 0];
 
         return view('core-clientes.index', [
             'periodos' => $this->service->periodos(),
@@ -97,8 +95,16 @@ final class GeiCoreClienteController extends Controller
             $tab = 'datos';
         }
 
+        $clienteCanonico = $request->integer('cliente');
+        if ($clienteCanonico > 0) {
+            abort_unless(in_array($persona, $this->service->snapshotsDelCliente(
+                $clienteCanonico, $periodo, $sedesPermitidas
+            ), true), 403);
+        }
         $mesActividad = in_array($tab, ['cuenta-corriente', 'liquidaciones', 'impuestos', 'facturas'], true)
-            ? $this->service->resolverMesActividad($persona, $tab, now()->format('Ym'), $sedesPermitidas)
+            ? ($clienteCanonico > 0
+                ? $this->service->mesActividadCanonica($clienteCanonico, $periodo, $tab, now()->format('Ym'), $sedesPermitidas)
+                : $this->service->resolverMesActividad($persona, $tab, now()->format('Ym'), $sedesPermitidas))
             : now()->format('Ym');
 
         return view('core-clientes.show', [
@@ -106,7 +112,10 @@ final class GeiCoreClienteController extends Controller
             'periodo' => $periodo,
             'tab' => $tab,
             'mesActividad' => $mesActividad,
-            'detalle' => $this->service->detalle($persona, $periodo, $tab, $mesActividad, $sedesPermitidas),
+            'clienteCanonico' => $clienteCanonico > 0 ? $clienteCanonico : null,
+            'detalle' => $clienteCanonico > 0
+                ? $this->service->detalleCanonico($clienteCanonico, $persona, $periodo, $tab, $mesActividad, $sedesPermitidas)
+                : $this->service->detalle($persona, $periodo, $tab, $mesActividad, $sedesPermitidas),
         ]);
     }
 
@@ -127,6 +136,12 @@ final class GeiCoreClienteController extends Controller
             'email.max' => 'El email no puede superar los 180 caracteres.',
         ]);
 
+        $clienteCanonico = $request->integer('cliente');
+        if ($clienteCanonico > 0) {
+            abort_unless(in_array($persona, $this->service->snapshotsDelCliente(
+                $clienteCanonico, $periodo, $sedesPermitidas
+            ), true), 403);
+        }
         $email = trim((string) ($data['email'] ?? ''));
         $this->service->actualizarEmail($persona, $email !== '' ? $email : null);
 
@@ -135,6 +150,7 @@ final class GeiCoreClienteController extends Controller
                 'persona' => $persona,
                 'periodo' => $periodo,
                 'tab' => 'datos',
+                'cliente' => $clienteCanonico ?: null,
             ])
             ->with('estado', 'El email del cliente fue actualizado.');
     }
@@ -160,9 +176,19 @@ final class GeiCoreClienteController extends Controller
             abort(422, 'Mes inválido.');
         }
 
-        $data = $this->service->actividad($persona, $tipo, $mes, $sedesPermitidas);
+        $clienteCanonico = $request->integer('cliente');
+        if ($clienteCanonico > 0) {
+            abort_unless(in_array($persona, $this->service->snapshotsDelCliente(
+                $clienteCanonico, $periodo, $sedesPermitidas
+            ), true), 403);
+        }
+        $data = $clienteCanonico > 0
+            ? $this->service->actividadCanonica($clienteCanonico, $periodo, $tipo, $mes, $sedesPermitidas)
+            : $this->service->actividad($persona, $tipo, $mes, $sedesPermitidas);
         $incidencias = $tipo === 'cuenta-corriente'
-            ? $this->service->incidenciasFechasFuturasMes($persona, $mes, $sedesPermitidas)
+            ? ($clienteCanonico > 0
+                ? $this->service->incidenciasCanonicas($clienteCanonico, $periodo, $mes, $sedesPermitidas)
+                : $this->service->incidenciasFechasFuturasMes($persona, $mes, $sedesPermitidas))
             : collect();
 
         return response(

@@ -178,12 +178,32 @@
                             </div>
                             <div class="small text-muted mt-1">{{ $presentacion[2] }}</div>
                             @if(($grupo['revision_estado'] ?? '') === 'VINCULO_INCOMPLETO')
+                                @php
+                                    $idsOperativosGrupo = collect($grupo['personas'])
+                                        ->flatMap(static fn ($persona): array => $persona->clientes_operativos_ids ?? [])
+                                        ->map(static fn ($id): int => (int) $id)
+                                        ->filter()
+                                        ->unique()
+                                        ->sort()
+                                        ->values()
+                                        ->all();
+                                @endphp
                                 <div class="small text-danger mt-2">
-                                    No se puede unificar desde esta vista: falta correspondencia inequívoca con el cliente operativo.
+                                    La correspondencia entre snapshots y clientes operativos no es unívoca.
+                                    Esto no es necesariamente un conflicto del importador; por eso puede no figurar en «Revisiones COBOL».
                                     @can('administrar-unificaciones')
-                                        <a href="{{ route('core-clientes.index', ['modo' => 'revisiones', 'buscar' => $grupo['titulo']]) }}">Revisar origen COBOL</a>.
+                                        @if(count($idsOperativosGrupo) === 2)
+                                            <a href="{{ route('archivo.unificacion.clientes.comparar', [
+                                                'principal' => $idsOperativosGrupo[0],
+                                                'secundario' => $idsOperativosGrupo[1],
+                                                'periodo' => $periodo,
+                                            ]) }}">Comparar clientes operativos #{{ $idsOperativosGrupo[0] }} y #{{ $idsOperativosGrupo[1] }}</a>.
+                                            <span class="text-muted">La comparación es de consulta; antes de unificar, verificar a qué titular pertenece cada cuenta.</span>
+                                        @else
+                                            <span class="text-muted">Revisar las cuentas COBOL y sus clientes operativos antes de tomar una decisión.</span>
+                                        @endif
                                     @else
-                                        Solicitar la revisión a un administrador.
+                                        Solicitar a un administrador la revisión de los vínculos entre cuentas y clientes.
                                     @endcan
                                 </div>
                             @elseif(!empty($grupo['pares_comparacion']))
@@ -291,10 +311,17 @@
                     </thead>
                     <tbody>
                     @forelse($clientes as $c)
-                        <tr style="cursor:pointer" onclick="window.location.href=@js(route('core-clientes.show',['persona'=>$c->id,'periodo'=>$periodo]))">
+                        <tr style="cursor:pointer" onclick="window.location.href=@js(route('core-clientes.show',['persona'=>$c->id,'periodo'=>$periodo,'cliente'=>$c->cliente_id_operativo ?? null]))">
                             <td>
                                 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
                                     <div class="fw-semibold">{{ $v($c->nombre) }}</div>
+                                @if(!empty($c->cliente_id_operativo))
+                                    <div class="small text-muted">Cliente #{{ $c->cliente_id_operativo }}@if(count($c->snapshots_ids ?? []) > 1) · {{ count($c->snapshots_ids) }} registros COBOL @endif</div>
+                                @elseif(count($c->clientes_operativos_ids ?? []) > 1)
+                                    <div class="small text-danger">Asociación operativa ambigua; consultar snapshot</div>
+                                @else
+                                    <div class="small text-muted">Snapshot COBOL sin asociación canónica</div>
+                                @endif
                                     <div class="d-flex flex-wrap align-items-center gap-1 ms-auto">
                                         @foreach($sedesDeCuentas($c->cuentas ?? '') as $sede)
                                             <span class="badge {{ $sede === 'SF' ? 'text-bg-primary' : 'text-bg-info' }}">{{ $sede }}</span>

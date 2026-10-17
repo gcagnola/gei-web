@@ -122,6 +122,9 @@
         </div>
         <form method="GET">
             <input type="hidden" name="tab" value="{{ $tab }}">
+            @if($clienteCanonico ?? null)
+                <input type="hidden" name="cliente" value="{{ $clienteCanonico }}">
+            @endif
             <select class="form-select" name="periodo" onchange="this.form.submit()">
                 @foreach($periodos as $per)
                     <option value="{{ $per['periodo'] }}" @selected($periodo===$per['periodo'])>{{ substr($per['periodo'],4,2) }}/{{ substr($per['periodo'],0,4) }}</option>
@@ -130,11 +133,19 @@
         </form>
     </div>
 
+    @if($clienteCanonico ?? null)
+        <div class="alert alert-light border py-2 small mb-3">
+            Cliente operativo <strong>#{{ $clienteCanonico }}</strong> ·
+            {{ count($detalle['snapshots_ids'] ?? []) }} registros históricos COBOL vinculados.
+            Se conservan las cuentas corrientes, movimientos y saldos por separado.
+        </div>
+    @endif
+
     <ul class="nav nav-tabs flex-nowrap overflow-auto mb-3">
         @foreach($tabs as $k=>$txt)
             <li class="nav-item">
                 <a class="nav-link text-nowrap {{ $tab===$k ? 'active':'' }}"
-                   href="{{ route('core-clientes.show',['persona'=>$p->id,'periodo'=>$periodo,'tab'=>$k]) }}">{{ $txt }}</a>
+                   href="{{ route('core-clientes.show',['persona'=>$p->id,'periodo'=>$periodo,'tab'=>$k,'cliente'=>$clienteCanonico ?? null]) }}">{{ $txt }}</a>
             </li>
         @endforeach
     </ul>
@@ -158,6 +169,9 @@
                             @csrf
                             @method('PUT')
                             <input type="hidden" name="periodo" value="{{ $periodo }}">
+                            @if($clienteCanonico ?? null)
+                                <input type="hidden" name="cliente" value="{{ $clienteCanonico }}">
+                            @endif
                             <input
                                 type="email"
                                 name="email"
@@ -456,7 +470,7 @@
 
         <div class="card border-0 shadow-sm"
              id="actividad-cliente"
-             data-url="{{ route('core-clientes.actividad', ['persona' => $p->id]) }}"
+             data-url="{{ route('core-clientes.actividad', ['persona' => $p->id, 'cliente' => $clienteCanonico ?? null, 'periodo' => $periodo]) }}"
              data-tipo="{{ $tab }}">
             <div class="card-header bg-white d-flex flex-wrap justify-content-between align-items-center gap-2">
                 <div>

@@ -1210,6 +1210,34 @@ final class UnificacionClientesService
             ->get();
     }
 
+    /**
+     * Decisiones manuales sobre orígenes COBOL: consulta completa,
+     * con paginación independiente del historial de unificaciones.
+     */
+    public function revisionesCobolResueltasPaginadas(int $porPagina = 20): LengthAwarePaginator
+    {
+        return DB::table('clientes_resoluciones_origen as cro')
+            ->leftJoin('clientes as c', 'c.id', '=', 'cro.cliente_id')
+            ->leftJoin('usuarios as u', 'u.id', '=', 'cro.usuario_id')
+            ->select([
+                'cro.id_cliente_resolucion_origen as id',
+                'cro.sistema_origen',
+                'cro.entidad_origen',
+                'cro.clave_origen',
+                'cro.decision',
+                'cro.cliente_id',
+                'cro.usuario_id',
+                'cro.detalle_json',
+                'cro.created_at',
+                'cro.updated_at',
+                'c.nombre as cliente_nombre',
+                'u.nombre as usuario_nombre',
+            ])
+            ->orderByDesc('cro.updated_at')
+            ->orderByDesc('cro.id_cliente_resolucion_origen')
+            ->paginate($porPagina, ['*'], 'decisiones_page');
+    }
+
     public function ultimasUnificaciones(): Collection
     {
         return DB::table('unificaciones as u')
@@ -1219,6 +1247,22 @@ final class UnificacionClientesService
             ->where('u.tipo', self::TIPO)
             ->select('u.*', 'us.nombre as usuario_nombre', 'p.nombre as principal_nombre', 's.nombre as absorbido_nombre')
             ->orderByDesc('u.id_unificacion')->limit(100)->get();
+    }
+
+    /**
+     * Historial completo de unificaciones de clientes, sin límite artificial.
+     * Página independiente de otras grillas de Clientes.
+     */
+    public function unificacionesPaginadas(int $porPagina = 20): LengthAwarePaginator
+    {
+        return DB::table('unificaciones as u')
+            ->leftJoin('usuarios as us', 'us.id', '=', 'u.id_usuario')
+            ->leftJoin('clientes as p', 'p.id', '=', 'u.id_registro_principal')
+            ->leftJoin('clientes as s', 's.id', '=', 'u.id_registro_absorbido')
+            ->where('u.tipo', self::TIPO)
+            ->select('u.*', 'us.nombre as usuario_nombre', 'p.nombre as principal_nombre', 's.nombre as absorbido_nombre')
+            ->orderByDesc('u.id_unificacion')
+            ->paginate($porPagina, ['*'], 'unificaciones_page');
     }
 
     private function consultaBaseListado(?string $estadoOrigenConflicto = null)
