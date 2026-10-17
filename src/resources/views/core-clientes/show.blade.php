@@ -153,6 +153,7 @@
                     <dt class="col-sm-4">Teléfono</dt><dd class="col-sm-8">{{ $v($p->telefono_1) }}</dd>
                     <dt class="col-sm-4">Email</dt>
                     <dd class="col-sm-8">
+                        @if($p->cliente_id_operativo !== null)
                         <form method="POST" action="{{ route('core-clientes.email.update', ['persona' => $p->id]) }}" class="d-flex flex-wrap gap-2 align-items-start">
                             @csrf
                             @method('PUT')
@@ -173,6 +174,18 @@
                         <x-portal-estado-cliente :cliente-id="$p->cliente_id_operativo" />
 
                         <div class="form-text">Es el único dato del cliente habilitado para modificación por ahora.</div>
+                        @else
+                            <div class="alert alert-warning py-2 mb-0 small">
+                                @if(count($p->clientes_operativos_ids ?? []) > 1)
+                                    Este registro histórico COBOL está asociado a varios clientes operativos:
+                                    #{{ implode(', #', $p->clientes_operativos_ids) }}.
+                                @else
+                                    Este registro histórico COBOL no tiene un cliente operativo asociado de forma inequívoca.
+                                @endif
+                                Se permite consultar los datos históricos, pero no modificar el email ni gestionar
+                                la autogestión hasta resolver la correspondencia en el maestro de Clientes.
+                            </div>
+                        @endif
                     </dd>
                 </dl>
             </div></div></div>

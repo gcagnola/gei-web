@@ -9,72 +9,90 @@
 @endphp
 
 @if($tipo === 'cuenta-corriente')
-    <div class="table-responsive">
-        <table class="table table-sm table-hover align-middle mb-0">
-            <thead class="table-light"><tr><th>Fecha</th><th>Tipo</th><th>Cuenta</th><th>Concepto</th><th>Descripción</th><th class="text-end">Debe</th><th class="text-end">Haber</th></tr></thead>
-            <tbody>
-            @forelse($data as $m)
-                <tr>
-                    <td>{{ $fechaCobolActividad($m->fecha_original) }}</td>
-                    <td>{{ $m->tipo }}</td>
-                    <td>{{ $m->cuenta_cobol }}</td>
-                    <td>
-                        @php
-                            $tieneConceptoContable = ! empty($m->concepto_descripcion);
-                            $contabilidadCompleta = (bool) ($m->contabilidad_completa ?? false);
-                            $tooltipContable = ! empty($m->contabilidad_tooltip)
-                                ? $m->contabilidad_tooltip
-                                : ($tieneConceptoContable
-                                    ? 'Concepto identificado, pero la imputación Caja/contable no está completa.'
-                                    : null);
-                        @endphp
-                        <div
-                            @if($tooltipContable)
-                                title="{{ $tooltipContable }}"
-                                style="cursor: help"
-                            @endif
-                        >
-                            <span class="fw-semibold">{{ $m->codigo }}</span>
-                            @if($tieneConceptoContable)
-                                <span class="ms-1">{{ $m->concepto_descripcion }}</span>
-                                <span
-                                    class="ms-1 {{ $contabilidadCompleta ? 'text-primary' : 'text-danger' }}"
-                                    aria-label="{{ $contabilidadCompleta ? 'Imputación contable completa' : 'Imputación contable incompleta' }}"
-                                >ⓘ</span>
-                            @endif
-                        </div>
-                        <div class="small text-muted">{{ $m->numero }}</div>
-                    </td>
-                    <td>{{ ($m->descripcion === null || trim((string)$m->descripcion) === '') ? '—' : $m->descripcion }}</td>
-                    <td class="text-end">{{ (float)($m->debe ?? 0) != 0.0 ? $moneyActividad($m->debe) : '—' }}</td>
-                    <td class="text-end">{{ (float)($m->haber ?? 0) != 0.0 ? $moneyActividad($m->haber) : '—' }}</td>
-                </tr>
-            @empty
-                <tr><td colspan="7" class="text-center text-muted py-4">Sin movimientos en este mes.</td></tr>
-            @endforelse
-            </tbody>
-            @if(collect($data)->isNotEmpty())
-                <tfoot class="table-light fw-semibold">
-                    @php
-                        $totalDebeActividad = collect($data)->sum(fn ($m) => (float)($m->debe ?? 0));
-                        $totalHaberActividad = collect($data)->sum(fn ($m) => (float)($m->haber ?? 0));
-                        $saldoActividad = $totalHaberActividad - $totalDebeActividad;
-                    @endphp
-                    <tr>
-                        <td colspan="5" class="text-end">Totales</td>
-                        <td class="text-end">{{ $moneyActividad($totalDebeActividad) }}</td>
-                        <td class="text-end">{{ $moneyActividad($totalHaberActividad) }}</td>
-                    </tr>
-                    <tr>
-                        <td colspan="5" class="text-end">Saldo</td>
-                        <td colspan="2" class="text-end">
-                            {{ ($saldoActividad >= 0 ? '+ ' : '- ').$moneyActividad(abs($saldoActividad)) }}
-                        </td>
-                    </tr>
-                </tfoot>
-            @endif
-        </table>
-    </div>
+    @php
+        // La unificación de identidades NO unifica los ledgers: cada rol+cuenta COBOL
+        // conserva sus movimientos y sus totales por separado.
+        $movimientosPorCuenta = collect($data)
+            ->groupBy(static fn ($m): string => strtoupper(trim((string) ($m->tipo ?? '')))
+                .'|'.(preg_replace('/\D+/', '', (string) ($m->cuenta_cobol ?? '')) ?: trim((string) ($m->cuenta_cobol ?? ''))))
+            ->sortKeys();
+    @endphp
+
+    @forelse($movimientosPorCuenta as $movimientosCuenta)
+        @php
+            $primerMovimiento = $movimientosCuenta->first();
+            $totalDebeCuenta = $movimientosCuenta->sum(static fn ($m): float => (float) ($m->debe ?? 0));
+            $totalHaberCuenta = $movimientosCuenta->sum(static fn ($m): float => (float) ($m->haber ?? 0));
+            $diferenciaMesCuenta = $totalHaberCuenta - $totalDebeCuenta;
+        @endphp
+        <section class="border rounded mb-3" aria-label="Cuenta corriente {{ $primerMovimiento->cuenta_cobol }}">
+            <div class="bg-light border-bottom px-3 py-2 d-flex flex-wrap justify-content-between align-items-center gap-2">
+                <div class="fw-semibold">
+                    {{ $primerMovimiento->tipo }} · Cuenta {{ $primerMovimiento->cuenta_cobol }}
+                </div>
+                <div class="small text-muted">
+                    {{ number_format($movimientosCuenta->count(), 0, ',', '.') }} movimientos en {{ substr($mes,4,2) }}/{{ substr($mes,0,4) }}
+                </div>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-sm table-hover align-middle mb-0">
+                    <thead class="table-light"><tr><th>Fecha</th><th>Concepto</th><th>Descripción</th><th class="text-end">Debe</th><th class="text-end">Haber</th></tr></thead>
+                    <tbody>
+                    @foreach($movimientosCuenta as $m)
+                        <tr>
+                            <td>{{ $fechaCobolActividad($m->fecha_original) }}</td>
+                            <td>
+                                @php
+                                    $tieneConceptoContable = ! empty($m->concepto_descripcion);
+                                    $contabilidadCompleta = (bool) ($m->contabilidad_completa ?? false);
+                                    $tooltipContable = ! empty($m->contabilidad_tooltip)
+                                        ? $m->contabilidad_tooltip
+                                        : ($tieneConceptoContable
+                                            ? 'Concepto identificado, pero la imputación Caja/contable no está completa.'
+                                            : null);
+                                @endphp
+                                <div
+                                    @if($tooltipContable)
+                                        title="{{ $tooltipContable }}"
+                                        style="cursor: help"
+                                    @endif
+                                >
+                                    <span class="fw-semibold">{{ $m->codigo }}</span>
+                                    @if($tieneConceptoContable)
+                                        <span class="ms-1">{{ $m->concepto_descripcion }}</span>
+                                        <span
+                                            class="ms-1 {{ $contabilidadCompleta ? 'text-primary' : 'text-danger' }}"
+                                            aria-label="{{ $contabilidadCompleta ? 'Imputación contable completa' : 'Imputación contable incompleta' }}"
+                                        >ⓘ</span>
+                                    @endif
+                                </div>
+                                <div class="small text-muted">{{ $m->numero }}</div>
+                            </td>
+                            <td>{{ ($m->descripcion === null || trim((string)$m->descripcion) === '') ? '—' : $m->descripcion }}</td>
+                            <td class="text-end">{{ (float)($m->debe ?? 0) != 0.0 ? $moneyActividad($m->debe) : '—' }}</td>
+                            <td class="text-end">{{ (float)($m->haber ?? 0) != 0.0 ? $moneyActividad($m->haber) : '—' }}</td>
+                        </tr>
+                    @endforeach
+                    </tbody>
+                    <tfoot class="table-light fw-semibold">
+                        <tr>
+                            <td colspan="3" class="text-end">Totales del mes (esta cuenta)</td>
+                            <td class="text-end">{{ $moneyActividad($totalDebeCuenta) }}</td>
+                            <td class="text-end">{{ $moneyActividad($totalHaberCuenta) }}</td>
+                        </tr>
+                        <tr>
+                            <td colspan="3" class="text-end">Diferencia del mes (Haber − Debe)</td>
+                            <td colspan="2" class="text-end">
+                                {{ ($diferenciaMesCuenta >= 0 ? '+ ' : '- ').$moneyActividad(abs($diferenciaMesCuenta)) }}
+                            </td>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+        </section>
+    @empty
+        <div class="text-center text-muted py-4">Sin movimientos en este mes.</div>
+    @endforelse
 
     @php
         $incidenciasActividad = collect($incidencias ?? []);

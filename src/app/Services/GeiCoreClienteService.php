@@ -472,13 +472,13 @@ final class GeiCoreClienteService
     }
 
     /**
-     * Actualiza el email del cliente operativo canónico vinculado a una persona GeI-Core.
+     * Identidades operativas vinculadas por cuentas COBOL y rol.
+     * Para consultas historicas, una asociacion ambigua no es un error:
+     * se muestran los candidatos, sin elegir arbitrariamente un cliente.
      *
-     * La pantalla de clientes-core trabaja con gei_core.personas, mientras que el email
-     * pertenece al maestro operativo public.clientes. La vinculación se resuelve por las
-     * cuentas COBOL compartidas entre gei_core.personas_cuentas_cobol y clientes_cuentas.
+     * @return array<int, int>
      */
-    private function resolverClienteCanonicoId(int $personaId): ?int
+    private function resolverClientesCanonicosIds(int $personaId): array
     {
         $cuentas = collect($this->core()->select(
             "select rol, cuenta_cobol
@@ -516,18 +516,7 @@ final class GeiCoreClienteService
             ->unique()
             ->values();
 
-        if ($clienteIds->isEmpty()) {
-            return null;
-        }
-
-        if ($clienteIds->count() > 1) {
-            throw new RuntimeException(
-                'La persona GeI-Core está vinculada a más de un cliente operativo: '.
-                $clienteIds->implode(', ').'.'
-            );
-        }
-
-        return $clienteIds->first();
+        return $clienteIds->all();
     }
 
     public function actualizarEmail(int $personaId, ?string $email): void
@@ -614,7 +603,9 @@ final class GeiCoreClienteService
             throw new RuntimeException('No existe el cliente GeI-Core solicitado.');
         }
 
-        $clienteId = $this->resolverClienteCanonicoId($personaId);
+        $clientesOperativosIds = $this->resolverClientesCanonicosIds($personaId);
+        $clienteId = count($clientesOperativosIds) === 1 ? $clientesOperativosIds[0] : null;
+        $persona->clientes_operativos_ids = $clientesOperativosIds;
         $persona->cliente_id_operativo = $clienteId;
         $persona->email = $clienteId !== null
             ? DB::table('clientes')->where('id', $clienteId)->value('email')
