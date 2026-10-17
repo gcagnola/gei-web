@@ -534,9 +534,11 @@ def parse_receipt(texto: str) -> Receipt:
     )
     r.total = total_debitos - total_creditos
 
-    # El COBOL puede truncar el importe en letras por el ancho del spool.
-    # Para el PDF moderno lo regeneramos siempre desde el saldo calculado.
-    r.amount_words = importe_pesos_a_letras(r.total)
+    # El total conserva su signo como efecto neto sobre la cuenta corriente
+    # (débitos menos créditos), pero NO es el importe firmado del documento.
+    # El COBOL puede truncar las letras por el ancho del spool: se regeneran
+    # usando la magnitud del comprobante, sin "MENOS" por ser un crédito.
+    r.amount_words = importe_pesos_a_letras(abs(r.total))
 
     r.footer = ('Sr.Inquilino: Ud puede abonar tambien sus alquileres por '
                 'transferencias o depositos bancarios. Consultenos.')
@@ -761,17 +763,31 @@ def draw_receipt_page_body(c, r: Receipt, page: ReceiptPage, y_start: float, hal
         txt(c, LEFT, footer_y, r.footer, 5.2, 'Helvetica', MUTED)
         return
 
-    # Última página: texto en letras y saldo definitivo.
+    # Última página: importe del comprobante, no saldo acumulado de la cuenta.
+    # Se conserva r.total con signo para la lógica interna (Debe - Haber).
+    # La representación del recibo expresa la magnitud del importe en positivo.
     words = normalize_spaces(r.amount_words)
     if words:
         txt(c, LEFT, max(half_bottom + 15*mm, y - 1.5*mm), ('Son: ' + words)[:180], 5.8, 'Helvetica-Bold')
 
+    suma_debitos = sum((item.amount for item in r.items if item.movimiento == 'DEBITO'), Decimal('0'))
+    suma_creditos = sum((item.amount for item in r.items if item.movimiento == 'CREDITO'), Decimal('0'))
+    if suma_debitos and suma_creditos:
+        etiqueta_total = 'NETO DÉBITOS' if r.total > 0 else ('NETO CRÉDITOS' if r.total < 0 else 'NETO')
+    elif suma_creditos:
+        etiqueta_total = 'TOTAL CRÉDITOS'
+    elif suma_debitos:
+        etiqueta_total = 'TOTAL DÉBITOS'
+    else:
+        etiqueta_total = 'TOTAL DOCUMENTO'
+
     total_y = half_bottom + 9.5*mm
-    panel_w = 46*mm
+    # Ancho suficiente para la etiqueta completa y el importe a la derecha.
+    panel_w = 66*mm
     c.setFillColor(LAV2)
     c.rect(RIGHT - panel_w, total_y - 5.5*mm, panel_w, 8*mm, fill=1, stroke=0)
-    txt(c, RIGHT - panel_w + 4*mm, total_y - 2.5*mm, 'SALDO', 8.0, 'Helvetica-Bold')
-    txt(c, RIGHT - 3*mm, total_y - 2.5*mm, '$ ' + fmt_monto(r.total), 10.0, 'Helvetica-Bold', align='right')
+    txt(c, RIGHT - panel_w + 4*mm, total_y - 2.5*mm, etiqueta_total, 8.0, 'Helvetica-Bold')
+    txt(c, RIGHT - 3*mm, total_y - 2.5*mm, '$ ' + fmt_monto(abs(r.total)), 10.0, 'Helvetica-Bold', align='right')
     txt(c, LEFT, half_bottom + 5.0*mm, r.footer, 5.2, 'Helvetica', MUTED)
 
 def draw_receipt_half_page(c, r: Receipt, page: ReceiptPage, y_top: float, half_bottom: float, label: str, logo: Path | None):

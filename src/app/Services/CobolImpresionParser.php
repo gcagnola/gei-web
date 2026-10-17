@@ -98,7 +98,9 @@ class CobolImpresionParser
 
     private function pareceReciboLiquidacion(string $texto): bool
     {
-        return str_contains($texto, 'D E B I T O S')
+        // El comprobante COBOL puede contener D E B I T O S o C R E D I T O S.
+        // Ambos usan la misma estructura de recibo, incluso en copias paralelas.
+        return (str_contains($texto, 'D E B I T O S') || str_contains($texto, 'C R E D I T O S'))
             && preg_match('/\b[0-9]{4}\/[0-9]{5}\/[0-9]{2}\b/', $texto) === 1
             && preg_match('/\bPESOS\b/', $texto) === 1;
     }
