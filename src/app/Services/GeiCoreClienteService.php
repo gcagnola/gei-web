@@ -1486,12 +1486,9 @@ final class GeiCoreClienteService
     }
 
     /**
-     * Movimientos del período importado cuyo movimiento o vencimiento apunta
-     * a un mes posterior. Se atan al período de origen, no al mes futuro:
-     *
-     * - al mirar 09/2026 muestra incidencias cargadas con periodo_origen=202609;
-     * - al mirar 11/2026 no muestra las incidencias originadas en septiembre;
-     * - al mirar 06/2026 tampoco.
+     * Incidencias por fecha inválida del período importado.
+     * Se atan al período de origen y no alteran los movimientos de cuenta.
+     * Los JSON antiguos pueden incluir fechas futuras válidas: se ignoran.
      */
     public function incidenciasFechasFuturasMes(int $personaId, string $mes, array $sedesPermitidas = []): Collection
     {
@@ -1587,8 +1584,11 @@ $futuras = [];
                 ];
             });
 
+        // Los vencimientos futuros válidos se excluyen de las advertencias.
+        // Conservamos las fechas inválidas de los JSON históricos.
         $incidencias = $futuras
             ->concat($invalidas)
+            ->filter(fn (object $incidencia): bool => $this->esIncidenciaFechaRelevanteInqctacte($incidencia))
             ->sortBy([
                 ['cuenta_cobol', 'asc'],
                 ['linea', 'asc'],
@@ -1634,6 +1634,16 @@ $futuras = [];
 
             return $incidencia;
         });
+    }
+
+    /**
+     * Una fecha de vencimiento posterior no invalida un movimiento ni un pago.
+     * Sólo se muestran fechas inválidas previamente identificadas en origen.
+     * No hay exclusiones por código: 05 y 23 se validan igual que los demás.
+     */
+    private function esIncidenciaFechaRelevanteInqctacte(object $incidencia): bool
+    {
+        return ($incidencia->tipo_incidencia ?? '') === 'FECHA_INVALIDA';
     }
 
     private function movimientosMes(int $personaId, string $mes, array $sedesPermitidas = []): Collection
@@ -1784,19 +1794,27 @@ $futuras = [];
 
             $movimiento->concepto_descripcion = $concepto?->descripcion;
 
-            // La cuenta corriente COBOL no guarda Debe/Haber como columnas separadas
-            // en gei_core. Conservamos la regla histórica usada por el importador:
-            //   PROP: códigos 00-20 = Haber; 21 en adelante = Debe.
-            //   INQ : el signo del importe define Debe (+) / Haber (-).
-            // La presentación siempre muestra el valor absoluto en la columna correspondiente.
+            // En INQCTACTE la naturaleza del movimiento la define el concepto:
+            //   códigos 00-50 = débito; códigos 51-99 = crédito (GIMB38/GIMB138).
+            // El signo del importe indica una corrección/reversión de la naturaleza
+            // normal; NO convierte por sí solo un pago positivo (código 90) en débito.
+            // PROP mantiene su clasificación existente para no alterar ese módulo.
             $importe = (float) ($movimiento->importe ?? 0);
             if ($dominio === 'PROP') {
                 $esDebe = ((int) $codigo) >= 21;
                 $movimiento->debe = $esDebe ? abs($importe) : 0.0;
                 $movimiento->haber = $esDebe ? 0.0 : abs($importe);
             } elseif ($dominio === 'INQ') {
-                $movimiento->debe = $importe >= 0 ? abs($importe) : 0.0;
-                $movimiento->haber = $importe < 0 ? abs($importe) : 0.0;
+                // Si el código no es numérico, no asumimos una naturaleza por código.
+                // Se conserva la clasificación anterior sólo para registros anómalos.
+                $esDebe = ctype_digit($codigo)
+                    ? ((int) $codigo) <= 50
+                    : $importe >= 0;
+                if ($importe < 0 && ctype_digit($codigo)) {
+                    $esDebe = ! $esDebe;
+                }
+                $movimiento->debe = $esDebe ? abs($importe) : 0.0;
+                $movimiento->haber = $esDebe ? 0.0 : abs($importe);
             } else {
                 $movimiento->debe = 0.0;
                 $movimiento->haber = 0.0;

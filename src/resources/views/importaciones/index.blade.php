@@ -207,9 +207,9 @@
                 ], $periodo['tablas'] ?? []);
                 $progresoPeriodo = $periodo['progreso'] ?? [];
                 $incidenciasPeriodo = $periodo['incidencias'] ?? [];
-                $fechasFuturas = $incidenciasPeriodo['fechas_futuras_inqctacte'] ?? [];
+                $incidenciasFechas = $incidenciasPeriodo['fechas_invalidas_inqctacte'] ?? [];
                 $tieneResumen = ($progresoPeriodo['estado'] ?? null) === 'FINALIZADO';
-                $tieneIncidencias = count($fechasFuturas) > 0;
+                $tieneIncidencias = count($incidenciasFechas) > 0;
             @endphp
             <div class="gei-periodo">
                 <div class="gei-periodo__encabezado">
@@ -367,7 +367,7 @@
                         <summary class="gei-periodo__summary">
                             Ver resumen e incidencias
                             @if ($tieneIncidencias)
-                                <span class="badge text-bg-warning">{{ count($fechasFuturas) }}</span>
+                                <span class="badge text-bg-warning">{{ count($incidenciasFechas) }}</span>
                             @endif
                         </summary>
 
@@ -397,10 +397,12 @@
                             @if ($tieneIncidencias)
                                 <h3 class="h6 mb-2">
                                     Incidencias informativas
-                                    <span class="badge text-bg-warning">{{ count($fechasFuturas) }}</span>
+                                    <span class="badge text-bg-warning">{{ count($incidenciasFechas) }}</span>
                                 </h3>
                                 <p class="small text-muted mb-2">
-                                    No bloquearon la importación. Se muestran para revisión.
+                                    Se informan únicamente fechas de movimiento o vencimiento inválidas.
+                                    Los vencimientos futuros válidos, incluidos los de pagos, no son incidencias.
+                                    No bloquearon la importación.
                                 </p>
 
                                 <div class="table-responsive">
@@ -410,22 +412,36 @@
                                                 <th>Línea</th>
                                                 <th>Cuenta COBOL</th>
                                                 <th>Nº COBOL</th>
+                                                <th>Concepto</th>
                                                 <th>Fecha mov.</th>
-                                                <th>Vencimiento futuro</th>
+                                                <th>Vencimiento COBOL</th>
+                                                <th>Motivo</th>
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            @foreach ($fechasFuturas as $incidencia)
+                                            @foreach ($incidenciasFechas as $incidencia)
                                                 @php
                                                     $fm = $incidencia['fecha_movimiento'] ?? null;
                                                     $fv = $incidencia['fecha_vencimiento'] ?? null;
+                                                    $codigoConcepto = trim((string) ($incidencia['codigo'] ?? ''));
+                                                    $codigoConcepto = $codigoConcepto !== '' ? str_pad($codigoConcepto, 2, '0', STR_PAD_LEFT) : '';
+                                                    $descripcionConcepto = $codigoConcepto !== ''
+                                                        ? trim((string) ($conceptosInquilinos[$codigoConcepto] ?? ''))
+                                                        : '';
                                                 @endphp
                                                 <tr>
                                                     <td>{{ $incidencia['linea'] ?? '—' }}</td>
                                                     <td>{{ $incidencia['cuenta_cobol'] ?? '—' }}</td>
                                                     <td>{{ $incidencia['numero_cobol'] ?? '—' }}</td>
-                                                    <td>{{ $fm && strlen($fm) === 8 ? substr($fm, 6, 2).'/'.substr($fm, 4, 2).'/'.substr($fm, 0, 4) : ($fm ?? '—') }}</td>
-                                                    <td>{{ $fv && strlen($fv) === 8 ? substr($fv, 6, 2).'/'.substr($fv, 4, 2).'/'.substr($fv, 0, 4) : ($fv ?? '—') }}</td>
+                                                    <td>
+                                                        <span class="fw-semibold">{{ $codigoConcepto !== '' ? $codigoConcepto : '—' }}</span>
+                                                        @if ($codigoConcepto !== '')
+                                                            <span class="text-muted">— {{ $descripcionConcepto !== '' ? $descripcionConcepto : 'Sin descripción en Conceptos' }}</span>
+                                                        @endif
+                                                    </td>
+                                                    <td>{{ $fm && strlen($fm) === 8 && ctype_digit($fm) && checkdate((int) substr($fm, 4, 2), (int) substr($fm, 6, 2), (int) substr($fm, 0, 4)) && (int) substr($fm, 0, 4) >= 2000 && (int) substr($fm, 0, 4) <= 2100 ? substr($fm, 6, 2).'/'.substr($fm, 4, 2).'/'.substr($fm, 0, 4) : ($fm ?: '—') }}</td>
+                                                    <td>{{ $fv && strlen($fv) === 8 && ctype_digit($fv) && checkdate((int) substr($fv, 4, 2), (int) substr($fv, 6, 2), (int) substr($fv, 0, 4)) && (int) substr($fv, 0, 4) >= 2000 && (int) substr($fv, 0, 4) <= 2100 ? substr($fv, 6, 2).'/'.substr($fv, 4, 2).'/'.substr($fv, 0, 4) : ($fv ?: '—') }}</td>
+                                                    <td class="text-danger small">{{ $incidencia['motivo'] ?? 'Fecha inválida' }}</td>
                                                 </tr>
                                             @endforeach
                                         </tbody>

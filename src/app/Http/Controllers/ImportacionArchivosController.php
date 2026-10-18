@@ -14,6 +14,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\View\View;
 use ZipArchive;
@@ -68,6 +69,12 @@ class ImportacionArchivosController extends Controller
         return view('importaciones.index', [
             'periodos' => $this->periodosImportaciones($migracion, $transformacion),
             'meses' => $this->mesesFormulario(),
+            // INQCTACTE: buscar descripciones del catálogo canónico de conceptos
+            // en una sola consulta, sin alterar las incidencias almacenadas.
+            'conceptosInquilinos' => DB::table('conceptos')
+                ->where('dominio', 'INQ')
+                ->pluck('descripcion', 'codigo')
+                ->all(),
             'kng' => $kngService->estado(),
         ]);
     }
@@ -107,7 +114,7 @@ class ImportacionArchivosController extends Controller
         $cobol = [];
         $liquidaciones = [];
         $rechazados = [];
-        $fechasPosteriores = [];
+        $fechasInvalidas = [];
 
         try {
             foreach ($request->file('archivos', []) as $archivo) {
@@ -146,15 +153,12 @@ class ImportacionArchivosController extends Controller
                 if ($clasificacion['tipo'] === 'cobol') {
                     $cobol[] = $entrada;
 
-                    // INQCTACTE puede contener vencimientos posteriores al período.
-                    // Es sólo una advertencia: nunca bloquea la carga.
+                    // La fecha de vencimiento tiene semántica de obligación en COBOL;
+                    // no se compara con el mes ni con el día del pago.
                     if ($entrada['nombre'] === 'INQCTACTE.TXT') {
-                        $fechasPosteriores = array_merge(
-                            $fechasPosteriores,
-                            $this->detectarVencimientosPosterioresInqctacte(
-                                $entrada['ruta'],
-                                $periodoManual
-                            )
+                        $fechasInvalidas = array_merge(
+                            $fechasInvalidas,
+                            $this->detectarFechasInvalidasInqctacte($entrada['ruta'])
                         );
                     }
 
@@ -176,33 +180,35 @@ class ImportacionArchivosController extends Controller
 
             $advertenciaFechas = null;
 
-            if ($fechasPosteriores !== []) {
-                $cantidad = count($fechasPosteriores);
-                $muestra = collect($fechasPosteriores)
+            if ($fechasInvalidas !== []) {
+                $cantidad = count($fechasInvalidas);
+                $muestra = collect($fechasInvalidas)
                     ->take(10)
                     ->map(function (array $item): string {
                         return sprintf(
-                            'cuenta %s, Nº COBOL %s, línea %d, venc. %s',
+                            'cuenta %s, concepto %s, Nº COBOL %s, línea %d: %s (mov. %s, venc. %s)',
                             $item['cuenta_cobol'],
+                            $item['codigo'],
                             $item['numero_cobol'],
                             $item['linea'],
+                            $item['motivo'],
+                            $this->formatearFechaCobol($item['fecha_movimiento']),
                             $this->formatearFechaCobol($item['fecha_vencimiento'])
                         );
                     })
                     ->implode('; ');
 
                 $advertenciaFechas = sprintf(
-                    'Advertencia: INQCTACTE.TXT contiene %d registro(s) con vencimiento posterior a %s. %s%s La importación continuó normalmente.',
+                    'Advertencia: INQCTACTE.TXT contiene %d fecha(s) inválida(s). %s%s La importación continuó normalmente.',
                     $cantidad,
-                    $this->etiquetaPeriodo($periodo),
                     $muestra,
                     $cantidad > 10 ? '; y '.($cantidad - 10).' más (ver laravel.log).' : '.'
                 );
 
-                Log::warning('INQCTACTE con vencimientos posteriores al período importado', [
+                Log::warning('INQCTACTE con fechas inválidas', [
                     'periodo_seleccionado' => $periodo,
                     'cantidad' => $cantidad,
-                    'registros' => $fechasPosteriores,
+                    'registros' => $fechasInvalidas,
                 ]);
             }
 
@@ -229,7 +235,7 @@ class ImportacionArchivosController extends Controller
             }
 
             $this->guardarIncidenciasImportacion($periodo, [
-                'fechas_futuras_inqctacte' => $fechasPosteriores,
+                'fechas_invalidas_inqctacte' => $fechasInvalidas,
             ]);
 
             Log::info('Importación de archivos GeI completada', [
@@ -801,6 +807,16 @@ class ImportacionArchivosController extends Controller
                 $progreso = $this->leerJsonStorage($this->rutaProgreso($periodo));
                 $incidencias = $this->leerJsonStorage($this->rutaIncidencias($periodo));
 
+                // Compatibilidad: los JSON históricos pueden contener vencimientos futuros
+                // válidos. No se reescriben; simplemente dejan de ser incidencias.
+                $incidencias['fechas_futuras_inqctacte'] = [];
+                $incidencias['fechas_invalidas_inqctacte'] = array_values(array_filter(
+                    is_array($incidencias['fechas_invalidas_inqctacte'] ?? null)
+                        ? $incidencias['fechas_invalidas_inqctacte'] : [],
+                    fn ($item): bool => is_array($item) && $this->esFechaInvalidaRelevanteInqctacte($item)
+                ));
+                $incidencias['total'] = count($incidencias['fechas_invalidas_inqctacte']);
+
                 return [
                     'periodo' => $periodo,
                     'etiqueta' => $this->etiquetaPeriodo($periodo),
@@ -837,15 +853,16 @@ class ImportacionArchivosController extends Controller
 
     private function guardarIncidenciasImportacion(string $periodo, array $incidencias): void
     {
-        $fechasFuturas = array_values($incidencias['fechas_futuras_inqctacte'] ?? []);
+        $fechasInvalidas = array_values($incidencias['fechas_invalidas_inqctacte'] ?? []);
 
         Storage::put(
             $this->rutaIncidencias($periodo),
             json_encode([
                 'periodo' => $periodo,
                 'actualizado_at' => now()->toIso8601String(),
-                'total' => count($fechasFuturas),
-                'fechas_futuras_inqctacte' => $fechasFuturas,
+                'total' => count($fechasInvalidas),
+                'fechas_futuras_inqctacte' => [], // compatibilidad con lectores anteriores
+                'fechas_invalidas_inqctacte' => $fechasInvalidas,
             ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES).PHP_EOL
         );
     }
@@ -928,30 +945,18 @@ class ImportacionArchivosController extends Controller
     }
 
     /**
-     * Busca vencimientos posteriores al período seleccionado en INQCTACTE.TXT.
-     * Es sólo informativo: nunca bloquea la importación.
+     * Sólo registra fechas realmente inválidas en INQCTACTE.
+     * La fecha de vencimiento de un crédito/pago no es la fecha de pago.
+     * Un vencimiento válido posterior al movimiento no es una incidencia.
+     * Ceros o blancos en vencimiento expresan ausencia de vencimiento.
+     * Se validan fechas de todos los conceptos, sin excepciones por código.
      *
-     * Layout COBOL:
-     *   0..10  cuenta
-     *  11..18  fecha movimiento
-     *  19..20  código
-     *  21..26  número COBOL
-     *  27..34  fecha vencimiento
-     *
-     * @return list<array{
-     *   linea:int,
-     *   cuenta_cobol:string,
-     *   fecha_movimiento:string,
-     *   codigo:string,
-     *   numero_cobol:string,
-     *   fecha_vencimiento:string,
-     *   periodo_vencimiento:string
-     * }>
+     * Layout: cuenta[0..10], fecha mov.[11..18], código[19..20],
+     * número[21..26], vencimiento[27..34].
+     * @return list<array<string, int|string>>
      */
-    private function detectarVencimientosPosterioresInqctacte(
-        string $ruta,
-        string $periodoSeleccionado
-    ): array {
+    private function detectarFechasInvalidasInqctacte(string $ruta): array
+    {
         $archivo = fopen($ruta, 'rb');
 
         if ($archivo === false) {
@@ -964,38 +969,58 @@ class ImportacionArchivosController extends Controller
         try {
             while (($linea = fgets($archivo)) !== false) {
                 $numeroLinea++;
-
-                $cuenta = trim(substr($linea, 0, 11));
-                $fechaMovimiento = substr($linea, 11, 8);
-                $codigo = trim(substr($linea, 19, 2));
-                $numeroCobol = trim(substr($linea, 21, 6));
                 $fechaVencimiento = substr($linea, 27, 8);
-
-                if (! $this->esFechaCobolValida($fechaVencimiento)) {
-                    continue;
-                }
-
-                $periodoVencimiento = substr($fechaVencimiento, 0, 6);
-
-                if ($periodoVencimiento <= $periodoSeleccionado) {
-                    continue;
-                }
-
-                $resultado[] = [
+                $item = [
                     'linea' => $numeroLinea,
-                    'cuenta_cobol' => $cuenta,
-                    'fecha_movimiento' => $fechaMovimiento,
-                    'codigo' => $codigo,
-                    'numero_cobol' => $numeroCobol,
+                    'cuenta_cobol' => trim(substr($linea, 0, 11)),
+                    'fecha_movimiento' => substr($linea, 11, 8),
+                    'codigo' => trim(substr($linea, 19, 2)),
+                    'numero_cobol' => trim(substr($linea, 21, 6)),
                     'fecha_vencimiento' => $fechaVencimiento,
-                    'periodo_vencimiento' => $periodoVencimiento,
+                    'periodo_vencimiento' => '',
                 ];
+
+                if (! $this->esFechaInvalidaRelevanteInqctacte($item)) {
+                    continue;
+                }
+
+                $motivos = [];
+                if (! $this->esFechaCobolValida($item['fecha_movimiento'])) {
+                    $motivos[] = 'Fecha de movimiento inválida';
+                }
+                if (! $this->esVencimientoAusenteInqctacte($fechaVencimiento)
+                    && ! $this->esFechaCobolValida($fechaVencimiento)) {
+                    $motivos[] = 'Fecha de vencimiento inválida';
+                }
+                $item['motivo'] = implode('; ', $motivos);
+                $resultado[] = $item;
             }
         } finally {
             fclose($archivo);
         }
 
         return $resultado;
+    }
+
+    /**
+     * Se usa tanto para incidencias nuevas como para las registradas en JSON
+     * históricos. No altera el registro COBOL ni su vencimiento original.
+     */
+    private function esFechaInvalidaRelevanteInqctacte(array $item): bool
+    {
+        $movimiento = trim((string) ($item['fecha_movimiento'] ?? ''));
+        $vencimiento = trim((string) ($item['fecha_vencimiento'] ?? ''));
+
+        return ! $this->esFechaCobolValida($movimiento)
+            || (! $this->esVencimientoAusenteInqctacte($vencimiento)
+                && ! $this->esFechaCobolValida($vencimiento));
+    }
+
+    private function esVencimientoAusenteInqctacte(string $vencimiento): bool
+    {
+        $vencimiento = trim($vencimiento);
+
+        return $vencimiento === '' || $vencimiento === '00000000';
     }
 
     private function formatearFechaCobol(string $fecha): string
