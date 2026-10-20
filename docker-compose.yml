@@ -9,7 +9,7 @@ services:
     container_name: gei-app
     restart: unless-stopped
     ports:
-      - "80:80"
+      - "${GEI_HTTP_BIND:-127.0.0.1:8080}:80"
     volumes:
       - ./src:/var/www/html
       - ${KNG_FACTURAS_DBF_HOST:-../../dockers/samba-server/archivos/KNG/facturas.DBF}:/archivo-kng/facturas.DBF:ro

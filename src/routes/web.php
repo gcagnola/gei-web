@@ -142,6 +142,24 @@ Route::post(
     [CobolImpresionController::class, 'store']
 )->name('cobol.impresion.store');
 
+
+// Autorizacion interna para el proxy HTTPS de camaras.
+// Devuelve codigos HTTP sin redirigir a la pantalla de login.
+Route::get('/_internal/camaras/autorizacion', function (\Illuminate\Http\Request $request) {
+    $usuario = $request->user();
+
+    if (! $usuario) {
+        abort(401);
+    }
+
+    if ($usuario->perfil?->codigo === 'CONTADOR'
+        || ! $usuario->perfil?->puedeVerModulo('CAMARAS')) {
+        abort(403);
+    }
+
+    return response()->noContent();
+})->name('camaras.proxy-auth');
+
 Route::middleware('auth')->group(function () {
     Route::view('/', 'inicio')->name('inicio');
 
