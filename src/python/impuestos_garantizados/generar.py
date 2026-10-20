@@ -83,6 +83,33 @@ def _validaciones(detalles) -> list[dict]:
     return salida
 
 
+# Excepción documentada: el detalle 94 de octubre imprime un importe COBOL
+# mayor al ancho disponible. Nunca se genera automáticamente ese PDF.
+# Las diferencias deben coincidir exactamente; si cambian, vuelve a bloquear.
+EXCEPCION_DAILOC_202610 = {
+    'periodo': '202610',
+    'cuenta': '120200946/05',
+    'numero': 94,
+    'diferencia_impuestos': Decimal('1000000.00'),
+    'diferencia_propietario': Decimal('1000000.00'),
+}
+
+
+def _aplicar_excepcion_controlada(periodo: str, validaciones: list[dict]) -> None:
+    for validacion in validaciones:
+        validacion['motivo_exclusion'] = ''
+        if (
+            periodo == EXCEPCION_DAILOC_202610['periodo']
+            and validacion['cuenta'] == EXCEPCION_DAILOC_202610['cuenta']
+            and validacion['numero'] == EXCEPCION_DAILOC_202610['numero']
+            and validacion['estado'] == 'DIFERENCIA'
+            and Decimal(validacion['diferencia_impuestos']) == EXCEPCION_DAILOC_202610['diferencia_impuestos']
+            and Decimal(validacion['diferencia_propietario']) == EXCEPCION_DAILOC_202610['diferencia_propietario']
+        ):
+            validacion['estado'] = 'EXCLUIDA_MANUAL'
+            validacion['motivo_exclusion'] = 'Desbordamiento del formato de impresión COBOL; PDF manual pendiente'
+
+
 def _guardar_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -117,8 +144,12 @@ def main() -> None:
     periodo = args.periodo
 
     validaciones = _validaciones(detalles)
+    _aplicar_excepcion_controlada(periodo, validaciones)
+    excepciones = [v for v in validaciones if v['estado'] == 'EXCLUIDA_MANUAL']
+    claves_excluidas = {(v['cuenta'], v['numero']) for v in excepciones}
+    detalles_generables = [d for d in detalles if (d.cuenta, d.numero) not in claves_excluidas]
     pdfdir = args.salida / 'pdf'
-    esperados = {_nombre_pdf(det) for det in detalles}
+    esperados = {_nombre_pdf(det) for det in detalles_generables}
     existentes = sum(1 for nombre in esperados if (pdfdir / nombre).is_file())
 
     resumen = {
@@ -131,9 +162,11 @@ def main() -> None:
         'pdf_faltantes': max(0, len(esperados) - existentes),
         'pdf_generados': 0,
         'validaciones_ok': sum(1 for x in validaciones if x['estado'] == 'OK'),
-        'validaciones_con_diferencia': sum(1 for x in validaciones if x['estado'] != 'OK'),
+        'validaciones_con_diferencia': sum(1 for x in validaciones if x['estado'] == 'DIFERENCIA'),
+        'excepciones_manuales': len(excepciones),
+        'detalle_excepciones': excepciones,
         'errores': 0,
-        'validacion_ok': all(x['estado'] == 'OK' for x in validaciones),
+        'validacion_ok': all(x['estado'] in ('OK', 'EXCLUIDA_MANUAL') for x in validaciones),
     }
 
     if args.accion == 'analizar':
@@ -152,7 +185,7 @@ def main() -> None:
     errores: list[dict] = []
     generados = 0
     with (args.salida / 'detalles.jsonl').open('w', encoding='utf8') as jf:
-        for det in detalles:
+        for det in detalles_generables:
             dest = pdfdir / _nombre_pdf(det)
             try:
                 generar_pdf_dailoc(det, dest, {})
@@ -186,7 +219,7 @@ def main() -> None:
         'pdf_faltantes': max(0, len(esperados) - generados),
         'pdf_generados': generados,
         'errores': len(errores),
-        'validacion_ok': len(errores) == 0,
+        'validacion_ok': resumen['validacion_ok'] and len(errores) == 0,
     })
 
     (args.salida / 'resumen.json').write_text(
