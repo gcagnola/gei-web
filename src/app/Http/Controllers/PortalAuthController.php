@@ -53,6 +53,7 @@ class PortalAuthController extends Controller
             'bloqueado_hasta' => null,
         ])->save();
 
+        Auth::guard('web')->logout();
         Auth::guard('portal')->login($portalUsuario, $request->boolean('recordarme'));
         $request->session()->regenerate();
 
@@ -65,7 +66,7 @@ class PortalAuthController extends Controller
         $request->session()->invalidate();
         $request->session()->regenerateToken();
 
-        return redirect()->route('portal.login');
+        return redirect()->route('login');
     }
 
     public function activacion(string $token, PortalAccesoService $acceso): View
@@ -103,7 +104,7 @@ class PortalAuthController extends Controller
             $registro->forceFill(['usado_at' => now()])->save();
         });
 
-        return redirect()->route('portal.login')
+        return redirect()->route('login')
             ->with('estado', 'Tu acceso quedó activado. Ya podés iniciar sesión.');
     }
 
@@ -156,7 +157,7 @@ class PortalAuthController extends Controller
             $registro->forceFill(['usado_at' => now()])->save();
         });
 
-        return redirect()->route('portal.login')
+        return redirect()->route('login')
             ->with('estado', 'La contraseña fue actualizada. Ya podés iniciar sesión.');
     }
 

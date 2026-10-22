@@ -248,7 +248,7 @@
             </div>
 
             <p class="gei-login__brand-footer">
-                Guastavino e Imbert — Administración
+                Guastavino e Imbert — Acceso unificado
             </p>
         </section>
 
@@ -280,7 +280,7 @@
                     >
 
                     <p class="gei-login__eyebrow">
-                        Sistema administrativo
+                        Administración y Autogestión
                     </p>
 
                     <h1 class="gei-login__title">
@@ -288,8 +288,8 @@
                     </h1>
 
                     <p class="gei-login__description">
-                        Ingresá el correo asociado a tu cuenta. Te enviaremos
-                        un enlace para crear una nueva contraseña web.
+                        Ingresá tu usuario administrativo o DNI/CUIT. Te enviaremos
+                        un enlace al correo registrado.
                     </p>
                 </header>
 
@@ -306,7 +306,7 @@
                             <strong>No pudimos procesar la solicitud.</strong>
 
                             <div>
-                                Revisá el correo electrónico ingresado.
+                                Revisá el identificador ingresado.
                             </div>
                         </div>
                     </div>
@@ -331,25 +331,25 @@
 
                     <div class="gei-field">
                         <label
-                            for="email"
+                            for="identificador"
                             class="gei-field__label"
                         >
-                            Correo electrónico
+                            Usuario o DNI/CUIT
                         </label>
 
                         <input
-                            type="email"
-                            id="email"
-                            name="email"
-                            value="{{ old('email') }}"
+                            type="text"
+                            id="identificador"
+                            name="identificador"
+                            value="{{ old('identificador') }}"
                             maxlength="255"
-                            autocomplete="email"
-                            class="form-control gei-field__control @error('email') is-invalid @enderror"
+                            autocomplete="username"
+                            class="form-control gei-field__control @error('identificador') is-invalid @enderror"
                             autofocus
                             required
                         >
 
-                        @error('email')
+                        @error('identificador')
                             <div class="invalid-feedback">
                                 {{ $message }}
                             </div>
@@ -367,7 +367,7 @@
                 <footer class="gei-login__footer">
                     <span>Guastavino e Imbert</span>
                     <span aria-hidden="true">·</span>
-                    <span>Administración</span>
+                    <span>Acceso unificado</span>
                 </footer>
             </div>
         </section>

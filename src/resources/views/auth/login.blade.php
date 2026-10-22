@@ -251,7 +251,7 @@
             </div>
 
             <p class="gei-login__brand-footer">
-                Guastavino e Imbert — Administración
+                Guastavino e Imbert — Acceso unificado
             </p>
         </section>
 
@@ -276,7 +276,7 @@
                     >
 
                     <p class="gei-login__eyebrow">
-                        Sistema administrativo
+                        Administración y Autogestión
                     </p>
 
                     <h1 class="gei-login__title">
@@ -284,9 +284,16 @@
                     </h1>
 
                     <p class="gei-login__description">
-                        Ingresá tus credenciales para acceder al sistema.
+                        Ingresá tu usuario administrativo o DNI/CUIT para acceder al sistema correspondiente.
                     </p>
                 </header>
+
+                @if (\Illuminate\Support\Facades\Auth::guard('web')->check() || \Illuminate\Support\Facades\Auth::guard('portal')->check())
+                    <div class="alert alert-warning" role="alert">
+                        Ya tenés una sesión iniciada. Para cambiar de entorno, ingresá nuevamente
+                        las credenciales correspondientes. Al autenticarte, se cerrará la sesión anterior.
+                    </div>
+                @endif
 
                 @if ($errors->any())
                     <div
@@ -329,7 +336,7 @@
                             for="nombre"
                             class="gei-field__label"
                         >
-                            Usuario
+                            Usuario o DNI/CUIT
                         </label>
 
                         <input
@@ -435,7 +442,7 @@
                 <footer class="gei-login__footer">
                     <span>Guastavino e Imbert</span>
                     <span aria-hidden="true">·</span>
-                    <span>Administración</span>
+                    <span>Acceso unificado</span>
                 </footer>
             </div>
         </section>

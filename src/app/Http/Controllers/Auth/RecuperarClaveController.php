@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Auth;
 use App\Http\Controllers\Controller;
 use App\Mail\RecuperarClaveMail;
 use App\Models\Usuario;
+use App\Services\Portal\PortalAccesoService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -21,21 +22,31 @@ class RecuperarClaveController extends Controller
     public function enviarEnlace(Request $request)
     {
         $datos = $request->validate([
-            'email' => ['required', 'email', 'max:255'],
+            'identificador' => ['required', 'string', 'max:255'],
         ]);
 
-        $email = trim($datos['email']);
+        $identificador = trim($datos['identificador']);
+        $mensaje = 'Si la cuenta está habilitada, recibirás un enlace en el correo registrado.';
+
+        if (preg_match('/^[0-9.\-\s]+$/', $identificador) && preg_match('/[0-9]/', $identificador)) {
+            app(PortalAccesoService::class)->enviarRecuperacion($identificador);
+            return back()->with('estado', $mensaje);
+        }
 
         $usuario = Usuario::query()
-            ->whereRaw('LOWER(email) = LOWER(?)', [$email])
+            ->where(function ($consulta) use ($identificador) {
+                $consulta->whereRaw('LOWER(email) = LOWER(?)', [$identificador])
+                    ->orWhereRaw('LOWER(nombre_usuario) = LOWER(?)', [$identificador]);
+            })
             ->where('activo', true)
             ->first();
 
-        $mensaje = 'Si el correo está registrado, recibirás un enlace para restablecer la contraseña.';
 
         if (!$usuario) {
             return back()->with('estado', $mensaje);
         }
+
+        $email = trim((string) $usuario->email);
 
         $tokenPlano = Str::random(64);
 

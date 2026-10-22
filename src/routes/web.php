@@ -37,11 +37,12 @@ use App\Http\Middleware\AutenticarPortal;
 use App\Http\Middleware\VerificarFuncionalidadPortal;
 use Illuminate\Support\Facades\Route;
 
-Route::middleware('guest')->group(function () {
+Route::group([], function () {
     Route::get('/login', [LoginController::class, 'mostrar'])
         ->name('login');
 
     Route::post('/login', [LoginController::class, 'ingresar'])
+        ->middleware('throttle:10,1')
         ->name('login.ingresar');
 
     Route::get(
@@ -67,13 +68,13 @@ Route::middleware('guest')->group(function () {
 
 // Autogestión de clientes. Se mantiene separada del guard administrativo.
 Route::prefix('autogestion')->name('portal.')->group(function (): void {
-    Route::get('/login', [PortalAuthController::class, 'login'])->name('login');
+    Route::get('/login', fn () => redirect()->route('login'))->name('login');
     Route::post('/login', [PortalAuthController::class, 'ingresar'])->middleware('throttle:10,1')->name('login.ingresar');
 
     Route::get('/activar/{token}', [PortalAuthController::class, 'activacion'])->name('activacion.mostrar');
     Route::post('/activar', [PortalAuthController::class, 'activar'])->middleware('throttle:10,1')->name('activacion.guardar');
 
-    Route::get('/clave-olvidada', [PortalAuthController::class, 'solicitarRecuperacion'])->name('password.request');
+    Route::get('/clave-olvidada', fn () => redirect()->route('password.request'))->name('password.request');
     Route::post('/clave-olvidada', [PortalAuthController::class, 'enviarRecuperacion'])->middleware('throttle:5,1')->name('password.email');
     Route::get('/restablecer-clave/{token}', [PortalAuthController::class, 'mostrarReset'])->name('password.reset');
     Route::post('/restablecer-clave', [PortalAuthController::class, 'reset'])->middleware('throttle:10,1')->name('password.update');
