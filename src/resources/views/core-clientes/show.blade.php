@@ -525,6 +525,12 @@
                 </div>
             </div>
             <div id="actividad-contenido">
+                @if($tab === 'cuenta-corriente' && $cobolCuentasAdmin !== null)
+                    @include('core-clientes.partials.cuenta-cobol', [
+                        'cuentas' => $cobolCuentasAdmin,
+                        'mes' => $mesActividad,
+                    ])
+                @else
                 @include('core-clientes.partials.actividad', [
                     'tipo' => $tab,
                     'mes' => $mesActividad,
@@ -533,6 +539,7 @@
                         ? ($detalle['incidenciasFechasFuturas'] ?? collect())
                         : collect(),
                 ])
+                @endif
             </div>
             <div class="card-footer bg-white small text-muted" id="actividad-estado">
                 Mes mostrado: {{ substr($mesActividad,4,2) }}/{{ substr($mesActividad,0,4) }}

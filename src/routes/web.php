@@ -31,6 +31,7 @@ use App\Http\Controllers\PortalAuthController;
 use App\Http\Controllers\TransferenciaInformadaController;
 use App\Http\Controllers\PortalTransferenciaController;
 use App\Http\Controllers\PortalController;
+use App\Http\Controllers\PortalCuentaCorrienteController;
 use App\Http\Controllers\PortalDocumentosController;
 use App\Http\Controllers\PortalReciboController;
 use App\Http\Middleware\AutenticarPortal;
@@ -92,6 +93,10 @@ Route::prefix('autogestion')->name('portal.')->group(function (): void {
         Route::get('/comprobantes-arca/factura/{factura}', [PortalDocumentosController::class, 'verFacturaArca'])
             ->whereNumber('factura')
             ->name('comprobantes-arca.factura');
+
+        Route::get('/cuenta-corriente', [PortalCuentaCorrienteController::class, 'index'])
+            ->middleware(VerificarFuncionalidadPortal::class.':cuenta_corriente')
+            ->name('cuenta-corriente.index');
 
         Route::get('/liquidaciones-propietario', [PortalDocumentosController::class, 'liquidacionesPropietario'])->name('liquidaciones-propietario.index');
         Route::get('/liquidaciones-propietario/{liquidacion}/ver', [PortalDocumentosController::class, 'verLiquidacionPropietario'])

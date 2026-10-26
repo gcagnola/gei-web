@@ -107,15 +107,50 @@ final class GeiCoreClienteController extends Controller
                 : $this->service->resolverMesActividad($persona, $tab, now()->format('Ym'), $sedesPermitidas))
             : now()->format('Ym');
 
+        $detalleCuentaCobol = $clienteCanonico > 0
+            ? $this->service->detalleCanonico($clienteCanonico, $persona, $periodo, $tab, $mesActividad, $sedesPermitidas)
+            : $this->service->detalle($persona, $periodo, $tab, $mesActividad, $sedesPermitidas);
+
+        $cobolCuentasAdmin = null;
+
+        if ($tab === 'cuenta-corriente'
+            && app()->environment('local', 'testing')) {
+
+            $consulta = app(\App\Services\CoreClienteCuentaCobolConsultaService::class);
+
+            $cobolCuentasAdmin = $consulta->consultar(
+                $detalleCuentaCobol['cuentasCorrientes'] ?? [],
+                $mesActividad,
+                $sedesPermitidas
+            );
+
+            // Seleccionar automáticamente el último mes disponible.
+            if (! $request->exists('mes')) {
+                $ultimo = collect($cobolCuentasAdmin)
+                    ->pluck('ultimo_mes')
+                    ->filter()
+                    ->max();
+
+                if ($ultimo !== null && $ultimo !== $mesActividad) {
+                    $mesActividad = (string) $ultimo;
+
+                    $cobolCuentasAdmin = $consulta->consultar(
+                        $detalleCuentaCobol['cuentasCorrientes'] ?? [],
+                        $mesActividad,
+                        $sedesPermitidas
+                    );
+                }
+            }
+        }
+
         return view('core-clientes.show', [
             'periodos' => $this->service->periodos(),
             'periodo' => $periodo,
             'tab' => $tab,
             'mesActividad' => $mesActividad,
             'clienteCanonico' => $clienteCanonico > 0 ? $clienteCanonico : null,
-            'detalle' => $clienteCanonico > 0
-                ? $this->service->detalleCanonico($clienteCanonico, $persona, $periodo, $tab, $mesActividad, $sedesPermitidas)
-                : $this->service->detalle($persona, $periodo, $tab, $mesActividad, $sedesPermitidas),
+            'detalle' => $detalleCuentaCobol,
+            'cobolCuentasAdmin' => $cobolCuentasAdmin,
         ]);
     }
 
@@ -191,12 +226,32 @@ final class GeiCoreClienteController extends Controller
                 : $this->service->incidenciasFechasFuturasMes($persona, $mes, $sedesPermitidas))
             : collect();
 
+        $cobolCuentasAdmin = null;
+
+        if ($tipo === 'cuenta-corriente'
+            && app()->environment('local', 'testing')) {
+
+            $detalleAutorizado = $clienteCanonico > 0
+                ? $this->service->detalleCanonico($clienteCanonico, $persona, $periodo, $tipo, $mes, $sedesPermitidas)
+                : $this->service->detalle($persona, $periodo, $tipo, $mes, $sedesPermitidas);
+
+            $cobolCuentasAdmin = app(\App\Services\CoreClienteCuentaCobolConsultaService::class)
+                ->consultar(
+                    $detalleAutorizado['cuentasCorrientes'] ?? [],
+                    $mes,
+                    $sedesPermitidas
+                );
+        }
+
         return response(
-            view('core-clientes.partials.actividad', [
+            view($cobolCuentasAdmin !== null
+                ? 'core-clientes.partials.cuenta-cobol'
+                : 'core-clientes.partials.actividad', [
                 'tipo' => $tipo,
                 'mes' => $mes,
                 'data' => $data,
                 'incidencias' => $incidencias,
+                'cuentas' => $cobolCuentasAdmin,
             ])->render()
         );
     }

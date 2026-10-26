@@ -324,11 +324,27 @@
 
                     <h3 class="h6">Partidas</h3>
                     @if ($detalle['partidas'])
-                        <div class="d-flex flex-wrap gap-1 mb-3">
-                            @foreach ($detalle['partidas'] as $p)<span class="badge text-bg-light border">{{ $p->partida }}</span>@endforeach
+                        <div class="table-responsive mb-3">
+                            <table class="table table-sm align-middle mb-1">
+                                <thead class="table-light"><tr><th>Número de partida</th><th>Períodos registrados</th></tr></thead>
+                                <tbody>
+                                @foreach ($detalle['partidas'] as $p)
+                                    <tr>
+                                        <td>{{ $p->partida }}</td>
+                                        <td class="small text-muted">
+                                            {{ $pv($p->primer_periodo) }}
+                                            @if ($p->primer_periodo !== $p->ultimo_periodo)
+                                                — {{ $pv($p->ultimo_periodo) }}
+                                            @endif
+                                        </td>
+                                    </tr>
+                                @endforeach
+                                </tbody>
+                            </table>
                         </div>
+                        <p class="small text-muted">Partidas identificadas en los períodos COBOL importados. No se dispone aquí de porcentajes ni vencimientos.</p>
                     @else
-                        <p class="small text-muted">Sin partidas informadas.</p>
+                        <p class="small text-muted">Sin partidas informadas en los períodos COBOL procesados para este inmueble.</p>
                     @endif
 
                     <h3 class="h6">Contratos del período</h3>

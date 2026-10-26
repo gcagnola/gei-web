@@ -132,7 +132,7 @@
         </li>
     @endif
 
-    @if ($puedeContabilidad)
+    @if (false && $puedeContabilidad)
         <li>
             <details class="gei-menu__group {{ $contabilidadActivo ? 'is-active' : '' }}">
                 <summary class="gei-menu__summary">
@@ -197,7 +197,7 @@
     @endif
 
 
-    @if ($perfilActual?->codigo !== 'CONTADOR')
+    @if (false && $perfilActual?->codigo !== 'CONTADOR')
     <li>
         <details class="gei-menu__group {{ request()->routeIs('parametros.*') ? 'is-active' : '' }}">
             <summary class="gei-menu__summary">

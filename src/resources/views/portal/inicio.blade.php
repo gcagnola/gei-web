@@ -18,6 +18,9 @@
     </div>
     <div class="d-flex flex-wrap gap-2">
         <a href="{{ route('portal.comprobantes-arca.index') }}" class="btn btn-outline-primary">Comprobantes ARCA</a>
+        @if (config('portal.funcionalidades.cuenta_corriente', false))
+            <a href="{{ route('portal.cuenta-corriente.index') }}" class="btn btn-outline-primary">Cuenta corriente (prueba)</a>
+        @endif
         @if (config('portal.funcionalidades.recibos', false))
             <a href="{{ route('portal.recibos.index') }}" class="btn btn-outline-primary">Recibos</a>
         @endif
