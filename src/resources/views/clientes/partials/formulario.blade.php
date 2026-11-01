@@ -3,6 +3,17 @@
     $rolesSeleccionados = collect(old('roles', $esEdicion ? $cliente->roles->pluck('id')->all() : []))
         ->map(fn ($id) => (int) $id)
         ->all();
+    $desdeMaestro = $esEdicion && old('origen_ficha', request()->query('origen_ficha')) === 'maestro';
+    $parametrosVolver = $esEdicion ? ['cliente' => $cliente->id] : [];
+    $clavesVolver = ['buscar', 'rol', 'estado', 'sede', 'page', 'tab', 'mes'];
+    if ($desdeMaestro) {
+        foreach ($clavesVolver as $clave) {
+            $valor = old('volver_'.$clave, request()->query('volver_'.$clave));
+            if (is_scalar($valor) && (string) $valor !== '') {
+                $parametrosVolver[$clave] = (string) $valor;
+            }
+        }
+    }
 @endphp
 
 @if ($errors->any())
@@ -20,6 +31,14 @@
     @csrf
     @if ($esEdicion)
         @method('PUT')
+        @if ($desdeMaestro)
+            <input type="hidden" name="origen_ficha" value="maestro">
+            @foreach ($clavesVolver as $clave)
+                @if (isset($parametrosVolver[$clave]))
+                    <input type="hidden" name="volver_{{ $clave }}" value="{{ $parametrosVolver[$clave] }}">
+                @endif
+            @endforeach
+        @endif
     @endif
 
     <section class="gei-card p-4 mb-4">
@@ -110,7 +129,7 @@
     </section>
 
     <div class="d-flex justify-content-end gap-2">
-        <a href="{{ $esEdicion ? route('clientes.show', $cliente) : route('clientes.index') }}" class="btn btn-outline-secondary">Cancelar</a>
+        <a href="{{ $esEdicion ? ($desdeMaestro ? route('clientes-maestro.show', $parametrosVolver) : route('clientes.show', $cliente)) : route('clientes.index') }}" class="btn btn-outline-secondary">Cancelar</a>
         <button type="submit" class="btn gei-button gei-button--primary px-4">{{ $esEdicion ? 'Guardar cambios' : 'Crear cliente' }}</button>
     </div>
 </form>

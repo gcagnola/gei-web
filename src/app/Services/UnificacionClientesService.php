@@ -19,6 +19,10 @@ final class UnificacionClientesService
 
     private const TIPO = 'CLIENTE';
 
+    // GEI_REVISAR_ARCA_EN_LOTES_20261030: evitar recalcular el catálogo en
+    // cada candidato comparado dentro de una misma revisión HTTP.
+    private ?Collection $periodosArcaRevision = null;
+
     /**
      * Columnas que realmente referencian public.clientes.id.
      * No basta revisar nombres de tablas: una segunda FK en una tabla
@@ -739,7 +743,24 @@ final class UnificacionClientesService
                 ->get();
         }
 
+        $origenVinculado = DB::table('clientes_origenes')
+            ->where('sistema_origen', (string) $conflicto->sistema_origen)
+            ->where('entidad_origen', (string) $conflicto->entidad_origen)
+            ->where('clave_origen', (string) $conflicto->clave_origen)
+            ->first();
+        $clienteVinculadoCanonicoId = null;
+        if ($origenVinculado !== null) {
+            $titularVinculado = DB::table('clientes')
+                ->select('id', 'id_cliente_canonico')
+                ->where('id', $origenVinculado->cliente_id)
+                ->first();
+            if ($titularVinculado !== null) {
+                $clienteVinculadoCanonicoId = (int) ($titularVinculado->id_cliente_canonico ?? $titularVinculado->id);
+            }
+        }
+
         return [
+            'clienteVinculadoCanonicoId' => $clienteVinculadoCanonicoId,
             'conflicto' => $conflicto,
             'datosOrigen' => $datosOrigen,
             'detalleConflicto' => $detalleConflicto,
@@ -778,8 +799,9 @@ final class UnificacionClientesService
         }
 
         $filas = collect();
+        $inmueblesPorCuenta = [];
 
-        $obtenerFila = function (string $periodo, string $cuenta) use (&$filas): object {
+        $obtenerFila = function (string $periodo, string $cuenta) use (&$filas, &$inmueblesPorCuenta): object {
             $cuenta = $this->normalizarCuentaDocumento($cuenta);
             $clave = $periodo.'|'.$cuenta;
 
@@ -787,7 +809,7 @@ final class UnificacionClientesService
                 $filas->put($clave, (object) [
                     'periodo' => $periodo,
                     'cuenta' => $cuenta,
-                    'inmuebles' => $this->inmueblesParaCuenta($cuenta),
+                    'inmuebles' => $inmueblesPorCuenta[$cuenta] ??= $this->inmueblesParaCuenta($cuenta),
                     'liquidaciones' => collect(),
                     'comprobantes_arca' => collect(),
                 ]);
@@ -853,7 +875,7 @@ final class UnificacionClientesService
             }
         }
 
-        $periodosArca = $this->comprobantesArca->periodosDisponibles()
+        $periodosArca = ($this->periodosArcaRevision ??= $this->comprobantesArca->periodosDisponibles())
             ->map(fn ($periodo): string => trim((string) $periodo))
             ->filter()
             ->take(3);
@@ -867,11 +889,13 @@ final class UnificacionClientesService
             ->values();
 
         foreach ($periodos as $periodo) {
-            foreach ($cuentas as $cuenta) {
-                $comprobantes = $this->comprobantesArca
-                    ->paraCuentaPeriodo((string) $cuenta, (string) $periodo);
+            // Misma evidencia ARCA, obtenida en una sola consulta por
+            // período para todas las cuentas, sin perder sus asociaciones.
+            $comprobantesPorCuenta = $this->comprobantesArca
+                ->porCuentasYPeriodo($cuentas->all(), (string) $periodo);
 
-                foreach ($comprobantes as $comprobante) {
+            foreach ($cuentas as $cuenta) {
+                foreach ($comprobantesPorCuenta->get((string) $cuenta, collect()) as $comprobante) {
                     $cuentaComprobante = $this->normalizarCuentaDocumento(
                         (string) ($comprobante->cuenta_cobol ?? $cuenta)
                     );
@@ -1040,9 +1064,46 @@ final class UnificacionClientesService
                 $canonico = $cliente->id_cliente_canonico === null ? (int) $cliente->id : (int) $cliente->id_cliente_canonico;
             }
 
+            // Una cuenta ya asociada no puede reasignarse ni duplicarse al
+            // resolver un aviso de cambio de identidad histórica.
+            $origenExistente = DB::table('clientes_origenes')
+                ->where('sistema_origen', (string) $conflicto->sistema_origen)
+                ->where('entidad_origen', (string) $conflicto->entidad_origen)
+                ->where('clave_origen', (string) $conflicto->clave_origen)
+                ->lockForUpdate()
+                ->first();
+            if ($origenExistente !== null) {
+                $vinculado = DB::table('clientes')
+                    ->select('id', 'id_cliente_canonico')
+                    ->where('id', $origenExistente->cliente_id)
+                    ->first();
+                if ($vinculado === null) {
+                    throw new DomainException('La cuenta tiene un origen asociado a un cliente inexistente.');
+                }
+                $vinculadoCanonicoId = (int) ($vinculado->id_cliente_canonico ?? $vinculado->id);
+                if ($decision !== 'ASOCIAR_EXISTENTE' || $canonico !== $vinculadoCanonicoId) {
+                    throw new DomainException(
+                        'La cuenta COBOL ya está vinculada al cliente #'.$vinculadoCanonicoId.'. '
+                        .'Esta revisión no puede cambiar su titular ni crear otra identidad.'
+                    );
+                }
+            }
+
+            $datosValidados = $this->jsonAArray($conflicto->datos_origen ?? null);
+            $identidadValidada = [];
+            foreach (['nombre', 'tipo_documento', 'numero_documento', 'cuit'] as $campo) {
+                $identidadValidada[$campo] = $datosValidados[$campo] ?? null;
+            }
+
             DB::table('clientes_resoluciones_origen')->updateOrInsert(
                 ['sistema_origen' => (string) $conflicto->sistema_origen, 'entidad_origen' => (string) $conflicto->entidad_origen, 'clave_origen' => (string) $conflicto->clave_origen],
-                ['decision' => $decision, 'cliente_id' => $canonico, 'usuario_id' => $usuarioId, 'detalle_json' => json_encode(['conflicto_id' => $conflictoId, 'motivo' => $conflicto->motivo], JSON_UNESCAPED_UNICODE), 'updated_at' => now(), 'created_at' => now()]
+                ['decision' => $decision, 'cliente_id' => $canonico, 'usuario_id' => $usuarioId,
+                    'detalle_json' => json_encode([
+                        'conflicto_id' => $conflictoId,
+                        'motivo' => $conflicto->motivo,
+                        'identidad_validada' => $identidadValidada,
+                    ], JSON_UNESCAPED_UNICODE),
+                    'updated_at' => now(), 'created_at' => now()]
             );
             DB::table('clientes_conflictos')->where('id', $conflictoId)->update([
                 'cliente_resuelto_id' => $canonico,

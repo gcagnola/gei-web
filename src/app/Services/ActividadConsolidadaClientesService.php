@@ -2,7 +2,6 @@
 
 namespace App\Services;
 
-use Illuminate\Database\Connection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use RuntimeException;
@@ -12,14 +11,15 @@ use RuntimeException;
  * ACTIVO = COBOL || ARCA || LIQUIDACIONES || IMPUESTOS.
  * El resultado consolidado se calcula; NO se almacena en clientes_actividad_periodos.
  *
- * Nunca altera gei_core.personas_periodos: allí se conserva la evidencia COBOL
- * original. Tampoco asigna cuentas a clientes por semejanza de nombres.
+ * La actividad COBOL se lee directamente de cobol_staging por cuenta y rol;
+ * Tampoco asigna cuentas a clientes por semejanza de nombres.
  */
 final class ActividadConsolidadaClientesService
 {
     public function __construct(
         private readonly ActividadArcaKngService $arcaKng,
         private readonly ImpuestosGarantizadosPdfService $impuestos,
+        private readonly EvidenciaActividadCobolService $cobolOrigen,
     ) {
     }
 
@@ -41,6 +41,14 @@ final class ActividadConsolidadaClientesService
     /** @return array<string, mixed> */
     private function procesar(string $periodo, string $modo): array
     {
+        // Esta primera entrega valida únicamente la nueva fuente COBOL.
+        // Ningún --aplicar / --solo-altas puede actualizar clientes.activo
+        // hasta conciliar los resultados con un snapshot real de Desarrollo.
+        if ($modo !== 'analizar') {
+            throw new RuntimeException(
+                'Sincronización de actividad temporalmente bloqueada: validar primero la nueva fuente COBOL en Desarrollo.'
+            );
+        }
         if (! preg_match('/^(19|20)\d{2}(0[1-9]|1[0-2])$/', $periodo)) {
             throw new RuntimeException('Período inválido: utilizar AAAAMM.');
         }
@@ -49,15 +57,6 @@ final class ActividadConsolidadaClientesService
                 throw new RuntimeException("Falta tabla {$tabla}.");
             }
         }
-        // GeI-Core vive en gei_exploracion, no en la base primaria gei_db.
-        $core = $this->conexionCore();
-        $tablaCore = $core->selectOne(
-            "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'gei_core' AND table_name = 'personas_origenes') AS existe"
-        );
-        if (! (bool) ($tablaCore->existe ?? false)) {
-            throw new RuntimeException('Falta gei_core.personas_origenes en la base de exploración.');
-        }
-
         $ultimo = (string) (DB::table('liquidaciones_propietarios')->max('periodo') ?? '');
         if ($ultimo !== $periodo && $modo !== 'analizar') {
             throw new RuntimeException("No se puede modificar clientes.activo para {$periodo}: último período operativo {$ultimo}.");
@@ -65,9 +64,8 @@ final class ActividadConsolidadaClientesService
         // Obtener evidencia de ARCA de KNG sin localizar PDFs y sin confundir
         // ID_INQ (destinatario) con CTA_ORIG (origen operativo).
         $datosArca = $this->arcaKng->consultarPeriodo($periodo);
-        if (! $core->table('gei_core.personas_origenes')->where('periodo', $periodo)->exists()) {
-            throw new RuntimeException("No existen observaciones COBOL en GeI-Core para {$periodo}.");
-        }
+        // Único origen de actividad COBOL: archivos originales por período.
+        $datosCobol = $this->cobolOrigen->consultarPeriodo($periodo);
         if (! DB::table('liquidaciones_propietarios')->where('periodo', $periodo)->exists()) {
             throw new RuntimeException("No existen liquidaciones del período {$periodo}.");
         }
@@ -110,7 +108,7 @@ final class ActividadConsolidadaClientesService
 
         $flags = [];
         $pendientes = [];
-        $evidencias = ['COBOL' => 0, 'ARCA' => 0, 'LIQUIDACIONES' => 0, 'IMPUESTOS' => 0];
+        $evidencias = ['COBOL' => 0, 'ARCA' => 0, 'LIQUIDACIONES' => 0, 'IMPUESTOS' => 0, 'MOVIMIENTOS' => 0];
         $marcar = function (int $id, string $campo) use (&$flags): void {
             $flags[$id][$campo] = true;
         };
@@ -121,17 +119,11 @@ final class ActividadConsolidadaClientesService
             return count($ids) === 1 ? (int) array_key_first($ids) : null;
         };
 
-        // A: vigencia según el registro COBOL procesado para ESE período.
-        foreach ($core->table('gei_core.personas_origenes')->where('periodo', $periodo)
-            ->where('activo_en_periodo', true)->cursor(['rol', 'cuenta_cobol']) as $origen) {
-            $rol = strtoupper(trim((string) $origen->rol));
-            if (! in_array($rol, ['INQUILINO', 'PROPIETARIO'], true)) {
-                continue;
-            }
-            $cuenta = $this->normalizar((string) $origen->cuenta_cobol);
-            if ($cuenta === '') {
-                continue;
-            }
+        // A: actividad desde COBOL original, vinculada al maestro público
+        // únicamente por clientes_cuentas (cuenta + rol exactos).
+        foreach ($datosCobol['cuentas'] as $origen) {
+            $rol = $origen['rol'];
+            $cuenta = $origen['cuenta'];
             $evidencias['COBOL']++;
             $ids = $porRolCuenta[$rol.'|'.$cuenta] ?? [];
             if (($id = $unico($ids)) !== null) {
@@ -187,12 +179,40 @@ final class ActividadConsolidadaClientesService
             }
         }
 
+        // Evidencia de movimientos por cuenta y rol exactos.
+        // No implica vigencia contractual ni elimina bajas COBOL.
+        foreach (DB::table('cuentas_corrientes_movimientos as m')
+            ->join('cuentas_corrientes as cc', 'cc.id', '=', 'm.cuenta_corriente_id')
+            ->where('m.periodo', $periodo)
+            ->whereIn('cc.dominio', ['PROPIETARIO', 'INQUILINO'])
+            ->select(['cc.dominio', 'cc.cuenta'])
+            ->distinct()
+            ->cursor() as $m) {
+            $rol = strtoupper(trim((string) $m->dominio));
+            $cuenta = $this->normalizar((string) $m->cuenta);
+            if ($cuenta === '') {
+                continue;
+            }
+            $evidencias['MOVIMIENTOS']++;
+            $ids = $porRolCuenta[$rol.'|'.$cuenta] ?? [];
+            if (($id = $unico($ids)) !== null) {
+                $marcar($id, 'activo_movimientos');
+            } else {
+                $registrar(
+                    'MOVIMIENTOS',
+                    $rol.'|'.$cuenta,
+                    $ids === [] ? 'SIN_CLIENTE' : 'AMBIGUA'
+                );
+            }
+        }
+
         $resumen = [
             'periodo' => $periodo,
             'ultimo_periodo_operativo' => $ultimo,
             'modo' => $modo,
             'clientes_canonicos' => count($canonicos),
             'evidencias_procesadas' => $evidencias,
+            'cobol_origen' => array_diff_key($datosCobol, ['cuentas' => true]),
             'kng_arca' => array_diff_key($datosArca, ['cuentas' => true]),
             'pendientes' => count($pendientes),
             'muestra_pendientes' => array_slice(array_values($pendientes), 0, 50),
@@ -200,9 +220,12 @@ final class ActividadConsolidadaClientesService
             'activos_arca' => 0,
             'activos_liquidaciones' => 0,
             'activos_impuestos' => 0,
+            'activos_movimientos' => 0,
             'activos_consolidados' => 0,
             'activaciones_pendientes' => 0,
             'desactivaciones_pendientes' => 0,
+            'detalle_activaciones' => [],
+            'detalle_desactivaciones' => [],
             'aplicada' => false,
         ];
         $filas = [];
@@ -214,6 +237,7 @@ final class ActividadConsolidadaClientesService
             $arca = isset($f['activo_arca']);
             $liquidaciones = isset($f['activo_liquidaciones']);
             $impuestos = isset($f['activo_impuestos']);
+            $movimientos = isset($f['activo_movimientos']);
             $fila = [
                 'cliente_id' => $id,
                 'periodo' => $periodo,
@@ -221,6 +245,8 @@ final class ActividadConsolidadaClientesService
                 'activo_arca' => $arca,
                 'activo_liquidaciones' => $liquidaciones,
                 'activo_impuestos' => $impuestos,
+                // Calculado; no persistir sin migración explícita.
+                'activo_movimientos' => $movimientos,
                 'created_at' => $ahora,
                 'updated_at' => $ahora,
             ];
@@ -229,13 +255,26 @@ final class ActividadConsolidadaClientesService
             $resumen['activos_arca'] += (int) $arca;
             $resumen['activos_liquidaciones'] += (int) $liquidaciones;
             $resumen['activos_impuestos'] += (int) $impuestos;
+            $resumen['activos_movimientos'] += (int) $movimientos;
             $resumen['activos_consolidados'] += (int) $activo;
             $actual = $clientes->get($id)->activo;
+            $detalleActividad = [
+                'cliente_id' => $id,
+                'estado_actual' => $actual,
+                'activo_calculado' => $activo,
+                'cobol' => $cobol,
+                'arca' => $arca,
+                'liquidaciones' => $liquidaciones,
+                'impuestos' => $impuestos,
+                'movimientos' => $movimientos ?? false,
+            ];
             if ($activo && $actual !== true && $actual !== 1) {
                 $resumen['activaciones_pendientes']++;
+                $resumen['detalle_activaciones'][] = $detalleActividad;
             }
             if (! $activo && $actual !== false && $actual !== 0) {
                 $resumen['desactivaciones_pendientes']++;
+                $resumen['detalle_desactivaciones'][] = $detalleActividad;
             }
             $filas[] = $fila;
         }
@@ -283,31 +322,10 @@ final class ActividadConsolidadaClientesService
         return $resumen;
     }
 
-    /** Igual que GeiCoreClienteService: no buscar tablas de exploración en gei_db. */
-    private function conexionCore(): Connection
-    {
-        $base = config('database.connections.pgsql');
-        if (! is_array($base)) {
-            throw new RuntimeException('No existe la conexión PostgreSQL principal.');
-        }
-        foreach (['host', 'port', 'database', 'username', 'password'] as $campo) {
-            $valor = config('gei.exploracion.'.$campo);
-            if ($valor === null || $valor === '') {
-                throw new RuntimeException("Falta gei.exploracion.{$campo} en la configuración del entorno.");
-            }
-            $base[$campo] = $valor;
-        }
-        $base['search_path'] = 'public';
-        config(['database.connections.gei_exploracion' => $base]);
-        DB::purge('gei_exploracion');
-
-        return DB::connection('gei_exploracion');
-    }
-
     /** Resultado derivado de las cuatro evidencias; no persiste un quinto indicador. */
     private static function estaActivo(array $fila): bool
     {
-        return (bool) ($fila['activo_cobol'] || $fila['activo_arca'] || $fila['activo_liquidaciones'] || $fila['activo_impuestos']);
+        return (bool) ($fila['activo_cobol'] || $fila['activo_arca'] || $fila['activo_liquidaciones'] || $fila['activo_impuestos'] || ($fila['activo_movimientos'] ?? false));
     }
 
     private function normalizar(string $cuenta): string

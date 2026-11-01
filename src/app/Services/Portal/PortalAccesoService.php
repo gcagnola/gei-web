@@ -26,6 +26,13 @@ class PortalAccesoService
             ['activo' => true]
         );
 
+        // No reactivar implícitamente un acceso deshabilitado por administración.
+        if (! $portalUsuario->activo) {
+            throw ValidationException::withMessages([
+                'autogestion' => 'El acceso a Autogestión está deshabilitado. Revisar su habilitación antes de enviar enlaces.',
+            ]);
+        }
+
         $proposito = $portalUsuario->estaActivado()
             ? PortalToken::PROPOSITO_RECUPERACION
             : PortalToken::PROPOSITO_ACTIVACION;
@@ -49,10 +56,16 @@ class PortalAccesoService
                     ->whereNull('id_cliente_canonico')
                     ->where('cuit', $identificador);
             })
-            ->first();
+            ->get();
 
-        if ($porCuit) {
-            return $this->clienteConRolPortal($porCuit->cliente) ? $porCuit : null;
+        if ($porCuit->isNotEmpty()) {
+            // Si un CUIT quedó vinculado a más de un usuario habilitado,
+            // no elegir arbitrariamente una identidad para autenticar.
+            $habilitados = $porCuit->filter(
+                fn (PortalUsuario $usuario): bool => $this->usuarioHabilitado($usuario, false)
+            );
+
+            return $habilitados->count() === 1 ? $habilitados->first() : null;
         }
 
         $candidatos = PortalUsuario::query()
@@ -95,13 +108,44 @@ class PortalAccesoService
 
     public function buscarTokenVigente(string $tokenPlano, string $proposito): ?PortalToken
     {
-        return PortalToken::query()
+        $token = PortalToken::query()
             ->with('portalUsuario.cliente.roles')
             ->where('proposito', $proposito)
             ->where('token_hash', hash('sha256', $tokenPlano))
             ->whereNull('usado_at')
             ->where('vence_at', '>', now())
             ->first();
+
+        if (! $token || ! $token->portalUsuario) {
+            return null;
+        }
+
+        // Un enlace emitido anteriormente no habilita un cliente que luego
+        // fue dado de baja, absorbido o perdió el rol de acceso al portal.
+        $requiereActivacion = $proposito === PortalToken::PROPOSITO_RECUPERACION;
+
+        return $this->usuarioHabilitado($token->portalUsuario, $requiereActivacion)
+            ? $token
+            : null;
+    }
+
+    /**
+     * Valida acceso por identidad canónica, no por coincidencia de CUIT.
+     * El llamador debe recargar al usuario desde BD cuando sea una sesión activa.
+     */
+    public function usuarioHabilitado(PortalUsuario $usuario, bool $requiereActivacion = true): bool
+    {
+        if (! $usuario->activo || ($requiereActivacion && ! $usuario->estaActivado())) {
+            return false;
+        }
+
+        $usuario->loadMissing('cliente.roles');
+        $cliente = $usuario->cliente;
+
+        return $cliente !== null
+            && (bool) $cliente->activo
+            && $cliente->id_cliente_canonico === null
+            && $this->clienteConRolPortal($cliente);
     }
 
     public function identificadorCliente(Cliente $cliente): ?string

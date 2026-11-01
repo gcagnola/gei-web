@@ -17,7 +17,7 @@
                href="{{ route('archivo.unificacion.clientes.comparar', ['principal' => $s->id, 'secundario' => $p->id, 'periodo' => request('periodo')]) }}">
                 Intercambiar cliente que permanece
             </a>
-            <a class="btn btn-outline-secondary" href="{{ route('core-clientes.index', ['modo' => 'duplicados', 'periodo' => request('periodo')]) }}">Volver</a>
+            <a class="btn btn-outline-secondary" href="{{ route('archivo.unificacion.clientes.index', ['vista' => 'activos_revision']) }}">Volver</a>
         </div>
     </div>
 

@@ -18,7 +18,7 @@
 
     <header class="gei-page-heading">
         <h1>Importar y procesar período</h1>
-        <p>Subí los archivos y procesá todo el período desde un único lugar: COBOL, GeI-Web, GeI-Core, liquidaciones e impuestos garantizados.</p>
+        <p>Subí los archivos y procesá todo el período desde un único lugar: COBOL, GeI-Web, liquidaciones e impuestos garantizados.</p>
     </header>
 
     <section class="gei-card p-3 mb-3">
@@ -959,15 +959,6 @@
             INMUEBLES: 'Actualizando inmuebles',
             CONTRATOS: 'Actualizando contratos',
             CUENTAS_CORRIENTES: 'Actualizando cuentas corrientes',
-            GEI_CORE: 'Actualizando GeI-Core',
-            GEI_CORE_PREPARAR: 'Preparando GeI-Core',
-            GEI_CORE_LIMPIAR: 'Preparando período en GeI-Core',
-            GEI_CORE_PERSONAS_FUENTE: 'Leyendo personas desde PostgreSQL',
-            GEI_CORE_PERSONAS: 'Procesando personas',
-            GEI_CORE_CONTRATOS: 'Procesando inmuebles y contratos',
-            GEI_CORE_CUENTAS: 'Procesando cuentas corrientes',
-            GEI_CORE_CONFLICTOS: 'Generando controles',
-            GEI_CORE_COMPLETO: 'GeI-Core completado',
             LIQUIDACIONES_PROPIETARIOS: 'Liquidaciones e impuestos',
             VALIDAR_DAILOC: 'Validando impuestos garantizados',
             LIQUIDACIONES_IMPORTAR: 'Importando liquidaciones',

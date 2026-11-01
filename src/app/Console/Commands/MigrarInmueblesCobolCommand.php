@@ -12,15 +12,30 @@ final class MigrarInmueblesCobolCommand extends Command
 {
     protected $signature = 'gei:migrar-inmuebles-cobol
         {--confirmar : Escribe los cambios en gei_db}
+        {--periodo= : Instantánea mensual AAAAMM (obligatoria)}
+        {--autorizar-escritura-desarrollo : Permite --confirmar exclusivamente en APP_ENV=local}
         {--limite= : Limita la fuente para una prueba controlada}
         {--detalles : Muestra conflictos y genera un CSV de revisión}
         {--auditar-actualizaciones : Detalla qué campos cambiarían en los inmuebles marcados como actualizados}';
 
-    protected $description = 'Reconstruye inmuebles y propietarios desde INQUILINO en gei_exploracion.';
+    protected $description = 'Actualiza incrementalmente inmuebles desde una instantánea mensual de INQUILINO.';
 
     public function handle(MigracionInmueblesCobolService $service): int
     {
         $confirmar = (bool) $this->option('confirmar');
+        $periodo = $this->option('periodo');
+        if (! is_string($periodo) || ! preg_match('/^20\d{2}(0[1-9]|1[0-2])$/', $periodo)) {
+            $this->error('Indicá --periodo=202607 (julio inicial) o un mes posterior. Se prohíbe mezclar todo el histórico.');
+            return self::FAILURE;
+        }
+        if ($confirmar && (! $this->option('autorizar-escritura-desarrollo') || ! app()->environment('local'))) {
+            $this->error('Escritura protegida: solo Desarrollo (APP_ENV=local) y --autorizar-escritura-desarrollo.');
+            return self::FAILURE;
+        }
+        if ($confirmar && $this->option('limite') !== null) {
+            $this->error('No se permite --confirmar junto con --limite: produciría una instantánea parcial.');
+            return self::FAILURE;
+        }
         $limite = $this->option('limite');
         $limite = $limite === null ? null : max(0, (int) $limite);
         $detalles = (bool) $this->option('detalles');
@@ -28,8 +43,9 @@ final class MigrarInmueblesCobolCommand extends Command
         $incidencias = [];
         $actualizaciones = [];
 
+        $this->info("INQUILINO / período {$periodo}");
         $this->warn($confirmar
-            ? 'MODO CONFIRMAR: se escribirán datos en gei_db.'
+            ? 'MODO CONFIRMAR: se escribirán datos en gei_db (solo Desarrollo).'
             : 'MODO SIMULACIÓN: no se escribirá ningún dato.'
         );
 
@@ -49,7 +65,8 @@ final class MigrarInmueblesCobolCommand extends Command
                     ? function (array $actualizacion) use (&$actualizaciones): void {
                         $actualizaciones[] = $actualizacion;
                     }
-                    : null
+                    : null,
+                $periodo
             );
         } catch (Throwable $error) {
             $this->newLine();
@@ -79,7 +96,7 @@ final class MigrarInmueblesCobolCommand extends Command
         }
 
         if (! $confirmar) {
-            $this->info('Simulación terminada. Para escribir, repetí con --confirmar.');
+            $this->info('Simulación terminada. Escritura protegida y sujeta a validación de relaciones.');
         }
 
         return self::SUCCESS;

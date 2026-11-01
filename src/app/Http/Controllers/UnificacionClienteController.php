@@ -28,13 +28,8 @@ final class UnificacionClienteController extends Controller
         $vista = (string) ($datos['vista'] ?? 'activos_ok');
         $filtroInactivos = (string) ($datos['conflicto'] ?? 'todos');
 
-        // Compatibilidad: enlaces históricos llevan a las vistas canónicas de Clientes.
-        if ($vista === 'activos_revision' || $vista === 'activos_ok') {
-            return redirect()->route('core-clientes.index', [
-                'modo' => $vista === 'activos_revision' ? 'revisiones' : 'clientes',
-                'buscar' => $texto !== '' ? $texto : null,
-            ]);
-        }
+        // Se conserva la herramienta original de unificación de clientes.
+        // La clasificación y la comparación deben mostrarse en esta pantalla.
 
         $inmuebles = app(\App\Services\UnificacionInmueblesService::class);
         if ($vista === 'avisos_propietarios') {
@@ -94,7 +89,7 @@ final class UnificacionClienteController extends Controller
         try {
             $comparacion = $this->service->comparar((int) $datos['principal'], (int) $datos['secundario']);
         } catch (DomainException $error) {
-            return redirect()->route('core-clientes.index', ['modo' => 'duplicados', 'periodo' => $request->query('periodo')])->withErrors(['unificacion' => $error->getMessage()]);
+            return redirect()->route('archivo.unificacion.clientes.index', ['vista' => 'activos_revision'])->withErrors(['unificacion' => $error->getMessage()]);
         }
 
         return view('unificacion.clientes.comparar', $comparacion);
@@ -107,7 +102,7 @@ final class UnificacionClienteController extends Controller
             $revision = $this->service->revisionCobol($conflicto);
         } catch (DomainException $error) {
             return redirect()
-                ->route('core-clientes.index', ['modo' => 'revisiones'])
+                ->route('archivo.unificacion.clientes.index', ['vista' => 'activos_revision'])
                 ->withErrors(['unificacion' => $error->getMessage()]);
         }
 
@@ -131,7 +126,7 @@ final class UnificacionClienteController extends Controller
             return redirect()->route('archivo.unificacion.clientes.comparar', ['principal' => $datos['principal'], 'secundario' => $datos['secundario'], 'periodo' => $datos['periodo'] ?? null])->withErrors(['unificacion' => 'La operación falló y fue revertida completamente. '.$error->getMessage()]);
         }
 
-        return redirect()->route('core-clientes.index', ['modo' => 'duplicados', 'periodo' => $datos['periodo'] ?? null])->with('estado', 'Unificación aplicada. Cliente '.$datos['secundario'].' absorbido por '.$datos['principal'].'. Auditoría #'.$resultado['id_unificacion'].'.');
+        return redirect()->route('archivo.unificacion.clientes.index', ['vista' => 'activos_revision'])->with('estado', 'Unificación aplicada. Cliente '.$datos['secundario'].' absorbido por '.$datos['principal'].'. Auditoría #'.$resultado['id_unificacion'].'.');
     }
 
     public function resolverCandidato(Request $request): RedirectResponse
@@ -165,6 +160,6 @@ final class UnificacionClienteController extends Controller
             return back()->withErrors(['unificacion' => 'No se pudo resolver el conflicto. '.$error->getMessage()]);
         }
 
-        return back()->with('estado', $datos['decision'] === 'ASOCIAR_EXISTENTE' ? 'Decisión guardada. La próxima importación asociará esa identidad COBOL al cliente indicado.' : 'Decisión guardada. La próxima importación creará/mantendrá una persona separada.');
+        return back()->with('estado', $datos['decision'] === 'ASOCIAR_EXISTENTE' ? 'Validación registrada. Si la cuenta ya estaba asociada, se conserva el cliente actual; la próxima importación respetará la identidad revisada.' : 'Decisión guardada. La próxima importación creará/mantendrá una persona separada.');
     }
 }

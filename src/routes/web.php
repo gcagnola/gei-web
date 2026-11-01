@@ -3,18 +3,21 @@
 use App\Http\Controllers\Auth\LoginController;
 use App\Http\Controllers\Auth\RecuperarClaveController;
 use App\Http\Controllers\ClienteController;
+use App\Http\Controllers\ClienteMaestroController;
 use App\Http\Controllers\ClientePortalAccesoController;
 use App\Http\Controllers\ClienteComprobanteArcaController;
 use App\Http\Controllers\ComprobanteArcaController;
 use App\Http\Controllers\ConfiguracionFacturacionController;
 use App\Http\Controllers\ImportacionArchivosController;
 use App\Http\Controllers\CuentaCorrienteExploracionController;
-use App\Http\Controllers\InmuebleExploracionController;
-use App\Http\Controllers\PersonaExploracionController;
+use App\Http\Controllers\InmuebleMaestroController;
+use App\Http\Controllers\InmuebleConsolidacionConsultaController;
 use App\Http\Controllers\MigracionGeiWebController;
 use App\Http\Controllers\LiquidacionPropietarioController;
 use App\Http\Controllers\UnificacionInmuebleController;
 use App\Http\Controllers\UnificacionClienteController;
+use App\Http\Controllers\UnificacionClientesDuplicadosController;
+use App\Http\Controllers\UnificacionClientesAuditoriaController;
 use App\Http\Controllers\FacturaController;
 use App\Http\Controllers\SucursalController;
 use App\Http\Controllers\PermisoPerfilController;
@@ -35,6 +38,7 @@ use App\Http\Controllers\PortalCuentaCorrienteController;
 use App\Http\Controllers\PortalDocumentosController;
 use App\Http\Controllers\PortalReciboController;
 use App\Http\Middleware\AutenticarPortal;
+use App\Http\Middleware\SoloAdministradorGlobal;
 use App\Http\Middleware\VerificarFuncionalidadPortal;
 use Illuminate\Support\Facades\Route;
 
@@ -130,7 +134,6 @@ Route::prefix('autogestion')->name('portal.')->group(function (): void {
     });
 });
 
-use App\Http\Controllers\GeiCoreClienteController;
 
 // Progreso de importación: ruta firmada y sin middleware auth.
 // Lee únicamente el JSON local de progreso y no consulta PostgreSQL.
@@ -196,17 +199,21 @@ Route::middleware('auth')->group(function () {
         ->name('parametros.conceptos.caja');
     Route::put('/parametros/conceptos/{concepto}/caja', [ConceptoController::class, 'updateCaja'])
         ->whereNumber('concepto')
+        ->middleware(SoloAdministradorGlobal::class)
         ->name('parametros.conceptos.caja.update');
 
     Route::get('/parametros/conceptos', [ConceptoController::class, 'index'])
         ->name('parametros.conceptos.index');
     Route::post('/parametros/conceptos', [ConceptoController::class, 'store'])
+        ->middleware(SoloAdministradorGlobal::class)
         ->name('parametros.conceptos.store');
     Route::put('/parametros/conceptos/{concepto}', [ConceptoController::class, 'update'])
         ->whereNumber('concepto')
+        ->middleware(SoloAdministradorGlobal::class)
         ->name('parametros.conceptos.update');
     Route::delete('/parametros/conceptos/{concepto}', [ConceptoController::class, 'destroy'])
         ->whereNumber('concepto')
+        ->middleware(SoloAdministradorGlobal::class)
         ->name('parametros.conceptos.destroy');
 
 
@@ -234,19 +241,44 @@ Route::middleware('auth')->group(function () {
 
     Route::get('/facturas/{factura}/pdf', [FacturaController::class, 'verPdf'])
         ->whereNumber('factura')
+        ->middleware(SoloAdministradorGlobal::class)
         ->name('facturas.pdf.ver');
 
-    Route::get('/archivo/clientes-core', [GeiCoreClienteController::class, 'index'])
-        ->name('core-clientes.index');
-    Route::get('/archivo/clientes-core/{persona}', [GeiCoreClienteController::class, 'show'])
-        ->whereNumber('persona')
-        ->name('core-clientes.show');
-    Route::put('/archivo/clientes-core/{persona}/email', [GeiCoreClienteController::class, 'updateEmail'])
-        ->whereNumber('persona')
-        ->name('core-clientes.email.update');
-    Route::get('/archivo/clientes-core/{persona}/actividad', [GeiCoreClienteController::class, 'actividad'])
-        ->whereNumber('persona')
-        ->name('core-clientes.actividad');
+    // Maestro operativo principal, sólo lectura y filtrado por sucursal.
+    Route::get('/archivo/clientes-maestro', [ClienteMaestroController::class, 'index'])
+        ->name('clientes-maestro.index');
+    Route::get('/archivo/clientes-maestro/{cliente}', [ClienteMaestroController::class, 'show'])
+        ->whereNumber('cliente')
+        ->name('clientes-maestro.show');
+    Route::get('/archivo/clientes-maestro/{cliente}/liquidaciones/{liquidacion}/{tipo}/pdf',
+        [ClienteMaestroController::class, 'pdfLiquidacion'])
+        ->whereNumber('cliente')->whereNumber('liquidacion')
+        ->where('tipo', 'liquidacion|impuestos')
+        ->name('clientes-maestro.liquidacion.pdf');
+    Route::get('/archivo/clientes-maestro/{cliente}/arca/{periodo}/{archivo}/pdf',
+        [ClienteMaestroController::class, 'pdfArca'])
+        ->whereNumber('cliente')
+        ->where('periodo', '(19|20)[0-9]{2}(0[1-9]|1[0-2])')
+        ->where('archivo', '[A-Za-z]{2}-[0-9]{4}-[0-9]{8}-[0-9]{11}\.pdf')
+        ->name('clientes-maestro.arca.pdf');
+    Route::get('/archivo/clientes-maestro/{cliente}/cuentas/{rol}/{cuenta}/historico',
+        [ClienteMaestroController::class, 'historico'])
+        ->whereNumber('cliente')
+        ->where('rol', 'INQUILINO|PROPIETARIO')
+        ->where('cuenta', '[0-9]{11}')
+        ->name('clientes-maestro.historico');
+
+    // Cambios de facturación: permisos administrativos + cuenta y sucursal
+    // comprobadas nuevamente dentro del controlador.
+    Route::put('/archivo/clientes-maestro/{cliente}/facturacion/{cuentaCorriente}',
+        [ClienteMaestroController::class, 'actualizarFacturacion'])
+        ->whereNumber('cliente')->whereNumber('cuentaCorriente')
+        ->name('clientes-maestro.facturacion.update');
+
+    Route::put('/archivo/clientes-maestro/{cliente}/facturacion/beneficiarios/{beneficiario}',
+        [ClienteMaestroController::class, 'actualizarBeneficiarioFacturacion'])
+        ->whereNumber('cliente')->whereNumber('beneficiario')
+        ->name('clientes-maestro.facturacion.beneficiarios.update');
 
     Route::get('/archivo/importar', [ImportacionArchivosController::class, 'index'])
         ->name('archivo.importar');
@@ -300,17 +332,24 @@ Route::middleware('auth')->group(function () {
 
 
 
-    Route::get('/archivo/clientes/comprobantes-arca', [ClienteComprobanteArcaController::class, 'index'])
-        ->name('clientes.comprobantes-arca.index');
-    Route::post('/archivo/clientes/comprobantes-arca/enviar-emails', [ClienteComprobanteArcaController::class, 'enviarEmails'])
-        ->name('clientes.comprobantes-arca.enviar-emails');
-    Route::post('/archivo/clientes/{cliente}/comprobantes-arca/enviar-email', [ClienteComprobanteArcaController::class, 'enviarEmail'])
-        ->whereNumber('cliente')
-        ->name('clientes.comprobantes-arca.enviar-email');
+    // Envíos ARCA desde ficha heredada: sólo administradores hasta auditar su alcance.
+    Route::middleware('can:administrar-unificaciones')->group(function (): void {
+        Route::get('/archivo/clientes/comprobantes-arca', [ClienteComprobanteArcaController::class, 'index'])
+            ->name('clientes.comprobantes-arca.index');
+        Route::post('/archivo/clientes/comprobantes-arca/enviar-emails', [ClienteComprobanteArcaController::class, 'enviarEmails'])
+            ->name('clientes.comprobantes-arca.enviar-emails');
+        Route::post('/archivo/clientes/{cliente}/comprobantes-arca/enviar-email', [ClienteComprobanteArcaController::class, 'enviarEmail'])
+            ->whereNumber('cliente')
+            ->name('clientes.comprobantes-arca.enviar-email');
 
-    Route::resource('/archivo/clientes', ClienteController::class)
-        ->parameters(['clientes' => 'cliente'])
-        ->only(['index', 'show', 'create', 'store', 'edit', 'update']);
+    });
+
+    // CRUD heredado sin filtros de sede completos: restringido a administradores.
+    Route::middleware('can:administrar-unificaciones')->group(function (): void {
+        Route::resource('/archivo/clientes', ClienteController::class)
+            ->parameters(['clientes' => 'cliente'])
+            ->only(['index', 'show', 'create', 'store', 'edit', 'update']);
+    });
 
 
     // Acceso administrativo protegido aunque se ingrese la URL manualmente.
@@ -327,45 +366,65 @@ Route::middleware('auth')->group(function () {
             ->whereNumber('transferencia')->name('transferencias-informadas.rechazar');
     });
 
-    Route::post('/archivo/clientes/{cliente}/autogestion/enviar-acceso', [ClientePortalAccesoController::class, 'enviar'])
-        ->whereNumber('cliente')
-        ->name('clientes.autogestion.enviar-acceso');
+    // Edición/acciones del cliente fuera de la vista operativa: sólo auditores.
+    Route::middleware('can:administrar-unificaciones')->group(function (): void {
+        Route::post('/archivo/clientes/{cliente}/autogestion/enviar-acceso', [ClientePortalAccesoController::class, 'enviar'])
+            ->whereNumber('cliente')
+            ->name('clientes.autogestion.enviar-acceso');
 
-    Route::put(
-        '/archivo/clientes/{cliente}/facturacion/{cuentaCorriente}',
-        [ClienteController::class, 'updateFacturacion']
-    )
-        ->whereNumber('cliente')
-        ->whereNumber('cuentaCorriente')
-        ->name('clientes.facturacion.update');
+        Route::put(
+            '/archivo/clientes/{cliente}/facturacion/{cuentaCorriente}',
+            [ClienteController::class, 'updateFacturacion']
+        )
+            ->whereNumber('cliente')
+            ->whereNumber('cuentaCorriente')
+            ->name('clientes.facturacion.update');
 
-    Route::put(
-        '/archivo/clientes/{cliente}/facturacion/beneficiarios/{beneficiario}',
-        [ClienteController::class, 'updateBeneficiarioFacturacion']
-    )
-        ->whereNumber('cliente')
-        ->whereNumber('beneficiario')
-        ->name('clientes.facturacion.beneficiarios.update');
-    Route::get('/archivo/personas', [PersonaExploracionController::class, 'index'])
-        ->name('personas.index');
-    Route::get('/archivo/personas/{persona}', [PersonaExploracionController::class, 'show'])
-        ->whereNumber('persona')
-        ->name('personas.show');
+        Route::put(
+            '/archivo/clientes/{cliente}/facturacion/beneficiarios/{beneficiario}',
+            [ClienteController::class, 'updateBeneficiarioFacturacion']
+        )
+            ->whereNumber('cliente')
+            ->whereNumber('beneficiario')
+            ->name('clientes.facturacion.beneficiarios.update');
+    });
 
-    Route::get('/archivo/inmuebles', [InmuebleExploracionController::class, 'index'])
-        ->name('inmuebles.index');
-    Route::get('/archivo/inmuebles/{inmueble}', [InmuebleExploracionController::class, 'show'])
-        ->whereNumber('inmueble')
-        ->name('inmuebles.show');
-    Route::put('/archivo/inmuebles/{inmueble}/sede', [InmuebleExploracionController::class, 'actualizarSede'])
-        ->whereNumber('inmueble')
-        ->name('inmuebles.sede.update');
-    Route::post('/archivo/inmuebles/{inmueble}/validar-unico', [InmuebleExploracionController::class, 'validarUnico'])
-        ->whereNumber('inmueble')
-        ->name('inmuebles.validar-unico');
-    Route::delete('/archivo/inmuebles/{inmueble}/validar-unico', [InmuebleExploracionController::class, 'deshacerValidacion'])
-        ->whereNumber('inmueble')
-        ->name('inmuebles.validacion-unico.destroy');
+    // Maestro operativo de inmuebles, único punto de lectura del módulo.
+    Route::get('/archivo/inmuebles-maestro', [InmuebleMaestroController::class, 'index'])
+        ->name('inmuebles.maestro.index');
+
+    // Comparar inmuebles canonicos: exclusivamente lectura, administrador de ambas sedes.
+    Route::get('/archivo/inmuebles-maestro/consolidar/comparar', [InmuebleConsolidacionConsultaController::class, 'comparar'])
+        ->middleware('can:administrar-unificaciones')
+        ->name('inmuebles.maestro.consolidar.comparar');
+
+    // Compatibilidad con enlaces antiguos: ya no se consulta el maestro paralelo.
+    Route::get('/archivo/inmuebles', static function (\Illuminate\Http\Request $request) {
+        $parametros = $request->only(['sede', 'buscar', 'seleccionar', 'page', 'revision']);
+        $estado = strtoupper((string) $request->query('estado', 'ACTIVO'));
+        $parametros['estado'] = match ($estado) {
+            'ACTIVOS' => 'ACTIVO', 'TODOS' => 'TODOS',
+            'ACTIVO', 'INACTIVO', 'DESCONOCIDO' => $estado,
+            default => 'ACTIVO',
+        };
+        return redirect()->route('inmuebles.maestro.index', $parametros);
+    })->name('inmuebles.index');
+
+    Route::get('/archivo/inmuebles/{inmueble}', static function (\Illuminate\Http\Request $request, int $inmueble) {
+        return redirect()->route('inmuebles.maestro.index', [
+            ...$request->only(['sede', 'buscar', 'revision', 'page']),
+            'estado' => 'TODOS', 'seleccionar' => $inmueble,
+        ]);
+    })->whereNumber('inmueble')->name('inmuebles.show');
+
+    // Las escrituras antiguas dependían de otra base y no deben ejecutarse
+    // mientras no exista su reemplazo auditado contra public.inmuebles.
+    Route::put('/archivo/inmuebles/{inmueble}/sede', static fn () => abort(403, 'Cambio de sede heredado deshabilitado.'))
+        ->whereNumber('inmueble')->name('inmuebles.sede.update');
+    Route::post('/archivo/inmuebles/{inmueble}/validar-unico', static fn () => abort(403, 'Validación heredada deshabilitada.'))
+        ->whereNumber('inmueble')->name('inmuebles.validar-unico');
+    Route::delete('/archivo/inmuebles/{inmueble}/validar-unico', static fn () => abort(403, 'Validación heredada deshabilitada.'))
+        ->whereNumber('inmueble')->name('inmuebles.validacion-unico.destroy');
 
     Route::get('/archivo/cuentas-corrientes', [CuentaCorrienteExploracionController::class, 'index'])
         ->name('cuentas-corrientes.index');
@@ -384,6 +443,14 @@ Route::get('/archivo/unificacion', [UnificacionInmuebleController::class, 'index
             ->whereNumber('conflicto')
             ->name('archivo.unificacion.inmuebles.conflicto.resolver');
 
+        // Auditoría canónica independiente.
+        Route::get('/archivo/unificacion/clientes/revisiones', [UnificacionClientesAuditoriaController::class, 'revisiones'])
+            ->name('archivo.unificacion.clientes.revisiones');
+        Route::get('/archivo/unificacion/clientes/historial', [UnificacionClientesAuditoriaController::class, 'historial'])
+            ->name('archivo.unificacion.clientes.historial');
+        // Posibles duplicados detectados sobre el maestro canónico.
+        Route::get('/archivo/unificacion/clientes/duplicados', [UnificacionClientesDuplicadosController::class, 'index'])
+            ->name('archivo.unificacion.clientes.duplicados');
         Route::get('/archivo/unificacion/clientes', [UnificacionClienteController::class, 'index'])
             ->name('archivo.unificacion.clientes.index');
         Route::get('/archivo/unificacion/clientes/comparar', [UnificacionClienteController::class, 'comparar'])
@@ -411,11 +478,13 @@ Route::get('/archivo/unificacion', [UnificacionInmuebleController::class, 'index
     Route::get('/comprobantes-arca/{periodo}/{archivo}/ver', [ComprobanteArcaController::class, 'ver'])
         ->where('periodo', '(19|20)\d{2}(0[1-9]|1[0-2])')
         ->where('archivo', '[A-Za-z0-9._-]+')
+        ->middleware(SoloAdministradorGlobal::class)
         ->name('comprobantes-arca.ver');
 
     Route::get('/comprobantes-arca/lote/{lote}/{archivo}/ver', [\App\Http\Controllers\ComprobanteArcaLoteController::class, 'ver'])
         ->whereNumber('lote')
         ->where('archivo', '[A-Za-z0-9._-]+')
+        ->middleware(SoloAdministradorGlobal::class)
         ->name('comprobantes-arca.lote.ver');
     Route::get('/propietarios/liquidaciones/generar', [LiquidacionPropietarioController::class, 'index'])
         ->name('propietarios.liquidaciones.generar');
@@ -538,7 +607,9 @@ Route::get('/archivo/unificacion', [UnificacionInmuebleController::class, 'index
     '/archivo/kng/facturas/lote/{lote}/{archivo}',
     [\App\Http\Controllers\KngFacturaPdfController::class, 'ver']
 )
-    ->middleware('auth')
+    // La ruta antigua se usa sólo desde Clientes-Core (auditoría).
+    // Los operadores usan la ruta del maestro, que comprueba cuenta y sede.
+    ->middleware(['auth', 'can:administrar-unificaciones'])
     ->whereNumber('lote')
     ->where('archivo', '[A-Za-z0-9._-]+')
     ->name('kng.facturas.pdf');

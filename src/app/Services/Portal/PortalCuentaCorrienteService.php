@@ -336,7 +336,7 @@ final class PortalCuentaCorrienteService
 
     private function exploracion(): Connection
     {
-        // Misma conexión de GeiCoreClienteService, con nombre aislado para portal.
+        // Conexión de lectura de los cierres COBOL, aislada para el portal.
         $config = config('database.connections.pgsql');
         if (! is_array($config)) {
             throw new RuntimeException('La conexión PostgreSQL no está configurada.');

@@ -69,10 +69,30 @@ final class ComprobantesArcaService
 
         try {
             return collect(DB::select(<<<'SQL'
-select distinct replace(left(kf.datos->>'FECHA', 7), '-', '') as periodo
-from kng_facturas kf
-where kf.eliminado = false
-  and coalesce(kf.datos->>'FECHA', '') ~ '^[12][0-9]{3}-(0[1-9]|1[0-2])-'
+-- GEI_ARCA_PERIODOS_SKIP_SCAN_20261030
+-- El indice de expresion se recorre por salto, no fila por fila.
+-- Preserva exactamente el filtro y expresion del DISTINCT anterior.
+with recursive periodos_arca (periodo) as (
+    select (
+        select max(replace(left(kf.datos->>'FECHA', 7), '-', ''))
+        from kng_facturas kf
+        where kf.eliminado = false
+          and coalesce(kf.datos->>'FECHA', '') ~ '^[12][0-9]{3}-(0[1-9]|1[0-2])-'
+    )
+    union all
+    select (
+        select max(replace(left(kf.datos->>'FECHA', 7), '-', ''))
+        from kng_facturas kf
+        where kf.eliminado = false
+          and coalesce(kf.datos->>'FECHA', '') ~ '^[12][0-9]{3}-(0[1-9]|1[0-2])-'
+          and replace(left(kf.datos->>'FECHA', 7), '-', '') < p.periodo
+    )
+    from periodos_arca p
+    where p.periodo is not null
+)
+select periodo
+from periodos_arca
+where periodo is not null
 order by periodo desc
 SQL))
                 ->pluck('periodo')

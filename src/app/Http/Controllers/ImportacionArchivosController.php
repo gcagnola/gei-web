@@ -4,7 +4,6 @@ namespace App\Http\Controllers;
 
 use App\Services\KngDbfImportService;
 use App\Exceptions\MigracionExploracionException;
-use App\Services\GeiCoreProcesarPeriodoService;
 use App\Services\LiquidacionesPropietariosService;
 use App\Services\MigracionExploracionService;
 use App\Services\TransformacionCobolService;
@@ -281,7 +280,6 @@ class ImportacionArchivosController extends Controller
         string $periodo,
         MigracionExploracionService $migracion,
         TransformacionCobolService $transformacion,
-        GeiCoreProcesarPeriodoService $geiCore,
         LiquidacionesPropietariosService $liquidaciones
     ): RedirectResponse|JsonResponse {
         $faltantes = $this->archivosObligatoriosFaltantes($periodo);
@@ -373,56 +371,12 @@ class ImportacionArchivosController extends Controller
                 ->withErrors(['migracion' => $mensaje]);
         }
 
-        // GeI-Core se actualiza con el mismo período ya migrado a cobol_staging.
-        // Es una etapa deliberadamente NO bloqueante: gei_db ya quedó actualizado
-        // y una falla en GeI-Core no debe impedir el circuito operativo ni las
-        // liquidaciones de propietarios/impuestos garantizados.
-        $resultadoCore = null;
-        $errorCore = null;
-
-        $this->guardarProgreso($periodo, [
-            'estado' => 'PROCESANDO',
-            'etapa' => 'GEI_CORE',
-            'detalle' => 'Actualizando GeI-Core.',
-            'porcentaje' => 74,
-            'archivo' => null,
-            'procesados' => null,
-            'total' => null,
-        ]);
-
-        try {
-            $resultadoCore = $geiCore->procesar($periodo);
-        } catch (\Throwable $exception) {
-            report($exception);
-            $errorCore = $exception->getMessage();
-
-            $this->guardarProgreso($periodo, [
-                'estado' => 'PROCESANDO',
-                'etapa' => 'GEI_CORE',
-                'detalle' => 'GeI-Core terminó con advertencia: '.$errorCore,
-                'porcentaje' => 82,
-            ]);
-
-            Log::warning('GeI-Core no pudo procesar el período luego de actualizar gei_db.', [
-                'periodo' => $periodo,
-                'error' => $errorCore,
-            ]);
-        }
-
+        // Continua el circuito operativo: liquidaciones e impuestos garantizados.
         $mensaje = $this->mensajeMigracionCompleta(
             $periodo,
             $resultadoCrudo,
             $resultadoTablas
         );
-
-        if ($resultadoCore !== null) {
-            $mensaje .= sprintf(
-                ' GeI-Core: %s.',
-                (string) ($resultadoCore['estado'] ?? 'procesado')
-            );
-        } elseif ($errorCore !== null) {
-            $mensaje .= ' GeI-Core no pudo actualizarse; la actualización operativa de gei_db quedó completada y las liquidaciones no quedan bloqueadas.';
-        }
 
         $this->guardarProgreso($periodo, [
             'estado' => 'PROCESANDO',
@@ -457,8 +411,6 @@ class ImportacionArchivosController extends Controller
                     'resultado' => [
                         'crudos' => $resultadoCrudo,
                         'tablas' => $resultadoTablas,
-                        'gei_core' => $resultadoCore,
-                        'gei_core_error' => $errorCore,
                         'liquidaciones' => null,
                     ],
                 ], 422);
@@ -477,6 +429,39 @@ class ImportacionArchivosController extends Controller
             (int) ($resultadoLiquidaciones['pdf_generados'] ?? 0),
             (int) ($resultadoLiquidaciones['pdf_impuestos_garantizados_generados'] ?? 0)
         );
+
+        // GEI_ACTIVIDAD_CUENTAS_POST_IMPORTACION_20261030
+        // Una sola ejecución después de transformar las tablas y generar liquidaciones.
+        // Jamás recalcular en las páginas HTTP de Cuenta Corriente.
+        // Si falla, NO invalidar una importación y liquidaciones ya confirmadas.
+        try {
+            $this->guardarProgreso($periodo, [
+                'estado' => 'PROCESANDO',
+                'etapa' => 'ACTIVIDAD_CUENTAS',
+                'detalle' => 'Actualizando actividad operativa del período.',
+                'porcentaje' => 96,
+            ]);
+            $codigoActividad = \Illuminate\Support\Facades\Artisan::call(
+                'gei:actualizar-actividad-cuentas',
+                ['periodo' => $periodo, '--confirmar' => true]
+            );
+            if ($codigoActividad !== 0) {
+                throw new \RuntimeException(
+                    trim(\Illuminate\Support\Facades\Artisan::output())
+                        ?: 'El recálculo de actividad no terminó correctamente.'
+                );
+            }
+            $mensaje .= ' Actividad operativa de cuentas actualizada.';
+        } catch (\Throwable $exception) {
+            report($exception);
+            Log::warning('La actividad de cuentas no pudo actualizarse después de importar.', [
+                'periodo' => $periodo,
+                'error' => $exception->getMessage(),
+            ]);
+            $mensaje .= ' ADVERTENCIA: no se pudo actualizar la actividad de cuentas; '
+                .'repetir gei:actualizar-actividad-cuentas '
+                .$periodo.' --confirmar.';
+        }
 
         $this->guardarProgreso($periodo, [
             'estado' => 'FINALIZADO',
@@ -506,8 +491,6 @@ class ImportacionArchivosController extends Controller
                 'resultado' => [
                     'crudos' => $resultadoCrudo,
                     'tablas' => $resultadoTablas,
-                    'gei_core' => $resultadoCore,
-                    'gei_core_error' => $errorCore,
                     'liquidaciones' => $resultadoLiquidaciones,
                 ],
             ]);

@@ -272,6 +272,7 @@ final class MigracionClientesCobolService
         if (DB::getSchemaBuilder()->hasTable('clientes_resoluciones_origen')) {
             foreach (DB::table('clientes_resoluciones_origen')->cursor() as $fila) {
                 $resolucion = (array) $fila;
+                $resolucion['detalle_json'] = $this->decodificarJson($fila->detalle_json ?? null);
                 if (($resolucion['cliente_id'] ?? null) !== null) {
                     $resolucion['cliente_id'] = $canonicos[(int) $resolucion['cliente_id']]
                         ?? (int) $resolucion['cliente_id'];
@@ -314,6 +315,7 @@ final class MigracionClientesCobolService
     ): void {
         $clave = $entidad.'|'.$datos['cuenta'];
         $origenExistente = $estado['origenes'][$clave] ?? null;
+        $resolucionManual = $estado['resoluciones'][$clave] ?? null;
 
         if ($origenExistente !== null) {
             $clienteId = (int) $origenExistente['cliente_id'];
@@ -376,6 +378,42 @@ final class MigracionClientesCobolService
                 $estado
             );
             if ($identidadCambiada !== [] && ! $cuitComprobado) {
+                // Una cuenta ya vinculada puede cambiar de nombre en COBOL.
+                // Sólo se acepta la variación si un operador validó explícitamente
+                // que debe conservarse exactamente el cliente canónico actual.
+                $identidadValidada = $resolucionManual['detalle_json']['identidad_validada'] ?? null;
+                $validacionExistente = ($resolucionManual['decision'] ?? null) === 'ASOCIAR_EXISTENTE'
+                    && (int) ($resolucionManual['cliente_id'] ?? 0) === $clienteId
+                    && is_array($identidadValidada);
+                if ($validacionExistente) {
+                    foreach (self::CAMPOS_IDENTIDAD as $campo) {
+                        if (! $this->iguales($identidadValidada[$campo] ?? null, $datos[$campo] ?? null)) {
+                            $validacionExistente = false;
+                            break;
+                        }
+                    }
+                }
+                if ($validacionExistente) {
+                    // Actualiza el origen COBOL más reciente, nunca la identidad
+                    // del maestro public.clientes ni el titular de documentos.
+                    $this->guardarOrigen(
+                        $clienteId, $entidad, $datos, $origenExistente,
+                        $confirmar, $estado, $resultado
+                    );
+                    $this->guardarCuentaCliente(
+                        $clienteId, $entidad, $rol, $datos,
+                        $confirmar, $estado, $resultado
+                    );
+                    $this->asignarRol($clienteId, $rol, $confirmar, $estado, $resultado);
+                    $this->resolverConflictoAnterior(
+                        $clave, $clienteId, $confirmar, $estado, $resultado
+                    );
+                    $resultado['registros_validos']++;
+                    $clientesActividad[$clienteId] = true;
+
+                    return;
+                }
+
                 $this->guardarConflicto(
                     $entidad,
                     $datos,
@@ -450,7 +488,6 @@ final class MigracionClientesCobolService
             return;
         }
 
-        $resolucionManual = $estado['resoluciones'][$clave] ?? null;
         $forzarSeparado = ($resolucionManual['decision'] ?? null) === 'CREAR_SEPARADO';
 
         if (($resolucionManual['decision'] ?? null) === 'ASOCIAR_EXISTENTE') {

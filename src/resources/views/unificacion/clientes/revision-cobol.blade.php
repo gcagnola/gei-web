@@ -37,6 +37,7 @@
     $motivoTexto = match($conflicto->motivo) {
         'CUIT_Y_DOCUMENTO_APUNTAN_A_CLIENTES_DISTINTOS' => 'El CUIT y el documento del origen COBOL apuntan a clientes diferentes. Requiere decidir cuál identidad es correcta.',
         'IDENTIFICACION_PARCIAL_CON_NOMBRE_INCOMPATIBLE' => 'Existe una coincidencia parcial, pero algunos datos relevantes del origen COBOL no son compatibles con el cliente encontrado.',
+        'IDENTIDAD_CAMBIO_EN_CUENTA_EXISTENTE' => 'La cuenta COBOL ya estaba asociada, pero cambió algún dato de identidad en los archivos históricos. La revisión no debe crear ni trasladar cuentas.',
         default => 'La importación COBOL no pudo resolver esta identidad con seguridad.',
     };
 
@@ -58,7 +59,7 @@
             </p>
         </div>
         <a class="btn btn-outline-secondary"
-           href="{{ route('core-clientes.index', ['modo' => 'revisiones']) }}">
+           href="{{ route('archivo.unificacion.clientes.revisiones') }}">
             Volver
         </a>
     </div>
@@ -136,6 +137,10 @@
             $cuentaCoincide = $cuentaRevisionNormalizada !== ''
                 && $cuentasClienteNormalizadas->contains($cuentaRevisionNormalizada);
 
+            $esClienteYaVinculado = $clienteVinculadoCanonicoId !== null
+                && (int) $cand->id_canonico === $clienteVinculadoCanonicoId
+                && $cuentaCoincide;
+
             $camposComparables = [
                 'nombre' => ['Nombre', $datosOrigen['nombre'] ?? null, $c->nombre ?? null],
                 'cuit' => ['CUIT', $datosOrigen['cuit'] ?? null, $c->cuit ?? null],
@@ -156,17 +161,25 @@
                     @endif
                 </div>
 
-                @if ($estadoPendiente)
+                @if ($estadoPendiente && ($clienteVinculadoCanonicoId === null || $esClienteYaVinculado))
                     <form method="POST"
                           action="{{ route('archivo.unificacion.clientes.conflicto.resolver', $conflicto->id) }}"
-                          onsubmit="return confirm('¿Confirma asociar el origen COBOL de la revisión #{{ $conflicto->id }} al cliente #{{ $cand->id_canonico }}? El cliente #{{ $cand->id_canonico }} quedará como canónico.');">
+                          onsubmit="return confirm('{{ $esClienteYaVinculado ? '¿Validar el cambio histórico sin trasladar cuentas ni unificar personas?' : '¿Asociar el origen COBOL al cliente seleccionado para la siguiente importación?' }}');">
                         @csrf
                         <input type="hidden" name="decision" value="ASOCIAR_EXISTENTE">
                         <input type="hidden" name="cliente_id" value="{{ $cand->id_canonico }}">
                         <button class="btn btn-primary btn-sm">
-                            Asociar revisión #{{ $conflicto->id }} a cliente #{{ $cand->id_canonico }}
+                            @if ($esClienteYaVinculado)
+                                Validar variación histórica · conservar cliente #{{ $cand->id_canonico }}
+                            @else
+                                Asociar revisión #{{ $conflicto->id }} a cliente #{{ $cand->id_canonico }}
+                            @endif
                         </button>
                     </form>
+                @elseif ($estadoPendiente)
+                    <span class="badge text-bg-warning">
+                        Cuenta ya vinculada al cliente #{{ $clienteVinculadoCanonicoId }}. No reasignable desde esta revisión.
+                    </span>
                 @endif
             </div>
 

@@ -22,6 +22,7 @@ final class MigracionInmueblesCobolService
 
     public function __construct(
         private readonly InmuebleCobolNormalizer $normalizer,
+        private readonly IdentidadOperativaInmuebleResolver $identidad,
     ) {
     }
 
@@ -35,13 +36,17 @@ final class MigracionInmueblesCobolService
         ?int $limite = null,
         ?Closure $avance = null,
         ?Closure $incidencia = null,
-        ?Closure $auditoriaActualizacion = null
+        ?Closure $auditoriaActualizacion = null,
+        ?string $periodo = null
     ): array {
         $this->incidencia = $incidencia;
         $this->auditoriaActualizacion = $auditoriaActualizacion;
         $origen = $this->conexionExploracion();
         $this->validarOrigen($origen);
-        $filas = $this->ultimosInquilinos($origen, $limite);
+        if ($periodo === null || ! preg_match('/^20\d{2}(0[1-9]|1[0-2])$/', $periodo)) {
+            throw new RuntimeException('Indicá --periodo=AAAAMM. No se admite importar el último registro de todo el histórico.');
+        }
+        $filas = $this->inquilinosDelPeriodo($origen, $periodo, $limite);
         $resultado = $this->resultadoInicial($confirmar, count($filas));
 
         $procesar = function () use (
@@ -54,29 +59,33 @@ final class MigracionInmueblesCobolService
             $grupos = [];
             $total = count($filas);
 
-            // Detectar dentro del MISMO archivo importado partidas que intentan
-            // identificar más de una entidad (canónica o clave nueva). No elegimos.
+            // Una misma partida ligada a identidades físicas distintas es una
+            // contradicción; varios INQUILINOS con el mismo domicilio no lo son.
             $identidadesFuentePorPartida = [];
-            $origenesNuevosPorClave = [];
+            $partidasPorClaveFisica = [];
             foreach ($filas as $datosFuente) {
-                if (
-                    $datosFuente['cuenta_inquilino'] === ''
-                    || $datosFuente['cuenta_propietario'] === ''
-                    || $datosFuente['direccion_normalizada'] === ''
-                    || $datosFuente['clave_inmueble'] === ''
-                ) {
+                $fisica = $this->identidad->claveFisica($datosFuente);
+                if ($fisica === null) {
                     continue;
                 }
-                $idExistenteFuente = $this->resolverInmuebleExistenteId($datosFuente, $estado);
-                $crearSeparadoFuente = $this->tieneResolucionCrearSeparado($datosFuente, $estado);
-                $identidadFuente = $idExistenteFuente === null
-                    ? 'ORIGEN|'.$datosFuente['cuenta_inquilino']
-                    : 'ID|'.$idExistenteFuente;
-                if ($idExistenteFuente === null && ! $crearSeparadoFuente) {
-                    $origenesNuevosPorClave[(string) $datosFuente['clave_inmueble']][(string) $datosFuente['cuenta_inquilino']] = true;
+                $idFuente = $this->resolverInmuebleExistenteId($datosFuente, $estado);
+                if ($idFuente === null && ! $this->tieneResolucionCrearSeparado($datosFuente, $estado)) {
+                    $resuelto = $this->identidad->resolver(
+                        $datosFuente,
+                        $estado['inmuebles_por_domicilio'],
+                        $estado['partidas_por_inmueble']
+                    );
+                    if ($resuelto['estado'] === 'EXISTENTE') {
+                        $idFuente = $resuelto['id'];
+                    }
                 }
-                foreach ($datosFuente['partidas'] ?? [] as $partidaFuente) {
-                    $identidadesFuentePorPartida[(string) $partidaFuente][$identidadFuente] = true;
+                $identidad = $idFuente === null ? 'FISICA|'.$fisica : 'ID|'.$idFuente;
+                $partidasFuente = array_values(array_unique(array_map('strval', array_values($datosFuente['partidas'] ?? []))));
+                if ($partidasFuente !== []) {
+                    $partidasPorClaveFisica[$fisica][] = $partidasFuente;
+                }
+                foreach ($partidasFuente as $partidaFuente) {
+                    $identidadesFuentePorPartida[$partidaFuente][$identidad] = true;
                 }
             }
 
@@ -100,23 +109,14 @@ final class MigracionInmueblesCobolService
                     $resultado['registros_validos']++;
                     $inmuebleExistenteId = $this->resolverInmuebleExistenteId($datos, $estado);
                     $crearSeparado = $this->tieneResolucionCrearSeparado($datos, $estado);
-
-                    if (
-                        $inmuebleExistenteId === null
-                        && ! $crearSeparado
-                        && count($origenesNuevosPorClave[(string) $datos['clave_inmueble']] ?? []) > 1
-                    ) {
+                    $fisica = $this->identidad->claveFisica($datos);
+                    if ($fisica === null) {
                         $resultado['requieren_revision_identidad']++;
                         $this->registrarConflicto(
                             ['id' => null, 'clave_migracion' => $datos['clave_inmueble']],
                             $datos,
-                            'CLAVE_MIGRACION_COMPARTIDA_POR_VARIOS_ORIGENES',
-                            [
-                                'cuentas_inquilino_detectadas' => array_keys(
-                                    $origenesNuevosPorClave[(string) $datos['clave_inmueble']] ?? []
-                                ),
-                                'regla' => 'MISMA_CUENTA_PROPIETARIO_Y_DOMICILIO_NO_AUTORIZA_AGRUPAR_ORIGENES',
-                            ],
+                            'SEDE_O_IDENTIDAD_FISICA_INVALIDA',
+                            [],
                             $confirmar,
                             $estado,
                             $resultado
@@ -125,16 +125,26 @@ final class MigracionInmueblesCobolService
                     }
 
                     if ($inmuebleExistenteId === null && ! $crearSeparado) {
-                        $candidatosClave = $this->candidatosPorClaveMigracion($datos, $estado);
-                        if ($candidatosClave !== []) {
+                        $resolucionFisica = $this->identidad->resolver(
+                            $datos,
+                            $estado['inmuebles_por_domicilio'],
+                            $estado['partidas_por_inmueble']
+                        );
+                        if ($resolucionFisica['estado'] === 'EXISTENTE') {
+                            $inmuebleExistenteId = $resolucionFisica['id'];
+                        } elseif ($resolucionFisica['estado'] !== 'NUEVO'
+                            || isset($estado['inmuebles_sin_sede_por_domicilio'][$datos['direccion_normalizada']])) {
                             $resultado['requieren_revision_identidad']++;
                             $this->registrarConflicto(
                                 ['id' => null, 'clave_migracion' => $datos['clave_inmueble']],
                                 $datos,
-                                'CLAVE_MIGRACION_COINCIDENTE_REQUIERE_REVISION',
+                                $resolucionFisica['estado'] === 'NUEVO'
+                                    ? 'DOMICILIO_EXISTENTE_SIN_SEDE'
+                                    : $resolucionFisica['estado'],
                                 [
-                                    'inmuebles_candidatos' => $candidatosClave,
-                                    'regla' => 'CUENTA_PROPIETARIO_MAS_DOMICILIO_ES_EVIDENCIA_NO_IDENTIDAD',
+                                    'inmuebles_candidatos' => $resolucionFisica['candidatos'],
+                                    'identidad_fisica' => $fisica,
+                                    'regla' => 'NO_ELEGIR_ID_ARBITRARIAMENTE_NI_CREAR_DUPLICADO',
                                 ],
                                 $confirmar,
                                 $estado,
@@ -142,6 +152,29 @@ final class MigracionInmueblesCobolService
                             );
                             continue;
                         }
+                    }
+
+                    // Dos partidas incompatibles para el mismo domicilio y mes
+                    // podrían indicar unidades distintas: no agruparlas.
+                    $conjuntos = $partidasPorClaveFisica[$fisica] ?? [];
+                    $partidasContradictorias = false;
+                    foreach ($conjuntos as $a) {
+                        foreach ($conjuntos as $b) {
+                            if ($a !== $b && array_intersect($a, $b) === []) {
+                                $partidasContradictorias = true;
+                            }
+                        }
+                    }
+                    if ($inmuebleExistenteId === null && ! $crearSeparado && $partidasContradictorias) {
+                        $resultado['requieren_revision_identidad']++;
+                        $this->registrarConflicto(
+                            ['id' => null, 'clave_migracion' => $datos['clave_inmueble']],
+                            $datos,
+                            'MISMO_DOMICILIO_PARTIDAS_INCOMPATIBLES',
+                            ['identidad_fisica' => $fisica, 'partidas' => $conjuntos],
+                            $confirmar, $estado, $resultado
+                        );
+                        continue;
                     }
 
                     $partidasAmbiguasFuente = ($inmuebleExistenteId === null && ! $crearSeparado)
@@ -194,9 +227,9 @@ final class MigracionInmueblesCobolService
                         }
                     }
 
-                    $claveGrupo = $inmuebleExistenteId === null
-                        ? 'ORIGEN|'.$datos['cuenta_inquilino']
-                        : 'ID|'.$inmuebleExistenteId;
+                    $claveGrupo = $inmuebleExistenteId !== null
+                        ? 'ID|'.$inmuebleExistenteId
+                        : ($crearSeparado ? 'ORIGEN|'.$datos['cuenta_inquilino'] : 'FISICA|'.$fisica);
 
                     if (! isset($grupos[$claveGrupo])) {
                         $grupos[$claveGrupo] = [
@@ -339,22 +372,40 @@ final class MigracionInmueblesCobolService
         ];
     }
 
-    /** @return list<array<string, mixed>> */
-    private function ultimosInquilinos(ConnectionInterface $origen, ?int $limite): array
+    /**
+     * Procesa una instantánea mensual, no el último registro de cada cuenta
+     * a través de toda la historia. Misma selección de archivos que C0/C2.
+     * @return list<array<string, mixed>>
+     */
+    private function inquilinosDelPeriodo(ConnectionInterface $origen, string $periodo, ?int $limite): array
     {
+        $schema = $this->schema();
+        $archivos = $origen->table($schema.'.migraciones_periodos as p')
+            ->join($schema.'.migraciones_periodos_archivos as pa', 'pa.migracion_id', '=', 'p.id')
+            ->join($schema.'.archivos_importados as a', 'a.id', '=', 'pa.archivo_id')
+            ->where('p.estado', 'OK')
+            ->where('p.periodo', $periodo)
+            ->where(function ($q): void {
+                $q->whereRaw('LOWER(pa.procesado_en_tabla) IN (?, ?)', ['inquilino', 'cobol_staging.inquilino'])
+                    ->orWhereRaw("UPPER(a.nombre_archivo) LIKE 'INQUILINO%'");
+            })
+            ->select('pa.archivo_id', 'p.finalizada_en')
+            ->orderByDesc('p.finalizada_en')
+            ->orderByDesc('p.id')
+            ->get();
+        $archivoId = $archivos->first()?->archivo_id;
+        if ($archivoId === null) {
+            throw new RuntimeException("No hay una instantánea INQUILINO válida para {$periodo}.");
+        }
         $ultimos = [];
-        foreach (
-            $origen->table($this->schema().'.inquilino')
-                ->orderBy('archivo_id')
-                ->orderBy('numero_linea')
-                ->cursor() as $fila
-        ) {
+        foreach ($origen->table($schema.'.inquilino')->where('archivo_id', $archivoId)
+            ->orderBy('numero_linea')->cursor() as $fila) {
             $datos = $this->normalizer->inquilino($fila);
+            $datos['periodo_fuente'] = $periodo;
             if ($datos['cuenta_inquilino'] !== '') {
                 $ultimos[$datos['cuenta_inquilino']] = $datos;
             }
         }
-
         ksort($ultimos, SORT_STRING);
         $filas = array_values($ultimos);
 
@@ -418,6 +469,17 @@ final class MigracionInmueblesCobolService
             $relaciones[$fila->inmueble_id.'|'.$fila->cliente_cuenta_id] = $relacion;
         }
 
+        // C4: una titularidad con respaldo confirmado jamás puede ser
+        // sobrescrita o reabierta por el archivo INQUILINO de COBOL.
+        $titularidadesConfirmadas = [];
+        foreach (
+            DB::table('inmuebles_propietarios')
+                ->where('origen', 'GEI_CONFIRMADA')
+                ->select('inmueble_id')->distinct()->cursor() as $fila
+        ) {
+            $titularidadesConfirmadas[(int) $fila->inmueble_id] = true;
+        }
+
         $partidas = [];
         foreach (
             DB::table('inmuebles_partidas')
@@ -449,13 +511,62 @@ final class MigracionInmueblesCobolService
             $conflictos[$fila->firma] = $conflicto;
         }
 
+        $sucursales = DB::table('sucursales')->pluck('codigo', 'id')->all();
+        $sucursalesPorCodigo = array_flip($sucursales);
+        $sedesPorInmueble = [];
+        $porDomicilio = [];
+        $sinSede = [];
+        foreach ($inmueblesPorId as $id => $inmueble) {
+            $codigo = $sucursales[(int) ($inmueble['sucursal_id'] ?? 0)] ?? null;
+            if (in_array($codigo, ['SF', 'ST'], true)) {
+                $sedesPorInmueble[$id][$codigo] = true;
+            }
+        }
+        foreach ($origenes as $origen) {
+            $origenId = $this->resolverCanonicoIdDesdeMapa((int) $origen['inmueble_id'], $inmueblesPorId);
+            $datosCuenta = [
+                'cuenta_propietario' => $origen['cuenta_propietario'] ?? '',
+                'cuenta_inquilino' => $origen['clave_origen'] ?? '',
+            ];
+            if (($sede = $this->identidad->sede($datosCuenta)) !== null) {
+                $sedesPorInmueble[$origenId][$sede] = true;
+            }
+        }
+        foreach ($inmueblesPorId as $id => $inmueble) {
+            $canonicoId = $this->resolverCanonicoIdDesdeMapa($id, $inmueblesPorId);
+            if ($id !== $canonicoId) {
+                continue;
+            }
+            $domicilio = $this->normalizer->direccion((string) ($inmueble['domicilio_normalizado'] ?? ''));
+            if ($domicilio === '') {
+                continue;
+            }
+            $sedes = array_keys($sedesPorInmueble[$id] ?? $sedesPorInmueble[$canonicoId] ?? []);
+            if (count($sedes) !== 1) {
+                $sinSede[$domicilio][$canonicoId] = true;
+                continue;
+            }
+            $porDomicilio[$sedes[0].'|'.$domicilio][$canonicoId] = true;
+        }
+        $partidasPorInmueble = [];
+        foreach ($partidas as $partida) {
+            $canonicoId = $this->resolverCanonicoIdDesdeMapa((int) $partida['inmueble_id'], $inmueblesPorId);
+            $partidasPorInmueble[$canonicoId][] = (string) $partida['partida'];
+        }
+        $porDomicilio = array_map(fn (array $ids): array => array_map('intval', array_keys($ids)), $porDomicilio);
+
         return [
+            'inmuebles_por_domicilio' => $porDomicilio,
+            'inmuebles_sin_sede_por_domicilio' => $sinSede,
+            'partidas_por_inmueble' => $partidasPorInmueble,
+            'sucursales_por_codigo' => $sucursalesPorCodigo,
             'inmuebles_por_id' => $inmueblesPorId,
             'inmuebles_por_clave' => $inmueblesPorClave,
             'origenes' => $origenes,
             'cuentas_propietarios' => $cuentasPropietarios,
             'conflictos_clientes' => $conflictosClientes,
             'relaciones' => $relaciones,
+            'titularidades_confirmadas' => $titularidadesConfirmadas,
             'partidas' => $partidas,
             'inmuebles_por_partida' => $inmueblesPorPartida,
             'resoluciones_origen' => $resolucionesOrigen,
@@ -480,8 +591,8 @@ final class MigracionInmueblesCobolService
         bool $actualizarDatosMaestros = false
     ): array {
         $clave = $datos['clave_inmueble'];
-        // Una clave derivada (propietario + domicilio) NO identifica por sí sola.
-        // Sólo reutilizamos inmueble cuando el origen o una decisión humana aportó ID.
+        // El hash COBOL (propietario + domicilio) es evidencia histórica, no ID.
+        // Reutilizamos el ID por origen conocido o correspondencia física única.
         $existente = $inmuebleExistenteId === null
             ? null
             : ($estado['inmuebles_por_id'][$inmuebleExistenteId] ?? null);
@@ -493,7 +604,9 @@ final class MigracionInmueblesCobolService
 
         if ($existente === null) {
             $fila = [
-                'clave_migracion' => $clave,
+                // La clave maestra es estable aunque cambie propietario/inquilino.
+                // La firma antigua sigue guardándose en inmuebles_origenes.
+                'clave_migracion' => $this->identidad->claveMigracionFisica($datos) ?? $clave,
                 'id_inmueble_canonico' => null,
                 'codigo_origen' => null,
                 'domicilio' => $datos['direccion_normalizada'],
@@ -505,6 +618,7 @@ final class MigracionInmueblesCobolService
                 'destino_codigo' => null,
                 'identificador_cochera' => null,
                 'estado' => $activo ? 'ACTIVO' : 'INACTIVO',
+                'sucursal_id' => $estado['sucursales_por_codigo'][$this->identidad->sede($datos)] ?? null,
                 'observaciones' => null,
                 'created_at' => now(),
                 'updated_at' => now(),
@@ -599,6 +713,13 @@ final class MigracionInmueblesCobolService
         }
 
         $estado['inmuebles_por_id'][(int) $fila['id']] = $fila;
+        if (($fisica = $this->identidad->claveFisica($datos)) !== null
+            && $this->normalizer->direccion((string) ($fila['domicilio_normalizado'] ?? ''))
+                === $this->normalizer->direccion((string) $datos['direccion_normalizada'])) {
+            $candidatos = $estado['inmuebles_por_domicilio'][$fisica] ?? [];
+            $candidatos[] = (int) $fila['id'];
+            $estado['inmuebles_por_domicilio'][$fisica] = array_values(array_unique($candidatos));
+        }
         $estado['inmuebles_por_clave'][(string) $clave][(int) $fila['id']] = $fila;
         $estado['inmuebles_por_clave'][(string) $fila['clave_migracion']][(int) $fila['id']] = $fila;
 
@@ -734,6 +855,13 @@ final class MigracionInmueblesCobolService
         $clave = self::ENTIDAD.'|'.$datos['cuenta_inquilino'];
         $existente = $estado['origenes'][$clave] ?? null;
         $payload = $this->payloadOrigen($datos);
+        $historicas = array_values(array_filter(array_map('strval', array_merge(
+            $existente['datos_origen']['cuentas_propietarias_historicas'] ?? [],
+            [(string) ($existente['cuenta_propietario'] ?? ''), (string) $datos['cuenta_propietario']]
+        ))));
+        $historicas = array_values(array_unique($historicas));
+        sort($historicas, SORT_STRING);
+        $payload['cuentas_propietarias_historicas'] = $historicas;
         $fila = [
             'inmueble_id' => (int) $inmueble['id'],
             'sistema_origen' => self::SISTEMA,
@@ -807,6 +935,15 @@ final class MigracionInmueblesCobolService
         array &$estado,
         array &$resultado
     ): void {
+        // Una cuenta COBOL es evidencia de relación operativa, no prueba de
+        // titularidad. En presencia de una nómina confirmada (C4), esta fuente
+        // nunca crea, reactiva ni modifica propietarios de ese inmueble.
+        if (isset($estado['titularidades_confirmadas'][(int) $inmueble['id']])) {
+            $resultado['relaciones_sin_cambios']++;
+
+            return;
+        }
+
         $cuenta = $datos['cuenta_propietario'];
         $candidatos = $estado['cuentas_propietarios'][$cuenta] ?? [];
 
@@ -1225,6 +1362,7 @@ final class MigracionInmueblesCobolService
             'partidas' => $datos['partidas'],
             'marca_baja' => $datos['estado_origen'] === 'BAJA' ? 'B' : null,
             'fecha_baja' => $datos['fecha_baja'],
+            'periodo_fuente' => $datos['periodo_fuente'] ?? null,
         ];
     }
 

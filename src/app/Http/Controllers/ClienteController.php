@@ -104,6 +104,22 @@ class ClienteController extends Controller
             }
         });
 
+        // Si la edición se inició desde el maestro operativo, regresar a su
+        // ficha (no a clientes.show, que carga el listado heredado completo).
+        if ($request->input('origen_ficha') === 'maestro') {
+            $retorno = ['cliente' => $cliente->id];
+            foreach (['buscar', 'rol', 'estado', 'sede', 'page', 'tab', 'mes'] as $clave) {
+                $valor = $request->input('volver_'.$clave);
+                if (is_scalar($valor) && (string) $valor !== '') {
+                    $retorno[$clave] = (string) $valor;
+                }
+            }
+
+            return redirect()
+                ->route('clientes-maestro.show', $retorno)
+                ->with('estado', 'Los datos del cliente fueron actualizados.');
+        }
+
         return redirect()
             ->route('clientes.show', $cliente)
             ->with('estado', 'Los datos del cliente fueron actualizados.');

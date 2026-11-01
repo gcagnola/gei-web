@@ -5,6 +5,7 @@
     $puedeImportar = $puedeModulo('ARCHIVO_IMPORTAR');
     $puedeInmuebles = $puedeModulo('ARCHIVO_INMUEBLES');
     $puedeClientes = $puedeModulo('ARCHIVO_CLIENTES');
+    $puedeUnificar = auth()->user()?->can('administrar-unificaciones') ?? false;
     $puedeImpresionesCobol = $puedeModulo('ARCHIVO_IMPRESIONES_COBOL');
     $puedeLiquidacionesPropietarios = $puedeModulo('PROPIETARIOS_LIQUIDACIONES');
     $puedeContabilidad = $puedeModulo('CONTABILIDAD');
@@ -17,15 +18,14 @@
     $puedeSedes = $puedeModulo('PARAMETROS_SEDES');
     $puedeSeteos = $puedeModulo('OPCIONES_SETEOS');
 
-    $mostrarArchivo = $puedeImportar || $puedeInmuebles || $puedeClientes || $puedeImpresionesCobol;
+    $mostrarArchivo = $puedeImportar || $puedeInmuebles || $puedeClientes || $puedeImpresionesCobol || $puedeUnificar;
     $mostrarOpciones = $puedeUsuarios || $puedePerfiles || $puedePermisos || $puedeSedes || $puedeSeteos;
 
     $archivoActivo =
         request()->routeIs('archivo.*')
-        || request()->routeIs('personas.*')
         || request()->routeIs('inmuebles.*')
         || request()->routeIs('cuentas-corrientes.*')
-        || request()->routeIs('core-clientes.*')
+        || request()->routeIs('clientes-maestro.*')
         || (config('portal.funcionalidades.transferencias', false) && request()->routeIs('transferencias-informadas.*'));
 
     $propietariosActivo = request()->routeIs('propietarios.*');
@@ -82,15 +82,23 @@
                     @endif
                     @if ($puedeInmuebles)
                         <li>
-                            <a href="{{ route('inmuebles.index') }}" class="gei-menu__link {{ request()->routeIs('inmuebles.*') ? 'is-active' : '' }}">
+                            <a href="{{ route('inmuebles.maestro.index') }}" class="gei-menu__link {{ request()->routeIs('inmuebles.*') ? 'is-active' : '' }}">
                                 <span class="gei-menu__label">Inmuebles</span>
                             </a>
                         </li>
                     @endif
                     @if ($puedeClientes)
                         <li>
-                            <a href="{{ route('core-clientes.index') }}" class="gei-menu__link {{ request()->routeIs('core-clientes.*') ? 'is-active' : '' }}">
+                            <a href="{{ route('clientes-maestro.index') }}" class="gei-menu__link {{ request()->routeIs('clientes-maestro.*') ? 'is-active' : '' }}">
                                 <span class="gei-menu__label">Clientes</span>
+                            </a>
+                        </li>
+                    @endif
+                    @if ($puedeUnificar)
+                        <li>
+                            <a href="{{ route('archivo.unificacion.clientes.index', ['vista' => 'activos_revision']) }}"
+                               class="gei-menu__link {{ request()->routeIs('archivo.unificacion.*') ? 'is-active' : '' }}">
+                                <span class="gei-menu__label">Unificación</span>
                             </a>
                         </li>
                     @endif

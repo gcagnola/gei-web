@@ -411,5 +411,6 @@
     </div>
 
     @stack('scripts')
+    @include('components.gei-loading-overlay')
 </body>
 </html>
