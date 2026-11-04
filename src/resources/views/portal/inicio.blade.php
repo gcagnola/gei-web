@@ -17,7 +17,7 @@
         </div>
     </div>
     <div class="d-flex flex-wrap gap-2">
-        <a href="{{ route('portal.comprobantes-arca.index') }}" class="btn btn-outline-primary">Comprobantes ARCA</a>
+        <a href="{{ route('portal.comprobantes-arca.index') }}" class="btn btn-outline-primary" onclick="window.geiPageLoading?.show()">Comprobantes ARCA</a>
         @if (config('portal.funcionalidades.cuenta_corriente', false))
             <a href="{{ route('portal.cuenta-corriente.index') }}" class="btn btn-outline-primary">Cuenta corriente (prueba)</a>
         @endif
@@ -26,7 +26,9 @@
         @endif
         @if($cliente->roles->contains('codigo', 'PROPIETARIO'))
             <a href="{{ route('portal.liquidaciones-propietario.index') }}" class="btn btn-outline-primary">Liquidaciones propietario</a>
-            <a href="{{ route('portal.impuestos-garantizados.index') }}" class="btn btn-outline-primary">Impuestos garantizados</a>
+            @if($tieneImpuestos)
+                <a href="{{ route('portal.impuestos-garantizados.index') }}" class="btn btn-outline-primary">Impuestos garantizados</a>
+            @endif
         @endif
     </div>
 </div></div>

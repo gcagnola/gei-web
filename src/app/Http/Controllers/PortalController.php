@@ -11,12 +11,33 @@ use Illuminate\View\View;
 
 class PortalController extends Controller
 {
-    public function inicio(): View
+    public function inicio(\App\Services\ImpuestosGarantizadosPdfService $service): View
     {
         $portalUsuario = Auth::guard('portal')->user();
         $portalUsuario->load('cliente.roles', 'cliente.cuentas');
 
-        return view('portal.inicio', compact('portalUsuario'));
+        $tieneImpuestos = false;
+
+        if ($portalUsuario->cliente->roles->contains('codigo', 'PROPIETARIO')) {
+            $tieneImpuestos = \App\Models\LiquidacionPropietario::query()
+                ->where('cliente_id', $portalUsuario->cliente_id)
+                ->where('periodo', '>=', '202608')
+                ->get()
+                ->contains(function ($liquidacion) use ($service) {
+                    $ruta = $service->rutaPdfParaLiquidacion(
+                        (string) $liquidacion->periodo,
+                        $liquidacion->pdf_ruta
+                            ? (string) $liquidacion->pdf_ruta
+                            : null,
+                        (string) ($liquidacion->cuenta_impresa ?: $liquidacion->cuenta)
+                    );
+
+                    return $ruta !== null
+                        && \Illuminate\Support\Facades\Storage::disk('liquidaciones')->exists($ruta);
+                });
+        }
+
+        return view('portal.inicio', compact('portalUsuario', 'tieneImpuestos'));
     }
 
     public function actualizarDatos(Request $request): RedirectResponse

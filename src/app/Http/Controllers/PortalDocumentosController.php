@@ -153,7 +153,8 @@ final class PortalDocumentosController extends Controller
         $periodo = trim((string) $request->query('periodo', ''));
 
         $base = LiquidacionPropietario::query()
-            ->where('cliente_id', $portalUsuario->cliente_id);
+            ->where('cliente_id', $portalUsuario->cliente_id)
+            ->where('periodo', '>=', '202607');
 
         $periodos = (clone $base)
             ->select('periodo')
@@ -210,29 +211,58 @@ final class PortalDocumentosController extends Controller
     {
         $portalUsuario = Auth::guard('portal')->user();
         abort_unless($this->esPropietario($portalUsuario->cliente_id), 404);
+
         $periodo = trim((string) $request->query('periodo', ''));
 
-        $base = LiquidacionPropietario::query()->where('cliente_id', $portalUsuario->cliente_id);
-        $periodos = (clone $base)->select('periodo')->distinct()->orderByDesc('periodo')->pluck('periodo');
+        $disponibles = LiquidacionPropietario::query()
+            ->where('cliente_id', $portalUsuario->cliente_id)
+            ->where('periodo', '>=', '202608')
+            ->orderByDesc('periodo')
+            ->orderByDesc('fecha')
+            ->orderByDesc('id')
+            ->get()
+            ->filter(function ($liquidacion) use ($service) {
+                $ruta = $service->rutaPdfParaLiquidacion(
+                    (string) $liquidacion->periodo,
+                    $liquidacion->pdf_ruta
+                        ? (string) $liquidacion->pdf_ruta
+                        : null,
+                    (string) ($liquidacion->cuenta_impresa ?: $liquidacion->cuenta)
+                );
+
+                $liquidacion->impuestos_pdf_disponible = $ruta !== null
+                    && Storage::disk('liquidaciones')->exists($ruta);
+
+                return $liquidacion->impuestos_pdf_disponible;
+            })
+            ->values();
+
+        $periodos = $disponibles
+            ->pluck('periodo')
+            ->unique()
+            ->sortDesc()
+            ->values();
 
         if ($periodo !== '' && $periodos->contains($periodo)) {
-            $base->where('periodo', $periodo);
+            $disponibles = $disponibles
+                ->filter(fn ($l) => $l->periodo === $periodo)
+                ->values();
         } else {
             $periodo = '';
         }
 
-        $liquidaciones = $base->orderByDesc('periodo')->orderByDesc('fecha')->orderByDesc('id')->paginate(24)->withQueryString();
+        $pagina = max(1, (int) request()->query('page', 1));
 
-        foreach ($liquidaciones->items() as $liquidacion) {
-            $ruta = $service->rutaPdfParaLiquidacion(
-                (string) $liquidacion->periodo,
-                $liquidacion->pdf_ruta ? (string) $liquidacion->pdf_ruta : null,
-                (string) ($liquidacion->cuenta_impresa ?: $liquidacion->cuenta),
-            );
-
-            $liquidacion->impuestos_pdf_disponible = $ruta !== null
-                && Storage::disk('liquidaciones')->exists($ruta);
-        }
+        $liquidaciones = new \Illuminate\Pagination\LengthAwarePaginator(
+            $disponibles->forPage($pagina, 24)->values(),
+            $disponibles->count(),
+            24,
+            $pagina,
+            [
+                'path' => $request->url(),
+                'query' => $request->query(),
+            ]
+        );
 
         return view('portal.documentos.impuestos-garantizados', compact(
             'portalUsuario', 'periodos', 'periodo', 'liquidaciones'
@@ -248,6 +278,9 @@ final class PortalDocumentosController extends Controller
             ->whereKey($liquidacion)
             ->where('cliente_id', $portalUsuario->cliente_id)
             ->firstOrFail();
+
+        // Impuestos garantizados visibles desde agosto de 2026, incluso por URL directa.
+        abort_unless((string) $registro->periodo >= '202608', 404);
 
         $ruta = $service->rutaPdfParaLiquidacion(
             (string) $registro->periodo,

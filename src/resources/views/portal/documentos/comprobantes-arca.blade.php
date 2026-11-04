@@ -14,7 +14,7 @@
     <div class="card-body d-flex flex-wrap align-items-end gap-3">
         <div>
             <label class="form-label">Período</label>
-            <select name="periodo" class="form-select" onchange="this.form.submit()">
+            <select name="periodo" class="form-select" onchange="window.geiPageLoading?.show(); this.form.submit()">
                 @forelse($periodos as $opcion)
                     <option value="{{ $opcion }}" @selected($periodo === $opcion)>
                         {{ substr($opcion, 4, 2) }}/{{ substr($opcion, 0, 4) }}
@@ -47,7 +47,7 @@
                             @if($esFactura && !empty($comprobante->fecha_comprobante))
                                 {{ \Carbon\Carbon::parse($comprobante->fecha_comprobante)->format('d/m/Y') }}
                             @else
-                                {{ $comprobante->fecha ?: '—' }}
+                                {{ filled($comprobante->fecha ?? null) ? \Carbon\Carbon::parse($comprobante->fecha)->format('d/m/Y') : '—' }}
                             @endif
                         </td>
                         <td>{{ $comprobante->cuenta_cobol ?: '—' }}</td>
