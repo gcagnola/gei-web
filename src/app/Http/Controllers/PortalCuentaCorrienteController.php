@@ -16,7 +16,6 @@ final class PortalCuentaCorrienteController extends Controller
             'seleccion' => ['nullable', 'string', 'max:30'],
             'periodo' => ['nullable', 'regex:/^(19|20)[0-9]{2}(0[1-9]|1[0-2])$/'],
             'page' => ['nullable', 'integer', 'min:1'],
-            'fecha_calculo' => ['nullable', 'date_format:Y-m-d'],
         ]);
 
         $portalUsuario = Auth::guard('portal')->user();
@@ -56,9 +55,9 @@ final class PortalCuentaCorrienteController extends Controller
         $saldosCoccte = null;
         $snapshot = null;
         $diagnostico = null;
-        $fechaCalculo = (string) ($datos['fecha_calculo'] ?? '');
-        $pruebaWeb = app()->environment('local', 'testing')
-            && (bool) config('portal.cuenta_corriente.web_prueba', false);
+        $fechaCalculo = \Carbon\CarbonImmutable::now('America/Argentina/Cordoba')->toDateString();
+        $pruebaWeb = false; // Portal siempre consulta gei_db (sin overlays de prueba).
+        $cuadrosCuentaCobol = [];
 
         if ($seleccionada !== null) {
             // WEB_CTACTE_DIAGNOSTICO_20261026
@@ -79,8 +78,12 @@ final class PortalCuentaCorrienteController extends Controller
                 }
             }
 
-            $fechaCalculo = $fechaCalculo !== ''
-                ? $fechaCalculo : (string) ($snapshot['cierre'] ?? now()->toDateString());
+            if ($seleccionada['rol'] === 'INQUILINO') {
+                // Misma lectura y transformacion que la ficha de Administracion.
+                // La seleccion de cuenta ya fue autorizada por cliente portal.
+                $cuadrosCuentaCobol[] = app(\App\Services\CuentaCorrienteLccinqCompartidaService::class)
+                    ->preparar($snapshot, $seleccionada['cuenta'], 'INQUILINO', $fechaCalculo);
+            }
 
             if ($pruebaWeb && $sf && $seleccionada['rol'] === 'INQUILINO'
                 && $snapshot['fuente'] === 'CIERRE_PRUEBA') {
@@ -118,7 +121,8 @@ final class PortalCuentaCorrienteController extends Controller
             );
         }
 
-        return view('portal.cuenta-corriente', [
+        return view($seleccionada !== null && $seleccionada['rol'] === 'INQUILINO'
+            ? 'portal.cuenta-corriente-lccinq' : 'portal.cuenta-corriente', [
             'portalUsuario' => $portalUsuario,
             'cuentas' => $cuentas,
             'seleccionada' => $seleccionada,
@@ -129,6 +133,7 @@ final class PortalCuentaCorrienteController extends Controller
             'diagnostico' => $diagnostico,
             'fechaCalculo' => $fechaCalculo,
             'pruebaWeb' => $pruebaWeb,
+            'cuadrosCuentaCobol' => $cuadrosCuentaCobol,
         ]);
     }
     /**

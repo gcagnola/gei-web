@@ -61,7 +61,7 @@ final class TransformacionCobolService
             $etapa = 'INMUEBLES';
             $this->actualizarEtapa($procesoId, $etapa);
             $this->guardarProgreso($periodo, 'INMUEBLES', 'Actualizando inmuebles desde PostgreSQL.', 52);
-            $resultado['inmuebles'] = $this->inmuebles->ejecutar(true);
+            $resultado['inmuebles'] = $this->inmuebles->ejecutar(true, null, null, null, null, $periodo);
 
             $etapa = 'CONTRATOS';
             $this->actualizarEtapa($procesoId, $etapa);

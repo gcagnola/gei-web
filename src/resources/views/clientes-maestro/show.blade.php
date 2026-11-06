@@ -178,6 +178,33 @@
     </ul>
 
     @if($tab === 'datos')
+    {{-- GEI_FICHA_DATOS_INMUEBLES_20261106: edición de email en el maestro canónico --}}
+    <div class="card border mb-3" aria-label="Editar email del cliente">
+        <div class="card-header bg-light fw-semibold">Correo electrónico</div>
+        <div class="card-body">
+            @if(session('email_actualizado'))
+                <div class="alert alert-success py-2" role="status">{{ session('email_actualizado') }}</div>
+            @endif
+            <form method="POST" action="{{ route('clientes-maestro.email.actualizar', ['cliente' => $operativo->id]) }}" class="d-flex flex-wrap align-items-end gap-2">
+                @csrf
+                @foreach(['buscar', 'rol', 'estado', 'sede', 'page', 'periodo_actividad'] as $filtroEmail)
+                    @if(request()->has($filtroEmail) && is_scalar(request()->query($filtroEmail)))
+                        <input type="hidden" name="{{ $filtroEmail }}" value="{{ request()->query($filtroEmail) }}">
+                    @endif
+                @endforeach
+                <div class="flex-grow-1">
+                    <label for="gei-email-cliente" class="form-label small fw-semibold mb-1">Email</label>
+                    <input id="gei-email-cliente" type="email" name="email" maxlength="180" autocomplete="email"
+                           class="form-control form-control-sm @error('email') is-invalid @enderror"
+                           value="{{ old('email', $operativo->email) }}" placeholder="correo@ejemplo.com">
+                    @error('email') <div class="invalid-feedback">{{ $message }}</div> @enderror
+                </div>
+                <button type="submit" class="btn btn-sm btn-primary">Guardar email</button>
+            </form>
+            <div class="small text-muted mt-2">El cambio se guarda en la ficha del cliente; no modifica las cuentas COBOL.</div>
+        </div>
+    </div>
+
         <div class="row g-3">
             <div class="col-lg-6">
                 <div class="card border-0 shadow-sm h-100"><div class="card-body">
@@ -371,7 +398,10 @@
         @if($fichasContratosError)
             <div class="alert alert-warning small">{{ $fichasContratosError }} Los vínculos operativos siguen disponibles.</div>
         @endif
-        <section class="card border-0 shadow-sm mb-3">
+
+{{-- GEI_FICHA_DATOS_INMUEBLES_20261106: ocultar seccion de propietario en ficha inquilina --}}
+@if($cuentas->contains('rol', 'PROPIETARIO') && ($filtroRol ?? 'TODOS') !== 'INQUILINO')
+<section class="card border-0 shadow-sm mb-3">
             <div class="card-header bg-white fw-semibold">Inmuebles activos del propietario</div>
             <div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0">
                 <thead class="table-light"><tr><th>Domicilio</th><th>Cuentas COBOL</th><th>Estado</th></tr></thead>
@@ -396,8 +426,13 @@
                 </details></div>
             @endif
         </section>
+@endif {{-- GEI_FICHA_DATOS_INMUEBLES_20261106 --}}
 
-        <section class="card border-0 shadow-sm mb-3">
+
+
+{{-- GEI_FICHA_DATOS_INMUEBLES_20261106: ocultar seccion de propietario en ficha inquilina --}}
+@if($cuentas->contains('rol', 'PROPIETARIO') && ($filtroRol ?? 'TODOS') !== 'INQUILINO')
+<section class="card border-0 shadow-sm mb-3">
             <div class="card-header bg-white fw-semibold">Reparto de cobro vigente</div>
             <div class="card-body pb-1 small text-muted">Beneficiarios y porcentajes de la última liquidación procesada. Este reparto no implica titularidad del inmueble.</div>
             <div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0">
@@ -412,8 +447,13 @@
                 @endforelse</tbody>
             </table></div>
         </section>
+@endif {{-- GEI_FICHA_DATOS_INMUEBLES_20261106 --}}
 
-        <section class="card border-0 shadow-sm mb-3">
+
+
+{{-- GEI_FICHA_DATOS_INMUEBLES_20261106: ocultar seccion de propietario en ficha inquilina --}}
+@if($cuentas->contains('rol', 'PROPIETARIO') && ($filtroRol ?? 'TODOS') !== 'INQUILINO')
+<section class="card border-0 shadow-sm mb-3">
             <div class="card-header bg-white fw-semibold">Inquilinos de sus inmuebles</div>
             <div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0">
                 <thead class="table-light"><tr><th>Inquilino</th><th>CUIT</th><th>Cuenta</th><th>Inmueble</th><th>Desde</th><th>Hasta</th></tr></thead>
@@ -444,6 +484,8 @@
                 </details></div>
             @endif
         </section>
+@endif {{-- GEI_FICHA_DATOS_INMUEBLES_20261106 --}}
+
 
         <section class="card border-0 shadow-sm mb-3">
             <div class="card-header bg-white fw-semibold">Contratos como inquilino</div>
@@ -482,6 +524,8 @@
             $mesActual = substr($mes, 0, 4).'-'.substr($mes, 4, 2);
         @endphp
         <div class="card border-0 shadow-sm mb-3">
+            {{-- LCCINQ: la liquidación de deuda no depende del mes seleccionado. --}}
+            @if($tab !== 'cuenta-corriente')
             <div class="card-header bg-white d-flex flex-wrap justify-content-between align-items-center gap-2">
                 <strong>{{ $titulo }} · {{ substr($mes,4,2) }}-{{ substr($mes,0,4) }}</strong>
                 @if($tab === 'cuenta-corriente')
@@ -548,23 +592,23 @@
                     <noscript><input type="month" class="form-control form-control-sm" name="mes" value="{{ $mesActual }}"></noscript>
                 </form>
             </div>
+            @endif
             @if($tab === 'cuenta-corriente')
                 <div class="card-body">
-                    {{-- Vista conciliada GIMB68: cuenta por cuenta, sin fusionar ledgers. --}}
-                    @include('clientes-maestro.partials.cuenta-corriente-cobol-gimb68')
-                    {{-- Evitar dos saldos distintos para las cuentas ya reconstruidas
-                         desde el MISMO cierre COBOL que usa Autogestión. --}}
+                    <!-- GEI_HISTORIAL_GIMB68_DESPLEGABLE_20261106 -->
+                    {{-- Liquidación actual y cálculo GIMB38: visibles sin selector mensual. --}}
                     @include('clientes-maestro.partials.saldos-e-intereses', [
                         'resumenSaldosCuentas' => $resumenSaldosCuentas->reject(
                             static fn ($r) => $cuentasCobolGimb68->has($r->rol.'|'.$r->cuenta)
                         ),
                     ])
-                    @if($actividad->isNotEmpty() || $cuentasCobolGimb68->isEmpty())
-                        @include('clientes-maestro.partials.movimientos-operativos', [
-                            'movimientosOperativos' => $actividad,
-                            'resumenesOperativos' => $resumenSaldosCuentas,
-                        ])
-                    @endif
+                    <details class="border rounded mt-3" id="gei-historial-gimb68" @if(request()->has('mes') || request()->has('fecha_desde_historial')) open @endif>
+                        <summary class="p-3 fw-semibold bg-light" style="cursor:pointer">Historial de cuenta corriente</summary>
+                        <div class="p-3">
+                            {{-- GEI_HISTORIAL_DUAL_DESDE_20261106: fecha DESDE, COBOL pagados marcados, IVA desglosado. --}}
+                            @include('clientes-maestro.partials.historial-cuenta-desde')
+                        </div>
+                    </details>
                 </div>
             @elseif($tab === 'liquidaciones' || $tab === 'impuestos')
                 <div class="table-responsive"><table class="table table-hover align-middle mb-0">

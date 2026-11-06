@@ -613,3 +613,7 @@ Route::get('/archivo/unificacion', [UnificacionInmuebleController::class, 'index
     ->whereNumber('lote')
     ->where('archivo', '[A-Za-z0-9._-]+')
     ->name('kng.facturas.pdf');
+
+// GEI_FICHA_DATOS_INMUEBLES_20261106: cliente canónico, email editable con control de sedes y perfil.
+\Illuminate\Support\Facades\Route::post('/archivo/clientes-maestro/{cliente}/email', [\App\Http\Controllers\ClienteMaestroController::class, 'actualizarEmail'])
+    ->middleware('auth')->name('clientes-maestro.email.actualizar');

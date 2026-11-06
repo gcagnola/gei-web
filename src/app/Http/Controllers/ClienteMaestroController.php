@@ -31,6 +31,56 @@ use Illuminate\Support\Facades\Storage;
  */
 final class ClienteMaestroController extends Controller
 {
+    /** GEI_FICHA_DATOS_INMUEBLES_20261106: edición exclusivamente del correo del cliente operativo canónico. */
+    public function actualizarEmail(Request $request, int $cliente): RedirectResponse
+    {
+        /** @var Usuario|null $usuario */
+        $usuario = $request->user();
+        abort_unless($usuario instanceof Usuario && $usuario->activo
+            && $usuario->perfil?->puedeVerModulo('ARCHIVO_CLIENTES'), 403);
+
+        $sedes = array_values(array_intersect(['SF', 'ST'],
+            array_map('strtoupper', $usuario->codigosSucursales())));
+        abort_if($sedes === [], 403);
+
+        $sede = strtoupper(trim((string) $request->input('sede', 'TODAS')));
+        if (count($sedes) === 1 || ! in_array($sede, $sedes, true)) {
+            $sede = count($sedes) === 1 ? $sedes[0] : 'TODAS';
+        }
+        $visibles = $sede === 'TODAS' ? $sedes : [$sede];
+        $prefijos = [];
+        foreach ($visibles as $codigo) {
+            array_push($prefijos, ...($codigo === 'SF' ? ['1103', '1202'] : ['2103', '2202']));
+        }
+
+        $operativo = Cliente::query()->whereNull('id_cliente_canonico')->findOrFail($cliente);
+        $tieneCuentaVisible = DB::table('clientes_cuentas as cc')
+            ->join('clientes as origen', 'origen.id', '=', 'cc.cliente_id')
+            ->whereRaw('COALESCE(origen.id_cliente_canonico, origen.id) = ?', [$operativo->id])
+            ->whereIn(DB::raw('LEFT(cc.cuenta, 4)'), $prefijos)
+            ->exists();
+        $esAdministradorGlobal = Gate::allows('administrar-unificaciones')
+            && in_array('SF', $sedes, true) && in_array('ST', $sedes, true);
+        abort_unless($tieneCuentaVisible || ($esAdministradorGlobal && $sede === 'TODAS'), 403);
+
+        $validado = $request->validate([
+            'email' => ['nullable', 'email:rfc', 'max:180'],
+        ], [
+            'email.email' => 'Ingresá un correo electrónico válido.',
+            'email.max' => 'El email puede contener hasta 180 caracteres.',
+        ]);
+        $nuevoEmail = trim((string) ($validado['email'] ?? ''));
+        $operativo->email = $nuevoEmail !== '' ? $nuevoEmail : null;
+        $operativo->save();
+
+        return redirect()->route('clientes-maestro.show', [
+            'cliente' => $operativo->id,
+            'tab' => 'datos',
+            ...$request->only(['buscar', 'rol', 'estado', 'sede', 'page', 'periodo_actividad']),
+        ])->with('email_actualizado', 'Correo electrónico actualizado.');
+    }
+
+
     public function index(Request $request, ClienteActividadOperativaPeriodoService $actividadPeriodo): View
     {
         /** @var Usuario|null $usuario */
@@ -248,6 +298,19 @@ final class ClienteMaestroController extends Controller
         if ($tab === 'cuenta-corriente' && $mes > now()->format('Ym')) {
             $mes = now()->format('Ym');
         }
+        // GEI_HISTORIAL_DUAL_DESDE_20261106: COCCTE historico desde una fecha; no afecta liquidacion actual.
+        $fechaDesdeHistorial = '';
+        if ($tab === 'cuenta-corriente') {
+            $fechaDesdeHistorial = trim((string) $request->query('fecha_desde_historial', ''));
+            if ($fechaDesdeHistorial === '') {
+                $fechaDesdeHistorial = substr($mes, 0, 4).'-'.substr($mes, 4, 2).'-01';
+            }
+            abort_unless(preg_match('/^(19|20)\d{2}-(0[1-9]|1[0-2])-([0-2]\d|3[01])$/D', $fechaDesdeHistorial) === 1
+                && checkdate((int) substr($fechaDesdeHistorial, 5, 2), (int) substr($fechaDesdeHistorial, 8, 2), (int) substr($fechaDesdeHistorial, 0, 4))
+                && $fechaDesdeHistorial <= now('America/Argentina/Cordoba')->toDateString(), 422);
+            // Los dos selectores apuntan a una unica fecha DESDE.
+            $mes = substr($fechaDesdeHistorial, 0, 4).substr($fechaDesdeHistorial, 5, 2);
+        }
 
         // Menú lateral: misma frontera de visibilidad que la ficha. 40 filas por
         // página y consultas livianas: no cargar documentos de toda la nómina.
@@ -366,6 +429,8 @@ final class ClienteMaestroController extends Controller
         // La identidad y la visibilidad provienen del maestro operativo.
         // Para la cuenta corriente se consultará por (dominio, cuenta) exactos.
         $actividad = collect();
+        $historialCobolDesde = null;
+        $saldosInicialesHistorial = collect(); // GEI_HISTORIAL_SALDO_INICIAL_20261106
 
         // Documentación operativa: no depende de que exista un snapshot Core.
         // Se consultan exclusivamente las cuentas COBOL del cliente y sede visibles.
@@ -377,17 +442,10 @@ final class ClienteMaestroController extends Controller
         }
 
 
-        // Reconstrucción CONTABLE GIMB68 del cierre PRUEBA COBOL para cuentas
-        // inquilinas autorizadas. Misma fuente y regla que Autogestión.
-        // Se conserva el circuito legado para cuentas no cubiertas.
+        // Una sola fuente operativa: gei_db.cuentas_corrientes_movimientos.
+        // No excluir cuentas por overlays GIMB68 de Desarrollo/Test.
         $cuentasCobolGimb68 = collect();
         $incidenciasCobolGimb68 = [];
-        if ($tab === 'cuenta-corriente') {
-            $lecturaCobolGimb68 = app(\App\Services\CuentaCorrienteCobolGimb68ConsultaService::class)
-                ->consultar($cuentas, $mes);
-            $cuentasCobolGimb68 = $lecturaCobolGimb68['cuentas'];
-            $incidenciasCobolGimb68 = $lecturaCobolGimb68['incidencias'];
-        }
 
         // Saldo anterior/acumulado de las cuentas OPERATIVAS autorizadas. No
         // recalcula cargos, intereses ni reemplaza el cierre real del COBOL.
@@ -397,9 +455,17 @@ final class ClienteMaestroController extends Controller
         $fechaCalculoIntereses = '';
         $cuentaSeleccionadaIntereses = '';
         $cuentasInquilinasSimulables = collect();
-        $mostrarInteresesPrueba = app()->environment('local', 'testing')
-            && (bool) config('portal.cuenta_corriente.web_prueba', false);
+        $mostrarInteresesPrueba = false; // Sin simulaciones PRUEBA en la pantalla operativa.
+        $cuadrosCuentaCobol = []; // Una sola vista LCCINQ para Admin y Portal.
+        $fechaLccinq = '';
         if ($tab === 'cuenta-corriente') {
+            // LCCINQ, solo inquilinos: las cuentas ya estan autorizadas por sede
+            // y pertenecen al cliente canonico cargado en esta ficha.
+            $fechaLccinq = \Carbon\CarbonImmutable::now('America/Argentina/Cordoba')->toDateString();
+            foreach ($cuentas->where('rol', 'INQUILINO')->where('activo', true) as $autorizada) {
+                $cuadrosCuentaCobol[] = app(\App\Services\CuentaCorrienteLccinqCompartidaService::class)
+                    ->consultar((string) $autorizada->cuenta, 'INQUILINO', $fechaLccinq);
+            }
             $resumenSaldosCuentas = app(\App\Services\CuentaCorrienteSaldosClienteService::class)
                 ->consultar($cuentas, $mes);
 
@@ -446,10 +512,12 @@ final class ClienteMaestroController extends Controller
         if ($tab === 'cuenta-corriente') {
             // Sólo movimientos de cuentas sin panel del cierre COBOL: no duplicar
             // importes ni presentar dos saldos para un mismo rol + cuenta.
-            $cuentasSinCierre = $cuentas->reject(
-                static fn ($c): bool => $cuentasCobolGimb68->has($c->rol.'|'.$c->cuenta)
-            )->values();
+            $cuentasSinCierre = $cuentas->values();
             $actividad = $movimientosOperativos->consultar($cuentasSinCierre, $mes);
+            $historialCobolDesde = app(\App\Services\CuentaCorrienteHistorialDesdeService::class)
+                ->consultar($cuentasSinCierre, $fechaDesdeHistorial);
+            $saldosInicialesHistorial = app(\App\Services\CuentaCorrienteHistorialDesdeService::class)
+                ->saldosIniciales($cuentasSinCierre, $fechaDesdeHistorial);
         }
 
         return view('clientes-maestro.show', [
@@ -473,6 +541,9 @@ final class ClienteMaestroController extends Controller
             'tab' => $tab,
             'mes' => $mes,
             'actividad' => $actividad,
+            'fechaDesdeHistorial' => $fechaDesdeHistorial,
+            'historialCobolDesde' => $historialCobolDesde,
+            'saldosInicialesHistorial' => $saldosInicialesHistorial,
             'resumenSaldosCuentas' => $resumenSaldosCuentas,
             'cuentasCobolGimb68' => $cuentasCobolGimb68,
             'incidenciasCobolGimb68' => $incidenciasCobolGimb68,
@@ -482,6 +553,8 @@ final class ClienteMaestroController extends Controller
             'cuentaSeleccionadaIntereses' => $cuentaSeleccionadaIntereses,
             'cuentasInquilinasSimulables' => $cuentasInquilinasSimulables,
             'mostrarInteresesPrueba' => $mostrarInteresesPrueba,
+            'cuadrosCuentaCobol' => $cuadrosCuentaCobol,
+            'fechaLccinq' => $fechaLccinq,
             'administrador' => $administrador,
             'prefijosVisibles' => $prefijos,
             'volver' => $request->only(['buscar', 'rol', 'estado', 'sede', 'page', 'periodo_actividad']),
