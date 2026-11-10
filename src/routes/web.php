@@ -250,6 +250,11 @@ Route::middleware('auth')->group(function () {
     Route::get('/archivo/clientes-maestro/{cliente}', [ClienteMaestroController::class, 'show'])
         ->whereNumber('cliente')
         ->name('clientes-maestro.show');
+    // GEI_CONTRATOS_DOC_20261106: solo documento contractual validado; permisos por cuenta.
+    Route::get('/archivo/clientes-maestro/{cliente}/contratos-documentos/{documento}/pdf',
+        [ClienteMaestroController::class, 'pdfContratoDocumental'])
+        ->whereNumber('cliente')->whereNumber('documento')
+        ->name('clientes-maestro.contrato-documental.pdf');
     Route::get('/archivo/clientes-maestro/{cliente}/liquidaciones/{liquidacion}/{tipo}/pdf',
         [ClienteMaestroController::class, 'pdfLiquidacion'])
         ->whereNumber('cliente')->whereNumber('liquidacion')

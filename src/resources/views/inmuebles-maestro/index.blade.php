@@ -164,10 +164,22 @@
                             <div class="small text-muted">El cambio de sede permanece protegido; no se habilita edición en esta ficha.</div>
                         </div>
 
+                        {{-- Enlaces solo a fichas visibles; el controlador de clientes vuelve a autorizar la cuenta y sede. --}}
+                        @php
+                            $puedeAbrirFichaCliente = (bool) (auth()->user()?->activo
+                                && auth()->user()?->perfil?->puedeVerModulo('ARCHIVO_CLIENTES'));
+                            $sedeEnlaceCliente = $sede === 'SIN_SEDE' ? 'TODAS' : $sede;
+                        @endphp
                         <h3 class="h6">Propietarios</h3>
                         @forelse($propietarios as $p)
                             <div class="border-bottom py-2 small">
-                                <div class="fw-semibold">{{ $p->nombre }}</div>
+                                <div class="fw-semibold">
+                                    @if($puedeAbrirFichaCliente && !empty($p->cliente_maestro_id))
+                                        <a href="{{ route('clientes-maestro.show', ['cliente' => $p->cliente_maestro_id, 'tab' => 'inmuebles', 'rol' => 'PROPIETARIO', 'sede' => $sedeEnlaceCliente]) }}">{{ $p->nombre }}</a>
+                                    @else
+                                        {{ $p->nombre }}
+                                    @endif
+                                </div>
                                 <div>{{ $cuentaCobol($p->cuenta) }}</div>
                                 @if($p->porcentaje !== null) <div>Participación {{ number_format((float) $p->porcentaje, 2, ',', '.') }} %</div> @endif
                                 <div class="text-muted">{{ $p->fuente }}{{ $p->activo === null ? '' : ($p->activo ? ' · Activo' : ' · Histórico') }}</div>
@@ -190,8 +202,22 @@
                                     <strong>Contrato #{{ $c->id }}</strong>
                                     <span class="badge {{ $c->estado === 'ACTIVO' && $c->relacion_activa ? 'text-bg-success' : 'text-bg-secondary' }}">{{ $c->estado }}</span>
                                 </div>
-                                <div class="mt-1"><strong>Inquilino:</strong> {{ $c->inquilino_nombre }}<br><span class="text-muted">{{ $cuentaCobol($c->cuenta_inquilino) }}</span></div>
-                                <div class="mt-1"><strong>Propietario:</strong> {{ $c->propietario_nombre }}<br><span class="text-muted">{{ $cuentaCobol($c->cuenta_propietario) }}</span></div>
+                                <div class="mt-1"><strong>Inquilino:</strong>
+                                    @if($puedeAbrirFichaCliente && !empty($c->inquilino_cliente_maestro_id))
+                                        <a href="{{ route('clientes-maestro.show', ['cliente' => $c->inquilino_cliente_maestro_id, 'tab' => 'inmuebles', 'rol' => 'INQUILINO', 'sede' => $sedeEnlaceCliente]) }}">{{ $c->inquilino_nombre }}</a>
+                                    @else
+                                        {{ $c->inquilino_nombre }}
+                                    @endif
+                                    <br><span class="text-muted">{{ $cuentaCobol($c->cuenta_inquilino) }}</span>
+                                </div>
+                                <div class="mt-1"><strong>Propietario:</strong>
+                                    @if($puedeAbrirFichaCliente && !empty($c->propietario_cliente_maestro_id))
+                                        <a href="{{ route('clientes-maestro.show', ['cliente' => $c->propietario_cliente_maestro_id, 'tab' => 'inmuebles', 'rol' => 'PROPIETARIO', 'sede' => $sedeEnlaceCliente]) }}">{{ $c->propietario_nombre }}</a>
+                                    @else
+                                        {{ $c->propietario_nombre }}
+                                    @endif
+                                    <br><span class="text-muted">{{ $cuentaCobol($c->cuenta_propietario) }}</span>
+                                </div>
                                 <div class="text-muted mt-1">{{ $fecha($c->fecha_inicio) }} – {{ $fecha($c->fecha_fin) }}</div>
                             </div>
                         @empty

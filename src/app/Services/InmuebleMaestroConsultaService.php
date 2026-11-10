@@ -59,48 +59,73 @@ final class InmuebleMaestroConsultaService
         if ($estado !== 'TODOS') {
             $listado->where('i.estado', $estado);
         }
+        // GEI_BUSQUEDA_INMUEBLES_CUENTAS_EXACTAS_20261110
+        // Domicilio: todos los términos en la dirección, sin acentos.
+        // Cuenta COBOL: únicamente búsqueda explícita por cuenta completa y exacta.
+        // ID: búsqueda exacta con prefijo "id:" o "#".
         if ($buscar !== '') {
-            $like = '%'.$buscar.'%';
-            $listado->where(function (Builder $q) use ($like, $buscar, $prefijos): void {
-                $q->where('i.domicilio', 'ILIKE', $like)
-                    ->orWhere('i.codigo_origen', 'ILIKE', $like)
-                    ->orWhere('i.observaciones', 'ILIKE', $like)
-                    ->orWhereRaw('CAST(i.id AS TEXT) LIKE ?', [$like])
-                    ->orWhereExists(function (Builder $sub) use ($like): void {
-                        $sub->selectRaw('1')->from('inmuebles_partidas as p')
-                            ->whereColumn('p.inmueble_id', 'i.id')
-                            ->where('p.partida', 'ILIKE', $like);
-                    });
-                $cuenta = preg_replace('/[^0-9]/', '', $buscar) ?: '';
-                if (strlen($cuenta) >= 4 && $prefijos !== []) {
-                    $q->orWhereExists(function (Builder $sub) use ($cuenta, $prefijos): void {
+            $digitos = preg_replace('/\D/', '', $buscar) ?: '';
+            if (preg_match('/^(?:id:|#)\s*([0-9]+)$/iD', $buscar, $partesId) === 1) {
+                $listado->where('i.id', (int) $partesId[1]);
+            } elseif (
+                preg_match('/^[0-9\s.\/-]+$/D', $buscar) === 1
+                && preg_match('/^(1103|1202|2103|2202)[0-9]{7}$/D', $digitos) === 1
+                && $prefijos !== []
+            ) {
+                // No usar LIKE '%2753%': genera falsos positivos por fragmentos de cuenta.
+                $listado->where(static function (Builder $q) use ($digitos, $prefijos): void {
+                    $q->whereExists(static function (Builder $sub) use ($digitos, $prefijos): void {
                         $sub->selectRaw('1')->from('inmuebles_propietarios as ip')
                             ->join('clientes_cuentas as cc', 'cc.id', '=', 'ip.cliente_cuenta_id')
                             ->whereColumn('ip.inmueble_id', 'i.id')
                             ->whereIn(DB::raw('LEFT(cc.cuenta, 4)'), $prefijos)
                             ->where('cc.rol', 'PROPIETARIO')
-                            ->where('cc.cuenta', 'LIKE', '%'.$cuenta.'%');
-                    });
-                    // La cuenta también puede estar solo en el origen o el contrato.
-                    $q->orWhereExists(function (Builder $sub) use ($cuenta, $prefijos): void {
+                            ->where('cc.cuenta', '=', $digitos);
+                    })->orWhereExists(static function (Builder $sub) use ($digitos, $prefijos): void {
                         $sub->selectRaw('1')->from('inmuebles_origenes as io')
                             ->whereColumn('io.inmueble_id', 'i.id')
                             ->whereIn(DB::raw('LEFT(io.cuenta_propietario, 4)'), $prefijos)
-                            ->where('io.cuenta_propietario', 'LIKE', '%'.$cuenta.'%');
-                    });
-                    $q->orWhereExists(function (Builder $sub) use ($cuenta, $prefijos): void {
+                            ->where('io.cuenta_propietario', '=', $digitos);
+                    })->orWhereExists(static function (Builder $sub) use ($digitos, $prefijos): void {
                         $sub->selectRaw('1')->from('contratos_inmuebles as ci')
                             ->join('contratos as c', 'c.id', '=', 'ci.contrato_id')
                             ->whereColumn('ci.inmueble_id', 'i.id')
                             ->whereIn(DB::raw('LEFT(c.cuenta_propietario, 4)'), $prefijos)
                             ->whereIn(DB::raw('LEFT(c.cuenta_inquilino, 4)'), $prefijos)
-                            ->where(function (Builder $cond) use ($cuenta): void {
-                                $cond->where('c.cuenta_propietario', 'LIKE', '%'.$cuenta.'%')
-                                    ->orWhere('c.cuenta_inquilino', 'LIKE', '%'.$cuenta.'%');
+                            ->where(static function (Builder $cond) use ($digitos): void {
+                                $cond->where('c.cuenta_propietario', '=', $digitos)
+                                    ->orWhere('c.cuenta_inquilino', '=', $digitos);
+                            });
+                    });
+                });
+            } else {
+                // Normalización PHP del texto ingresado y SQL de la dirección.
+                // No requiere instalar la extensión PostgreSQL 'unaccent'.
+                $normalizado = strtolower(\Illuminate\Support\Str::ascii($buscar));
+                $palabras = preg_split('/[^a-z0-9]+/', $normalizado, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+                $domicilioSql = "TRANSLATE(LOWER(COALESCE(i.domicilio, '')), 'áéíóúüñ', 'aeiouun')";
+                if ($palabras === []) {
+                    $listado->whereRaw('1 = 0');
+                } elseif (count($palabras) > 1) {
+                    // SAN MARTÍN 2753 => todos los tokens deben estar en el domicilio.
+                    foreach ($palabras as $palabra) {
+                        $listado->whereRaw($domicilioSql.' LIKE ?', ['%'.$palabra.'%']);
+                    }
+                } else {
+                    // Un término: también permitir código de origen, observaciones y partida.
+                    $like = '%'.$palabras[0].'%';
+                    $listado->where(static function (Builder $q) use ($domicilioSql, $like): void {
+                        $q->whereRaw($domicilioSql.' LIKE ?', [$like])
+                            ->orWhere('i.codigo_origen', 'ILIKE', $like)
+                            ->orWhere('i.observaciones', 'ILIKE', $like)
+                            ->orWhereExists(static function (Builder $sub) use ($like): void {
+                                $sub->selectRaw('1')->from('inmuebles_partidas as p')
+                                    ->whereColumn('p.inmueble_id', 'i.id')
+                                    ->where('p.partida', 'ILIKE', $like);
                             });
                     });
                 }
-            });
+            }
         }
 
         $inmuebles = $listado->select('i.id', 'i.domicilio', 'i.estado',
@@ -423,6 +448,7 @@ final class InmuebleMaestroConsultaService
      * o los contratos. La identidad se resuelve SOLO en public.clientes.
      * @param array<int,string> $prefijos
      */
+    // GEI_ENLACES_CLIENTES_INMUEBLES_V13: identidad canónica por cuenta COBOL.
     private function propietariosVisibles(int $id, array $prefijos): Collection
     {
         if ($prefijos === []) {
@@ -431,7 +457,7 @@ final class InmuebleMaestroConsultaService
 
         $directos = DB::table('inmuebles_propietarios as ip')
             ->join('clientes_cuentas as cc', 'cc.id', '=', 'ip.cliente_cuenta_id')
-            ->join('clientes as c', 'c.id', '=', 'ip.cliente_id')
+            ->join('clientes as c', 'c.id', '=', 'cc.cliente_id')
             ->leftJoin('clientes as canon', 'canon.id', '=', 'c.id_cliente_canonico')
             ->where('ip.inmueble_id', $id)
             ->where('cc.rol', 'PROPIETARIO')
@@ -439,6 +465,7 @@ final class InmuebleMaestroConsultaService
             ->select('cc.cuenta', 'ip.porcentaje', 'ip.activo',
                 'ip.vigencia_desde', 'ip.vigencia_hasta')
             ->selectRaw('COALESCE(canon.nombre, c.nombre) AS nombre')
+            ->selectRaw('COALESCE(c.id_cliente_canonico, c.id) AS cliente_maestro_id')
             ->selectRaw("'Vinculo de propietario' AS fuente")
             ->orderByDesc('ip.activo')->get()->unique('cuenta')->keyBy('cuenta');
 
@@ -465,12 +492,14 @@ final class InmuebleMaestroConsultaService
                 ->whereIn('cc.cuenta', $candidatas->all())
                 ->select('cc.cuenta')
                 ->selectRaw('COALESCE(canon.nombre, c.nombre) AS nombre')
+                ->selectRaw('COALESCE(c.id_cliente_canonico, c.id) AS cliente_maestro_id')
                 ->get()->unique('cuenta')->keyBy('cuenta');
 
             foreach ($candidatas as $cuenta) {
                 $directos->put($cuenta, (object) [
                     'cuenta' => $cuenta,
                     'nombre' => $identidades->get($cuenta)?->nombre ?? 'Titular sin cliente operativo vinculado',
+                    'cliente_maestro_id' => $identidades->get($cuenta)?->cliente_maestro_id,
                     'porcentaje' => null,
                     'activo' => null,
                     'vigencia_desde' => null,
@@ -518,11 +547,14 @@ final class InmuebleMaestroConsultaService
             ->whereIn('cc.rol', ['INQUILINO', 'PROPIETARIO'])
             ->select('cc.cuenta', 'cc.rol')
             ->selectRaw('COALESCE(canon.nombre, c.nombre) AS nombre')
+            ->selectRaw('COALESCE(c.id_cliente_canonico, c.id) AS cliente_maestro_id')
             ->get()->keyBy(static fn ($r) => $r->rol.':'.$r->cuenta);
 
         return $contratos->map(static function ($c) use ($identidades) {
             $c->propietario_nombre = $identidades->get('PROPIETARIO:'.$c->cuenta_propietario)?->nombre ?? 'Sin titular asociado';
             $c->inquilino_nombre = $identidades->get('INQUILINO:'.$c->cuenta_inquilino)?->nombre ?? 'Sin titular asociado';
+            $c->propietario_cliente_maestro_id = $identidades->get('PROPIETARIO:'.$c->cuenta_propietario)?->cliente_maestro_id;
+            $c->inquilino_cliente_maestro_id = $identidades->get('INQUILINO:'.$c->cuenta_inquilino)?->cliente_maestro_id;
             return $c;
         });
     }

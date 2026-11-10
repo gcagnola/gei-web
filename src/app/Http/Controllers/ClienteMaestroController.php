@@ -10,6 +10,7 @@ use App\Services\HistoricoCobolCuentaService;
 use App\Services\ClienteMaestroDocumentosService;
 use App\Services\ClienteMaestroRelacionesService;
 use App\Services\ClienteMaestroFichaContratoCobolService;
+use App\Services\ClienteMaestroInmueblesAlquiladosService;
 use App\Services\ClienteActividadOperativaPeriodoService;
 use App\Services\ComprobantesArcaService;
 use App\Services\ImpuestosGarantizadosPdfService;
@@ -165,10 +166,16 @@ final class ClienteMaestroController extends Controller
         $actividadPeriodo->filtrar($consulta, $estado, $periodoActividad, $prefijos, $rol);
 
         if ($buscar !== '') {
+            // GEI_BUSQUEDA_NOMBRES_FLEXIBLE_20261109
             $termino = '%'.$buscar.'%';
+            $nombreNormalizado = preg_replace('/[\\s,.;]+/u', '', mb_strtolower($buscar));
             $cuentaBuscada = preg_replace('/[^0-9]/', '', $buscar) ?: '';
-            $consulta->where(static function (Builder $q) use ($termino, $cuentaBuscada, $prefijos): void {
+            $consulta->where(static function (Builder $q) use ($termino, $nombreNormalizado, $cuentaBuscada, $prefijos): void {
                 $q->where('nombre', 'ILIKE', $termino)
+                    ->orWhereRaw(
+                        "REGEXP_REPLACE(LOWER(COALESCE(clientes.nombre, '')), '[[:space:],.;]+', '', 'g') LIKE ?",
+                        ['%'.$nombreNormalizado.'%']
+                    )
                     ->orWhere('email', 'ILIKE', $termino)
                     ->orWhere('cuit', 'ILIKE', $termino)
                     ->orWhere('numero_documento', 'ILIKE', $termino)
@@ -346,9 +353,14 @@ final class ClienteMaestroController extends Controller
         );
         if ($buscarLateral !== '') {
             $termino = '%'.$buscarLateral.'%';
+            $nombreNormalizado = preg_replace('/[\\s,.;]+/u', '', mb_strtolower($buscarLateral));
             $digitos = preg_replace('/[^0-9]/', '', $buscarLateral) ?: '';
-            $listaLateral->where(static function ($q) use ($termino, $digitos, $prefijos, $filtroRol): void {
+            $listaLateral->where(static function ($q) use ($termino, $nombreNormalizado, $digitos, $prefijos, $filtroRol): void {
                 $q->where('nombre', 'ILIKE', $termino)
+                    ->orWhereRaw(
+                        "REGEXP_REPLACE(LOWER(COALESCE(clientes.nombre, '')), '[[:space:],.;]+', '', 'g') LIKE ?",
+                        ['%'.$nombreNormalizado.'%']
+                    )
                     ->orWhere('cuit', 'ILIKE', $termino)
                     ->orWhere('numero_documento', 'ILIKE', $termino)
                     ->orWhere('email', 'ILIKE', $termino);
@@ -414,6 +426,45 @@ final class ClienteMaestroController extends Controller
             : ['inmuebles' => collect(), 'repartos' => collect(),
                'inquilinos' => collect(), 'contratos' => collect()];
 
+        // GEI_GARANTES_FICHA_20261108
+        // Consultar solamente cuentas INQUILINO autorizadas y visibles.
+        // No inferir ni crear inmuebles desde los domicilios de GARANTE.TXT.
+        $garantesFicha = collect();
+
+        if ($tab === 'inmuebles') {
+            $cuentasInquilino = $cuentas
+                ->where('rol', 'INQUILINO')
+                ->pluck('cuenta')
+                ->unique()
+                ->values()
+                ->all();
+
+            if ($cuentasInquilino !== []) {
+                $garantesFicha = DB::table('garantes_registros')
+                    ->whereIn('cuenta_inquilino', $cuentasInquilino)
+                    ->where('excluido', false)
+                    ->select([
+                        'nroreg',
+                        'cliente_id',
+                        'cuenta_inquilino',
+                        'nombre',
+                        'domicilio_garante',
+                        'codigo_postal',
+                        'localidad',
+                        'provincia',
+                        'telefono_1',
+                        'telefono_2',
+                    ])
+                    ->orderBy('cuenta_inquilino')
+                    ->orderBy('domicilio_garante')
+                    ->orderBy('nombre')
+                    ->orderBy('nroreg')
+                    ->get();
+            }
+        }
+
+        $operativo->setRelation('garantesFicha', $garantesFicha);
+
         // GEI_FICHA_CONTRATO_AMBOS_ROLES_20261030
         // Ficha COBOL por PAR de cuentas, sólo para vínculos operativos visibles.
         // No se ejecuta en el listado ni en otras pestañas.
@@ -424,6 +475,96 @@ final class ClienteMaestroController extends Controller
                 ->consultar($cuentas, $vinculosOperativos);
             $fichasContratos = $datosFicha['fichas'];
             $fichasContratosError = $datosFicha['error'];
+        }
+
+        // GEI_CONTRATOS_DOC_20261106: expedientes validados, solo cuentas INQUILINO autorizadas.
+        // No modificar ni inferir fecha_inicio del contrato operativo COBOL.
+        $contratosDocumentales = collect();
+        if ($tab === 'inmuebles') {
+            $idsCuentasInquilino = $cuentas->where('rol', 'INQUILINO')->pluck('id')->all();
+            if ($idsCuentasInquilino !== []) {
+                $contratosDocumentales = DB::table('contratos_expedientes as e')
+                    ->join('clientes_cuentas as cc', 'cc.id', '=', 'e.cliente_cuenta_inquilino_id')
+                    ->join('contratos_documentos as d', 'd.expediente_id', '=', 'e.id')
+                    ->whereIn('cc.id', $idsCuentasInquilino)
+                    ->where('cc.rol', 'INQUILINO')
+                    ->whereColumn('cc.cuenta', 'e.cuenta_inquilino')
+                    ->where('e.estado_vinculacion', 'VALIDADO')
+                    ->where('d.estado_verificacion', 'VERIFICADO')
+                    // GEI_CONTRATOS_HISTORICOS_ADMIN_20261109: la ficha interna se autoriza por cuenta/sede,
+                    // no por la bandera de visibilidad de Autogestión.
+                    ->where('d.tipo', 'CONTRATO')
+                    ->select('e.id', 'e.numero_documental', 'e.contrato_id', 'e.inmueble_id', 'e.planilla_fila_id',
+                        'e.cuenta_inquilino', 'e.fecha_celebracion', 'e.fecha_inicio',
+                        'e.fecha_fin', 'e.datos_excel_originales', 'd.id as documento_id')
+                    ->orderByDesc('e.fecha_inicio')
+                    ->orderByDesc('e.fecha_celebracion')
+                    ->get();
+            }
+        }
+
+        // GEI_CONTRATOS_DOCUMENTALES_V2_20261107: preparar solo la vista; no cambia datos COBOL.
+        $contratosDocumentalesVigentes = collect();
+        $contratosDocumentalesAnteriores = collect();
+        $hayContratosDocumentalesVigentes = false;
+        if ($tab === 'inmuebles' && $contratosDocumentales->isNotEmpty()) {
+            $contratosDocumentales = $contratosDocumentales->map(static function (object $fila): object {
+                $datos = json_decode((string) ($fila->datos_excel_originales ?? ''), true);
+                $fila->inmueble_documental = is_array($datos)
+                    ? (string) ($datos['inmueble_domicilio'] ?? '') : '';
+                return $fila;
+            });
+            $hoyDocumento = now('America/Argentina/Cordoba')->toDateString();
+            $contratosDocumentalesVigentes = $contratosDocumentales
+                ->filter(static fn (object $fila): bool => $fila->fecha_inicio !== null
+                    && $fila->fecha_fin !== null
+                    && $fila->fecha_inicio <= $hoyDocumento
+                    && $fila->fecha_fin >= $hoyDocumento)
+                ->values();
+            $hayContratosDocumentalesVigentes = $contratosDocumentalesVigentes->isNotEmpty();
+            $contratosDocumentalesAnteriores = $contratosDocumentales
+                ->reject(static fn (object $fila): bool =>
+                    $contratosDocumentalesVigentes->contains('id', $fila->id))
+                ->values();
+            if (! $hayContratosDocumentalesVigentes) {
+                $contratosDocumentalesVigentes = $contratosDocumentales->take(1)->values();
+                $contratosDocumentalesAnteriores = $contratosDocumentales->slice(1)->values();
+            }
+        }
+
+        // GEI_PDF_COMPLEMENTARIOS_20261107: PDF internos del expediente visible,
+        // solo verificados. No se publican en Autogestión.
+        $documentosComplementariosPorExpediente = collect();
+        if ($tab === 'inmuebles' && $contratosDocumentales->isNotEmpty()) {
+            $documentosComplementariosPorExpediente = DB::table('contratos_documentos')
+                ->whereIn('expediente_id', $contratosDocumentales->pluck('id')->all())
+                ->whereIn('tipo', ['AUT', 'HONOR', 'PLANILLA'])
+                ->where('estado_verificacion', 'VERIFICADO')
+                ->where('mime', 'application/pdf')
+                ->whereNotNull('ruta_privada')
+                ->select('id', 'expediente_id', 'tipo')
+                ->orderBy('orden')
+                ->orderBy('id')
+                ->get()
+                ->map(static function (object $doc): object {
+                    $doc->etiqueta = match ($doc->tipo) {
+                        'AUT' => 'Autorización',
+                        'HONOR' => 'Honorarios',
+                        'PLANILLA' => 'Planilla',
+                    };
+                    return $doc;
+                })
+                ->groupBy('expediente_id');
+        }
+
+        // GEI_INMUEBLES_CONTRATOS_V12_20261109: presentación por inmueble físico, solo lectura.
+        $inmueblesAlquiladosFicha = [
+            'vigentes' => collect(), 'anteriores' => collect(), 'sinInmueble' => collect(),
+            'sinInmuebleVigentes' => collect(), 'sinInmuebleAnteriores' => collect(),
+        ];
+        if ($tab === 'inmuebles' && $cuentas->contains('rol', 'INQUILINO')) {
+            $inmueblesAlquiladosFicha = app(ClienteMaestroInmueblesAlquiladosService::class)
+                ->organizar($vinculosOperativos['contratos'], $contratosDocumentales);
         }
 
         // La identidad y la visibilidad provienen del maestro operativo.
@@ -535,6 +676,12 @@ final class ClienteMaestroController extends Controller
             'cuentas' => $cuentas,
             'vinculosOperativos' => $vinculosOperativos,
             'fichasContratos' => $fichasContratos,
+            'contratosDocumentales' => $contratosDocumentales,
+            'inmueblesAlquiladosFicha' => $inmueblesAlquiladosFicha,
+            'contratosDocumentalesVigentes' => $contratosDocumentalesVigentes,
+            'contratosDocumentalesAnteriores' => $contratosDocumentalesAnteriores,
+            'documentosComplementariosPorExpediente' => $documentosComplementariosPorExpediente,
+            'hayContratosDocumentalesVigentes' => $hayContratosDocumentalesVigentes,
             'fichasContratosError' => $fichasContratosError,
             'periodos' => $periodos,
             'periodo' => $periodo,
@@ -669,6 +816,88 @@ final class ClienteMaestroController extends Controller
             ->join('clientes as origen', 'origen.id', '=', 'cc.cliente_id')
             ->whereRaw('COALESCE(origen.id_cliente_canonico, origen.id) = ?', [$cliente])
             ->where('cc.cuenta', $cuenta)->where('cc.rol', $rol)->exists(), 403);
+    }
+
+    /** GEI_CONTRATOS_DOC_20261106: PDF interno, sujeto a cuenta, sede, expediente y hash. */
+    public function pdfContratoDocumental(Request $request, int $cliente, int $documento): BinaryFileResponse
+    {
+        // GEI_PDF_COMPLEMENTARIOS_20261107: exclusivamente ficha interna.
+        // Estos documentos NO se habilitan por las banderas del portal.
+        /** @var Usuario|null $usuario */
+        $usuario = $request->user();
+        abort_unless($usuario instanceof Usuario && $usuario->activo
+            && $usuario->perfil?->puedeVerModulo('ARCHIVO_CLIENTES'), 403);
+
+        $f = DB::table('contratos_documentos as d')
+            ->join('contratos_expedientes as e', 'e.id', '=', 'd.expediente_id')
+            ->where('d.id', $documento)
+            ->whereIn('d.tipo', ['CONTRATO', 'AUT', 'HONOR', 'PLANILLA'])
+            ->where('d.mime', 'application/pdf')
+            ->where('d.estado_verificacion', 'VERIFICADO')
+            ->where('e.estado_vinculacion', 'VALIDADO')
+            ->select('d.ruta_privada', 'd.sha256', 'd.tamano_bytes',
+                'd.tipo', 'e.numero_documental', 'e.contrato_id', 'e.inmueble_id',
+                'e.cliente_cuenta_inquilino_id', 'e.cuenta_inquilino', 'e.cuenta_propietario')
+            ->first();
+        abort_if($f === null, 404);
+
+        $cuenta = (string) $f->cuenta_inquilino;
+        abort_unless(preg_match('/^(1103|2103)[0-9]{7}$/D', $cuenta) === 1, 404);
+        // La autorización no se infiere del nombre, CUIT, expediente o una ruta física.
+        $this->cuentaAutorizada($request, $cliente, $cuenta, 'INQUILINO');
+        // Además, el documento debe referir EXACTAMENTE a la cuenta que pertenece
+        // al cliente canónico solicitado, sin depender únicamente del número COBOL.
+        $relacion = DB::table('clientes_cuentas as cc')
+            ->join('clientes as origen', 'origen.id', '=', 'cc.cliente_id')
+            ->where('cc.id', $f->cliente_cuenta_inquilino_id)
+            ->where('cc.cuenta', $cuenta)
+            ->where('cc.rol', 'INQUILINO')
+            ->whereRaw('COALESCE(origen.id_cliente_canonico, origen.id) = ?', [$cliente])
+            ->exists();
+        abort_unless($relacion, 404);
+
+        if ($f->contrato_id !== null) {
+            $contrato = DB::table('contratos')
+                ->where('id', $f->contrato_id)
+                ->where('cuenta_inquilino', $cuenta)
+                ->where('cuenta_propietario', $f->cuenta_propietario)
+                ->exists();
+            abort_unless($contrato, 404);
+        }
+        if ($f->contrato_id !== null && $f->inmueble_id !== null) {
+            abort_unless(DB::table('contratos_inmuebles')
+                ->where('contrato_id', $f->contrato_id)
+                ->where('inmueble_id', $f->inmueble_id)
+                ->exists(), 404);
+        }
+
+        $relativa = str_replace('\\', '/', (string) $f->ruta_privada);
+        abort_if($relativa === '' || str_starts_with($relativa, '/')
+            || str_contains($relativa, "\0")
+            || preg_match('~(^|/)\\.\\.?(/|$)~', $relativa) === 1
+            || strtolower(pathinfo($relativa, PATHINFO_EXTENSION)) !== 'pdf', 404);
+        $base = realpath('/archivo-contratos');
+        abort_if($base === false, 404);
+        $ruta = realpath($base.DIRECTORY_SEPARATOR.$relativa);
+        abort_if($ruta === false || ! str_starts_with($ruta, $base.DIRECTORY_SEPARATOR)
+            || ! is_file($ruta) || ! is_readable($ruta), 404);
+        // Detectar sustituciones de archivos y enlaces que ya no correspondan al inventario.
+        abort_unless((int) filesize($ruta) === (int) $f->tamano_bytes
+            && hash_equals(trim((string) $f->sha256), hash_file('sha256', $ruta)), 404);
+
+        $numero = preg_replace('/[^A-Za-z0-9_-]/', '-', (string) $f->numero_documental);
+        $nombreDocumento = match ($f->tipo) {
+            'CONTRATO' => 'contrato',
+            'AUT' => 'aut',
+            'HONOR' => 'honor',
+            'PLANILLA' => 'planilla',
+        };
+        return response()->file($ruta, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => 'inline; filename="'.$nombreDocumento.'-'.($numero ?: $documento).'.pdf"',
+            'Cache-Control' => 'private, no-store',
+            'X-Content-Type-Options' => 'nosniff',
+        ]);
     }
 
     public function pdfLiquidacion(

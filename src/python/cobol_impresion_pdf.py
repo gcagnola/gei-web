@@ -468,12 +468,12 @@ def parse_receipt(texto: str) -> Receipt:
                     page.transport_in = val
                 continue
 
-            if re.search(r'D\s*E\s*B\s*I\s*T\s*O\s*S', line, re.I):
+            if re.fullmatch(r'(?:D\s*E\s*B\s*I\s*T\s*O\s*S)(?:\s+D\s*E\s*B\s*I\s*T\s*O\s*S)?', stripped, re.I):
                 movimiento = 'DEBITO'
                 seen_content = True
                 continue
 
-            if re.search(r'C\s*R\s*E\s*D\s*I\s*T\s*O\s*S', line, re.I):
+            if re.fullmatch(r'(?:C\s*R\s*E\s*D\s*I\s*T\s*O\s*S)(?:\s+C\s*R\s*E\s*D\s*I\s*T\s*O\s*S)?', stripped, re.I):
                 movimiento = 'CREDITO'
                 seen_content = True
                 continue
@@ -694,132 +694,237 @@ def draw_receipt_band(c, r: Receipt, y_top: float):
     return y_top - h
 
 
-def draw_receipt_page_body(c, r: Receipt, page: ReceiptPage, y_start: float, half_bottom: float):
-    """Dibuja una página lógica del recibo separando DÉBITOS y CRÉDITOS."""
+def _renglones_importe_recibo(r: Receipt) -> list[str]:
+    """Divide el importe en letras respetando el ancho físico del comprobante."""
+    from reportlab.lib.utils import simpleSplit
+
+    palabras = normalize_spaces(r.amount_words)
+    if not palabras:
+        return []
+    return simpleSplit('Son: ' + palabras, 'Helvetica-Bold', 5.8, RIGHT - LEFT - 4*mm)
+
+
+def _altura_movimientos_recibo(r: Receipt, inicio: int, fin: int) -> float:
+    """Mide el espacio consumido por un tramo, sin dibujarlo.
+
+    Debe reflejar exactamente los avances verticales del renderizador.
+    Los totales por sección sólo se imprimen en el último renglón global
+    de esa sección, no en cada hoja parcial.
+    """
+    items = r.items
+    altura = 5.0*mm if inicio else 0.0  # TRANSPORTE entrante
+    for pos in range(inicio, fin):
+        tipo = items[pos].movimiento
+        if pos == inicio or items[pos - 1].movimiento != tipo:
+            if pos > inicio:
+                altura += 1.5*mm
+            altura += 12.4*mm  # título (2,2) y encabezado de tabla (10,2)
+        altura += 3.7*mm
+        if pos == len(items)-1 or items[pos + 1].movimiento != tipo:
+            altura += 7.0*mm  # total definitivo del grupo
+    return altura
+
+
+def _planificar_paginas_recibo(r: Receipt, logo: Path | None):
+    """Calcula saltos por espacio disponible, no por salto de página COBOL."""
+    from io import BytesIO
+
+    # Medir usando las mismas cabeceras y bandas que se dibujarán luego.
+    # Se toma la mitad más exigente (ORIGINAL o DUPLICADO).
+    medidor = canvas.Canvas(BytesIO(), pagesize=A4)
+    capacidad = min(
+        draw_receipt_band(medidor, r, draw_receipt_header(medidor, r, y_top, logo, copia))
+        - 3.3*mm - half_bottom
+        for y_top, half_bottom, copia in (
+            (H - 11*mm, H/2, 'ORIGINAL'),
+            (H/2 - 11*mm, 0, 'DUPLICADO'),
+        )
+    )
+
+    lineas_letras = _renglones_importe_recibo(r)
+    # En continuación: transporte a +12 mm y línea divisoria a +14,8 mm.
+    # En cierre: palabras a partir de +22 mm y panel definitivo debajo.
+    reserva_continuacion = 19.0*mm
+    reserva_final = (22.0 + 3.4*max(0, len(lineas_letras)-1))*mm
+
+    segmentos = []
+    n = len(r.items)
+    comienzo = 0
+    if n == 0:
+        if capacidad < reserva_final:
+            raise RuntimeError('No hay espacio para el cierre del recibo.')
+        return [(0, 0)], lineas_letras
+
+    while comienzo < n:
+        # Si todo lo pendiente entra y deja sitio para el cierre, terminamos.
+        if _altura_movimientos_recibo(r, comienzo, n) <= capacidad-reserva_final:
+            segmentos.append((comienzo, n))
+            break
+
+        # Si no, reservar al menos un movimiento para la próxima hoja.
+        mejor_fin = comienzo
+        for final in range(comienzo+1, n):
+            if _altura_movimientos_recibo(r, comienzo, final) > capacidad-reserva_continuacion:
+                break
+            mejor_fin = final
+        if mejor_fin == comienzo:
+            raise RuntimeError('Un movimiento no entra en la media hoja del recibo.')
+        segmentos.append((comienzo, mejor_fin))
+        comienzo = mejor_fin
+
+    # Comprobación: se reparten exactamente todos los movimientos una vez.
+    assert segmentos[0][0] == 0 and segmentos[-1][1] == n
+    assert all(a[1] == b[0] for a, b in zip(segmentos, segmentos[1:]))
+    return segmentos, lineas_letras
+
+
+def draw_receipt_page_body(
+    c, r: Receipt, inicio: int, fin: int,
+    y_start: float, half_bottom: float,
+    transporte_entrada: Decimal | None, transporte_salida: Decimal | None,
+    lineas_letras: list[str], ultima: bool,
+):
+    """Dibuja sólo el tramo que cabe. El cierre aparece una sola vez."""
     y = y_start - 3.3*mm
     widths = [14*mm, 139*mm, 33*mm]
-    line_h = 3.7*mm
+    items = r.items
 
-    debitos = [item for item in page.items if item.movimiento == 'DEBITO']
-    creditos = [item for item in page.items if item.movimiento == 'CREDITO']
-
-    def draw_movimientos(titulo: str, items: list[ReceiptItem], row_y: float) -> float:
-        if not items:
-            return row_y
-
-        # Título de bloque igual al estilo usado en la liquidación de deuda.
-        txt(c, LEFT, row_y, titulo, 8.2, 'Helvetica-Bold', PURPLE_DARK)
-        row_y -= 2.2*mm
-
-        draw_table_header(
-            c,
-            LEFT,
-            row_y,
-            widths,
-            [('N°', 'center'), ('Detalle', 'left'), ('Importe', 'right')],
-            h=6.8*mm,
-        )
-        # Un poco más de aire entre la cabecera violeta y el primer detalle.
-        row_y -= 10.2*mm
-
-        total_grupo = Decimal('0')
-        for item in items:
-            txt(c, LEFT + 7*mm, row_y, item.code, 6.6, align='center')
-            txt(c, LEFT + 16.5*mm, row_y, item.description[:70], 6.8)
-            txt(c, RIGHT - 2*mm, row_y, fmt_monto(item.amount), 6.8, align='right')
-            total_grupo += item.amount
-            row_y -= line_h
-
-        c.setStrokeColor(GRID)
-        c.line(LEFT, row_y + 2.0*mm, RIGHT, row_y + 2.0*mm)
-        txt(c, LEFT + 2*mm, row_y - 1.7*mm, f'TOTAL {titulo}', 7.2, 'Helvetica-Bold')
-        txt(c, RIGHT - 2*mm, row_y - 1.7*mm, fmt_monto(total_grupo), 7.2, 'Helvetica-Bold', align='right')
-        row_y -= 7.0*mm
-
-        return row_y
-
-    # Transporte entrante, si existe, antes de los movimientos de la página.
-    if page.transport_in:
+    if transporte_entrada is not None:
         txt(c, LEFT + 2*mm, y, 'TRANSPORTE', 6.8, 'Helvetica-Bold', MUTED)
-        txt(c, RIGHT - 2*mm, y, fmt_monto(page.transport_in), 6.8, 'Helvetica-Bold', MUTED, 'right')
+        txt(c, RIGHT - 2*mm, y, fmt_monto(transporte_entrada),
+            6.8, 'Helvetica-Bold', MUTED, 'right')
         y -= 5.0*mm
 
-    y = draw_movimientos('DÉBITOS', debitos, y)
+    pos = inicio
+    while pos < fin:
+        tipo = items[pos].movimiento
+        fin_grupo = pos+1
+        while fin_grupo < fin and items[fin_grupo].movimiento == tipo:
+            fin_grupo += 1
 
-    if debitos and creditos:
-        y -= 1.5*mm
+        if pos > inicio:
+            y -= 1.5*mm
 
-    y = draw_movimientos('CRÉDITOS', creditos, y)
+        titulo = 'DÉBITOS' if tipo == 'DEBITO' else 'CRÉDITOS'
+        if pos > 0 and items[pos-1].movimiento == tipo:
+            titulo += ' (CONT.)'
+        txt(c, LEFT, y, titulo, 8.2, 'Helvetica-Bold', PURPLE_DARK)
+        y -= 2.2*mm
+        draw_table_header(c, LEFT, y, widths,
+                          [('N°', 'center'), ('Detalle', 'left'), ('Importe', 'right')],
+                          h=6.8*mm)
+        y -= 10.2*mm
 
-    if page.transport_out:
-        # El transporte saliente se alinea hacia el pie de cada mitad, sin
-        # alterar el acumulado que trae el RAW.
-        transport_y = max(half_bottom + 10.5*mm, y - 1.5*mm)
+        for item in items[pos:fin_grupo]:
+            txt(c, LEFT + 7*mm, y, item.code, 6.6, align='center')
+            txt(c, LEFT + 16.5*mm, y, item.description[:70], 6.8)
+            txt(c, RIGHT - 2*mm, y, fmt_monto(item.amount), 6.8, align='right')
+            y -= 3.7*mm
+
+        # Sólo totalizar una sección cuando se completa, no a media página.
+        if fin_grupo == len(items) or items[fin_grupo].movimiento != tipo:
+            principio_grupo = pos
+            while (principio_grupo > 0 and
+                   items[principio_grupo - 1].movimiento == tipo):
+                principio_grupo -= 1
+            total_grupo = sum(
+                (item.amount for item in items[principio_grupo:fin_grupo]),
+                Decimal('0'),
+            )
+            c.setStrokeColor(GRID)
+            c.line(LEFT, y + 2.0*mm, RIGHT, y + 2.0*mm)
+            txt(c, LEFT + 2*mm, y - 1.7*mm, f'TOTAL {titulo.split()[0]}',
+                7.2, 'Helvetica-Bold')
+            txt(c, RIGHT - 2*mm, y - 1.7*mm,
+                fmt_monto(total_grupo), 7.2, 'Helvetica-Bold', align='right')
+            y -= 7.0*mm
+
+        pos = fin_grupo
+
+    if not ultima:
+        transporte_y = half_bottom + 12.0*mm
         c.setStrokeColor(GRID)
-        c.line(LEFT, transport_y + 2.8*mm, RIGHT, transport_y + 2.8*mm)
-        txt(c, LEFT + 2*mm, transport_y, 'TRANSPORTE:', 7.0, 'Helvetica-Bold', MUTED)
-        txt(c, RIGHT - 2*mm, transport_y, fmt_monto(page.transport_out), 7.0, 'Helvetica-Bold', MUTED, 'right')
-        footer_y = half_bottom + 6.0*mm
-        txt(c, LEFT, footer_y, r.footer, 5.2, 'Helvetica', MUTED)
+        c.line(LEFT, transporte_y + 2.8*mm, RIGHT, transporte_y + 2.8*mm)
+        txt(c, LEFT + 2*mm, transporte_y, 'TRANSPORTE:',
+            7.0, 'Helvetica-Bold', MUTED)
+        txt(c, RIGHT - 2*mm, transporte_y, fmt_monto(transporte_salida),
+            7.0, 'Helvetica-Bold', MUTED, 'right')
+        txt(c, LEFT, half_bottom + 5.0*mm, r.footer, 5.2, 'Helvetica', MUTED)
         return
 
-    # Última página: importe del comprobante, no saldo acumulado de la cuenta.
-    # Se conserva r.total con signo para la lógica interna (Debe - Haber).
-    # La representación del recibo expresa la magnitud del importe en positivo.
-    words = normalize_spaces(r.amount_words)
-    if words:
-        txt(c, LEFT, max(half_bottom + 15*mm, y - 1.5*mm), ('Son: ' + words)[:180], 5.8, 'Helvetica-Bold')
+    for j, linea in enumerate(lineas_letras):
+        txt(c, LEFT, y - (3.0 + j*3.4)*mm, linea, 5.8, 'Helvetica-Bold')
 
-    suma_debitos = sum((item.amount for item in r.items if item.movimiento == 'DEBITO'), Decimal('0'))
-    suma_creditos = sum((item.amount for item in r.items if item.movimiento == 'CREDITO'), Decimal('0'))
-    if suma_debitos and suma_creditos:
-        etiqueta_total = 'NETO DÉBITOS' if r.total > 0 else ('NETO CRÉDITOS' if r.total < 0 else 'NETO')
-    elif suma_creditos:
-        etiqueta_total = 'TOTAL CRÉDITOS'
-    elif suma_debitos:
-        etiqueta_total = 'TOTAL DÉBITOS'
+    debitos = sum((x.amount for x in items if x.movimiento == 'DEBITO'), Decimal('0'))
+    creditos = sum((x.amount for x in items if x.movimiento == 'CREDITO'), Decimal('0'))
+    if debitos and creditos:
+        etiqueta = 'NETO DÉBITOS' if r.total > 0 else ('NETO CRÉDITOS' if r.total < 0 else 'NETO')
+    elif creditos:
+        etiqueta = 'TOTAL CRÉDITOS'
+    elif debitos:
+        etiqueta = 'TOTAL DÉBITOS'
     else:
-        etiqueta_total = 'TOTAL DOCUMENTO'
+        etiqueta = 'TOTAL DOCUMENTO'
 
     total_y = half_bottom + 9.5*mm
-    # Ancho suficiente para la etiqueta completa y el importe a la derecha.
     panel_w = 66*mm
     c.setFillColor(LAV2)
-    c.rect(RIGHT - panel_w, total_y - 5.5*mm, panel_w, 8*mm, fill=1, stroke=0)
-    txt(c, RIGHT - panel_w + 4*mm, total_y - 2.5*mm, etiqueta_total, 8.0, 'Helvetica-Bold')
-    txt(c, RIGHT - 3*mm, total_y - 2.5*mm, '$ ' + fmt_monto(abs(r.total)), 10.0, 'Helvetica-Bold', align='right')
-    txt(c, LEFT, half_bottom + 5.0*mm, r.footer, 5.2, 'Helvetica', MUTED)
+    c.rect(RIGHT-panel_w, total_y-5.5*mm, panel_w, 8*mm, fill=1, stroke=0)
+    txt(c, RIGHT-panel_w+4*mm, total_y-2.5*mm, etiqueta, 8.0, 'Helvetica-Bold')
+    txt(c, RIGHT-3*mm, total_y-2.5*mm, '$ ' + fmt_monto(abs(r.total)),
+        10.0, 'Helvetica-Bold', align='right')
+    txt(c, LEFT, half_bottom+5.0*mm, r.footer, 5.2, 'Helvetica', MUTED)
 
-def draw_receipt_half_page(c, r: Receipt, page: ReceiptPage, y_top: float, half_bottom: float, label: str, logo: Path | None):
+
+def draw_receipt_half_page(
+    c, r: Receipt, inicio: int, fin: int,
+    y_top: float, half_bottom: float, label: str, logo: Path | None,
+    transporte_entrada: Decimal | None, transporte_salida: Decimal | None,
+    lineas_letras: list[str], ultima: bool,
+):
     y = draw_receipt_header(c, r, y_top, logo, label)
     y = draw_receipt_band(c, r, y)
-    draw_receipt_page_body(c, r, page, y, half_bottom)
+    draw_receipt_page_body(c, r, inicio, fin, y, half_bottom,
+                           transporte_entrada, transporte_salida,
+                           lineas_letras, ultima)
 
 
 def generar_recibo(texto: str, salida: Path, logo: Path | None):
     r = parse_receipt(texto)
+    segmentos, lineas_letras = _planificar_paginas_recibo(r, logo)
     c = canvas.Canvas(str(salida), pagesize=A4)
     c.setTitle(f'Recibo de liquidación {r.receipt_no}'.strip())
+    corte = H / 2
+    transporte = Decimal('0')
 
-    pages = r.pages or [ReceiptPage(number=1, items=r.items or [])]
-    cut = H / 2
+    for pagina, (inicio, fin) in enumerate(segmentos):
+        transporte_entrada = transporte if pagina else None
+        for movimiento in r.items[inicio:fin]:
+            transporte += (movimiento.amount if movimiento.movimiento == 'DEBITO'
+                           else -movimiento.amount)
+        ultima = pagina == len(segmentos)-1
+        transporte_salida = None if ultima else transporte
 
-    for page in pages:
-        # ORIGINAL arriba y DUPLICADO abajo son copias exactas. Sólo cambia
-        # la palabra ORIGINAL/DUPLICADO.
-        draw_receipt_half_page(c, r, page, H - 11*mm, cut, 'ORIGINAL', logo)
-
-        c.saveState()
-        c.setStrokeColor(HexColor('#999999'))
-        c.setDash(3, 3)
-        c.line(10*mm, cut, W-10*mm, cut)
-        c.restoreState()
-        txt(c, W/2, cut + 1.7*mm, 'corte', 5.3, 'Helvetica', MUTED, 'center')
-
-        draw_receipt_half_page(c, r, page, cut - 11*mm, 0, 'DUPLICADO', logo)
+        for y_top, half_bottom, etiqueta in (
+            (H - 11*mm, corte, 'ORIGINAL'),
+            (corte - 11*mm, 0, 'DUPLICADO'),
+        ):
+            draw_receipt_half_page(c, r, inicio, fin, y_top, half_bottom,
+                                   etiqueta, logo, transporte_entrada,
+                                   transporte_salida, lineas_letras, ultima)
+            if etiqueta == 'ORIGINAL':
+                c.saveState()
+                c.setStrokeColor(HexColor('#999999'))
+                c.setDash(3, 3)
+                c.line(10*mm, corte, W-10*mm, corte)
+                c.restoreState()
+                txt(c, W/2, corte+1.7*mm, 'corte', 5.3,
+                    'Helvetica', MUTED, 'center')
         c.showPage()
 
+    assert transporte == r.total, 'El transporte final no coincide con el neto.'
     c.save()
+
 
 def draw_liquidacion_header(c, d: DebtLiquidation, y_top: float, logo: Path | None):
     left_area_w = 106 * mm

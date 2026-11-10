@@ -487,37 +487,88 @@
 @endif {{-- GEI_FICHA_DATOS_INMUEBLES_20261106 --}}
 
 
+                {{-- GEI_INMUEBLES_CONTRATOS_V12_20261109 --}}
+        @if($cuentas->contains('rol', 'INQUILINO'))
+            @include('clientes-maestro.partials.inmuebles-alquilados')
+        @endif
+
+        {{-- GEI_GARANTES_FICHA_20261108 --}}
+        @if($cuentas->contains('rol', 'INQUILINO'))
+        @php
+            $garantesFicha = $operativo->garantesFicha ?? collect();
+        @endphp
+
         <section class="card border-0 shadow-sm mb-3">
-            <div class="card-header bg-white fw-semibold">Contratos como inquilino</div>
-            <div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0">
-                <thead class="table-light"><tr><th>Cuenta</th><th>Inmueble alquilado</th><th>Propietario</th><th>Desde</th><th>Hasta</th><th>Estado</th></tr></thead>
-                <tbody>@forelse($contratosActivos as $contrato)
-                    <tr><td>{{ $formatearCuentaCobol($contrato->cuenta_inquilino) }}</td>
-                        <td>{{ $v($contrato->inmuebles) }}</td><td>{{ $v($contrato->propietarios) }}</td><td>{{ $fecha($contrato->fecha_inicio) }}</td>
-                        <td>{{ $fecha($contrato->fecha_fin) }}</td><td><span class="badge text-bg-success">Activo</span></td></tr>
-                    <tr><td colspan="6" class="bg-light">
-                        @include("clientes-maestro.partials.ficha-contrato-cobol", ["idContratoFicha" => $contrato->id, "contextoFicha" => "inquilino"])
-                    </td></tr>
-                @empty
-                    <tr><td colspan="6" class="text-muted py-3">No tiene contratos activos como inquilino en cuentas autorizadas.</td></tr>
-                @endforelse</tbody>
-            </table></div>
-            @if($contratosNoActivos->isNotEmpty())
-                <div class="card-body pt-2"><details><summary class="fw-semibold" style="cursor:pointer">Mostrar contratos no activos ({{ $contratosNoActivos->count() }})</summary>
-                    <div class="table-responsive mt-2"><table class="table table-sm align-middle mb-0">
-                        <thead><tr><th>Cuenta</th><th>Inmueble alquilado</th><th>Propietario</th><th>Desde</th><th>Hasta</th><th>Estado</th></tr></thead>
-                        <tbody>@foreach($contratosNoActivos as $contrato)
-                            <tr><td>{{ $formatearCuentaCobol($contrato->cuenta_inquilino) }}</td>
-                                <td>{{ $v($contrato->inmuebles) }}</td><td>{{ $v($contrato->propietarios) }}</td><td>{{ $fecha($contrato->fecha_inicio) }}</td>
-                                <td>{{ $fecha($contrato->fecha_fin) }}</td><td>{{ $contrato->estado }}</td></tr>
-                    <tr><td colspan="6" class="bg-light">
-                        @include("clientes-maestro.partials.ficha-contrato-cobol", ["idContratoFicha" => $contrato->id, "contextoFicha" => "inquilino"])
-                    </td></tr>
-                        @endforeach</tbody>
-                    </table></div>
-                </details></div>
-            @endif
+            <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                <strong>Garantes del inquilino</strong>
+                <span class="badge text-bg-primary">
+                    {{ $garantesFicha->count() }} registros
+                </span>
+            </div>
+
+            <div class="card-body pb-2">
+                <p class="small text-muted mb-2">
+                    Información original de GARANTE.TXT.
+                    Domicilio declarado del garante en el sistema COBOL.
+                </p>
+            </div>
+
+            <div class="table-responsive">
+                <table class="table table-sm table-hover align-middle mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Cuenta inquilino</th>
+                            <th>Garante</th>
+                            <th>Domicilio del garante</th>
+                            <th>Localidad</th>
+                            <th>Teléfonos</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @forelse($garantesFicha as $garante)
+                            <tr>
+                                <td class="text-nowrap">
+                                    {{ $formatearCuentaCobol($garante->cuenta_inquilino) }}
+                                </td>
+                                <td>
+                                    <strong>{{ $garante->nombre }}</strong>
+                                    <div class="small text-muted">
+                                        Registro COBOL: {{ $garante->nroreg }}
+                                        @if($garante->cliente_id)
+                                            · Cliente #{{ $garante->cliente_id }}
+                                        @endif
+                                    </div>
+                                </td>
+                                <td>{{ $v($garante->domicilio_garante) }}</td>
+                                <td>
+                                    {{ $v($garante->localidad) }}
+                                    @if($garante->provincia)
+                                        <div class="small text-muted">
+                                            {{ $garante->provincia }}
+                                        </div>
+                                    @endif
+                                </td>
+                                <td>
+                                    {{ $v($garante->telefono_1) }}
+                                    @if($garante->telefono_2)
+                                        <div>{{ $garante->telefono_2 }}</div>
+                                    @endif
+                                </td>
+                            </tr>
+                        @empty
+                            <tr>
+                                <td colspan="5" class="text-muted py-3">
+                                    No se encontraron garantes para las cuentas
+                                    COBOL visibles de este inquilino.
+                                </td>
+                            </tr>
+                        @endforelse
+                    </tbody>
+                </table>
+            </div>
         </section>
+        @endif
+
     @else
         @php
             $titulo = $tabs[$tab];
