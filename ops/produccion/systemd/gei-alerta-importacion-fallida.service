@@ -1,0 +1,8 @@
+[Unit]
+Description=GeI - enviar alerta por error de importacion COBOL
+After=network.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/gei-vigilar-publicacion.sh --fallo-importacion

@@ -6,7 +6,7 @@
         <h1 class="h3 mb-1">Cuenta corriente</h1>
         <p class="text-muted mb-0">Movimientos de la cuenta asociada a tu perfil.</p>
     </div>
-    <a href="{{ route('portal.inicio') }}" class="btn btn-outline-secondary">Volver</a>
+    <a href="{{ route('portal.inicio') }}" class="btn btn-outline-secondary">Volver al inicio</a>
 </div>
 
 <div class="alert alert-info" role="status">

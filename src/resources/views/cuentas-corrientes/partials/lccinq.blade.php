@@ -8,7 +8,7 @@
 <section class="card mb-3 shadow-sm" aria-label="Cuenta corriente COBOL {{ $cuadro['cuenta'] }}">
     <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
         <strong>{{ $cuadro['rol'] }} · CTA. NRO.: {{ substr($cuadro['cuenta'],0,4) }}/{{ substr($cuadro['cuenta'],4,5) }}/{{ substr($cuadro['cuenta'],9,2) }}</strong>
-        <span class="small text-muted">Sede {{ $cuadro['sede'] }} · Cierre {{ $fechaLccinq($cuadro['cierre']) }} · Consulta {{ $fechaLccinq($cuadro['fecha_calculo']) }} · {{ $cuadro['fuente'] }}</span>
+        <span class="small text-muted">Sede {{ $cuadro['sede'] }} · <strong>Cierre {{ $fechaLccinq($cuadro['cierre']) }}</strong> · Consulta {{ $fechaLccinq($cuadro['fecha_calculo']) }}</span>
     </div>
     @if($cuadro['nombre'] || $cuadro['domicilio'])
         <div class="card-body py-2 small">

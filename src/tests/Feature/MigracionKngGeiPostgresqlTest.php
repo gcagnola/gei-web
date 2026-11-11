@@ -512,20 +512,27 @@ class MigracionKngGeiPostgresqlTest extends TestCase
         ]);
     }
 
-    public function test_pantalla_ejecuta_simulacion_de_persistencia(): void
+    public function test_simulacion_sin_ruta_heredada_no_persiste_datos(): void
     {
+        // La ruta heredada no forma parte de la aplicacion actual.
+        $this->assertFalse(
+            \Illuminate\Support\Facades\Route::has(
+                'archivo.actualizar-db.simular-persistencia-postgresql'
+            )
+        );
+
         $importacionId = $this->crearImportacionConRegistros();
 
-        $this->actingAs($this->usuario())
-            ->post(route('archivo.actualizar-db.simular-persistencia-postgresql'), [
-                'componente' => 'clientes',
-            ])
-            ->assertRedirect(route('archivo.actualizar-db'))
-            ->assertSessionHas('resultado_actualizar_db');
+        $resultado = app(MigracionKngGeiPostgresqlService::class)
+            ->aplicar($importacionId, confirmar: false, componentes: ['clientes']);
 
-        $this->assertDatabaseMissing('clientes', ['id_prop' => 12020055006]);
+        $this->assertFalse($resultado['confirmado']);
+
+        $this->assertDatabaseMissing('clientes', [
+            'id_prop' => 12020055006,
+        ]);
+
         $this->assertDatabaseCount('web_migraciones_aplicaciones', 0);
-        $this->assertNotNull($importacionId);
     }
 
     private function createMigracionSchema(): void

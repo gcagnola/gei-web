@@ -3,6 +3,7 @@
 @section('content')
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
     <div><h1 class="h3 mb-1">Cuenta corriente</h1><p class="text-muted mb-0">Movimientos operativos del cierre COBOL publicado.</p></div>
+    <a href="{{ route('portal.inicio') }}" class="btn btn-outline-secondary">Volver al inicio</a>
 </div>
 @if($cuentas->isEmpty())
     <div class="alert alert-info">No tenés cuentas COBOL habilitadas para consultar.</div>
@@ -23,7 +24,8 @@
         </div>
     </form>
     @if($seleccionada && $seleccionada['rol'] === 'INQUILINO')
-        @include('cuentas-corrientes.partials.lccinq', ['cuadrosCuentaCobol' => $cuadrosCuentaCobol])
+        {{-- GEI_PORTAL_CTACTE_LIBRO_20261110 --}}
+        @include('portal.partials.cuenta-corriente-libro')
     @endif
 @endif
 @endsection

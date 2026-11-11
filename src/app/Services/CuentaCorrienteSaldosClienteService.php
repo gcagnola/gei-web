@@ -43,7 +43,7 @@ final class CuentaCorrienteSaldosClienteService
      * cliente canonico y sedes. Nunca se aceptan IDs de cuenta via navegador.
      * Los resultados monetarios son NUMERIC de PostgreSQL expresados como string.
      */
-    public function consultar(Collection $cuentasAutorizadas, string $mes): Collection
+    public function consultar(Collection $cuentasAutorizadas, string $mes, ?string $fechaConsulta = null): Collection
     {
         if (preg_match('/^(19|20)[0-9]{2}(0[1-9]|1[0-2])$/D', $mes) !== 1) {
             throw new InvalidArgumentException('Período mensual inválido.');
@@ -55,6 +55,19 @@ final class CuentaCorrienteSaldosClienteService
 
         $desde = substr($mes, 0, 4).'-'.substr($mes, 4, 2).'-01';
         $hasta = CarbonImmutable::parse($desde)->addMonthNoOverflow()->toDateString();
+        // GEI_PORTAL_CC_INTERESES_UNIFICADOS_20261110: excluir asientos posteriores
+        // a la fecha informada en pantalla. No cambia los demas consumidores.
+        if ($fechaConsulta !== null) {
+            if (! preg_match('/^20\d{2}-\d{2}-\d{2}$/D', $fechaConsulta)
+                || ! checkdate((int) substr($fechaConsulta, 5, 2), (int) substr($fechaConsulta, 8, 2), (int) substr($fechaConsulta, 0, 4))) {
+                throw new InvalidArgumentException('Fecha de consulta invalida.');
+            }
+            $hasta = min($hasta, CarbonImmutable::parse($fechaConsulta)->addDay()->toDateString());
+            // Un mes futuro no puede proyectar deuda a una fecha anterior.
+            if ($hasta < $desde) {
+                throw new InvalidArgumentException('No se puede consultar un periodo futuro.');
+            }
+        }
         $cuentas = DB::table('cuentas_corrientes')
             ->where(function ($q) use ($claves): void {
                 foreach ($claves as $clave) {

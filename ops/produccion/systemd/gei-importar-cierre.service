@@ -1,0 +1,11 @@
+[Unit]
+Description=GeI - importar cierre COBOL del respaldo Santa Fe a PostgreSQL
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/gei-importar-cierre-debian.sh
+StandardOutput=journal
+StandardError=journal

@@ -1,0 +1,9 @@
+[Unit]
+Description=GeI - detectar exportacion COBOL nueva en respaldo Santa Fe
+
+[Path]
+PathExists=/srv/backups-fedora/santa-fe/home/alqui/exportados_postgresl/.gei-importar-pendiente
+Unit=gei-importar-cierre.service
+
+[Install]
+WantedBy=multi-user.target

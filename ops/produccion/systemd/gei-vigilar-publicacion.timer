@@ -1,0 +1,11 @@
+[Unit]
+Description=GeI - control matutino de publicacion COBOL (08:15)
+
+[Timer]
+OnCalendar=*-*-* 08:15:00
+Persistent=true
+AccuracySec=1min
+Unit=gei-vigilar-publicacion.service
+
+[Install]
+WantedBy=timers.target

@@ -82,7 +82,11 @@ final class PortalCuentaCorrienteController extends Controller
                 // Misma lectura y transformacion que la ficha de Administracion.
                 // La seleccion de cuenta ya fue autorizada por cliente portal.
                 $cuadrosCuentaCobol[] = app(\App\Services\CuentaCorrienteLccinqCompartidaService::class)
-                    ->preparar($snapshot, $seleccionada['cuenta'], 'INQUILINO', $fechaCalculo);
+                    ->preparar(
+                        $snapshot, $seleccionada['cuenta'], 'INQUILINO', $fechaCalculo,
+                        // SOLO GeI-Desarrollo: previsualizar GIMB38 sin autorizar deuda exigible.
+                        app()->environment('local', 'development', 'desarrollo', 'testing')
+                    );
             }
 
             if ($pruebaWeb && $sf && $seleccionada['rol'] === 'INQUILINO'
@@ -121,6 +125,52 @@ final class PortalCuentaCorrienteController extends Controller
             );
         }
 
+        // GEI_PORTAL_SALDO_APERTURA_20261110: libro contable historico.
+        // NO se agrega al saldo LCCINQ de pendientes del cierre COBOL.
+        // La cuenta ya fue autorizada contra el usuario portal autenticado.
+        $saldoContable = null;
+        if ($seleccionada !== null && $periodo !== '') {
+            $claveAutorizada = collect([(object) [
+                'rol' => $seleccionada['rol'],
+                'cuenta' => $seleccionada['cuenta'],
+            ]]);
+            $saldoContable = app(\App\Services\CuentaCorrienteSaldosClienteService::class)
+                ->consultar($claveAutorizada, $periodo, $fechaCalculo)
+                ->first();
+        }
+
+        // GEI_PORTAL_CTACTE_LIBRO_20261110
+        // Los movimientos del cuerpo de esta cuenta corriente proceden del mismo
+        // libro historico y del mismo periodo que saldo_anterior y saldo_al_corte.
+        // NO se suman a los pendientes del ultimo cierre COBOL.
+        $movimientosLibro = collect();
+        $libroConciliado = true;
+        if ($seleccionada !== null && $seleccionada['rol'] === 'INQUILINO'
+            && $periodo !== '' && $saldoContable !== null) {
+            $desdeLibro = substr($periodo, 0, 4).'-'.substr($periodo, 4, 2).'-01';
+            $hastaLibro = min(\Carbon\CarbonImmutable::parse($desdeLibro)
+                ->addMonthNoOverflow()->toDateString(),
+                \Carbon\CarbonImmutable::parse($fechaCalculo)->addDay()->toDateString());
+            $movimientosLibro = \Illuminate\Support\Facades\DB::table('cuentas_corrientes as cc')
+                ->join('cuentas_corrientes_movimientos as m', 'm.cuenta_corriente_id', '=', 'cc.id')
+                ->where('cc.dominio', $seleccionada['rol'])
+                ->where('cc.cuenta', $seleccionada['cuenta'])
+                ->where('m.fecha', '>=', $desdeLibro)
+                ->where('m.fecha', '<', $hastaLibro)
+                ->whereRaw('COALESCE(m.afecta_saldo, TRUE) = TRUE')
+                ->orderBy('m.fecha')->orderBy('m.codigo')->orderBy('m.numero')->orderBy('m.id')
+                ->get(['m.fecha', 'm.codigo', 'm.numero', 'm.descripcion', 'm.debe', 'm.haber'])
+                ->map(static function (object $m): object {
+                    $m->debe_centavos = \App\Services\CuentaCorrienteLccinqCompartidaService::centavos($m->debe ?? '0.00');
+                    $m->haber_centavos = \App\Services\CuentaCorrienteLccinqCompartidaService::centavos($m->haber ?? '0.00');
+                    return $m;
+                });
+            $libroConciliado = $movimientosLibro->sum('debe_centavos')
+                    === \App\Services\CuentaCorrienteLccinqCompartidaService::centavos($saldoContable->debe_mes)
+                && $movimientosLibro->sum('haber_centavos')
+                    === \App\Services\CuentaCorrienteLccinqCompartidaService::centavos($saldoContable->haber_mes);
+        }
+
         return view($seleccionada !== null && $seleccionada['rol'] === 'INQUILINO'
             ? 'portal.cuenta-corriente-lccinq' : 'portal.cuenta-corriente', [
             'portalUsuario' => $portalUsuario,
@@ -134,6 +184,9 @@ final class PortalCuentaCorrienteController extends Controller
             'fechaCalculo' => $fechaCalculo,
             'pruebaWeb' => $pruebaWeb,
             'cuadrosCuentaCobol' => $cuadrosCuentaCobol,
+            'saldoContable' => $saldoContable,
+            'movimientosLibro' => $movimientosLibro,
+            'libroConciliado' => $libroConciliado,
         ]);
     }
     /**
