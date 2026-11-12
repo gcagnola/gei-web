@@ -42,6 +42,7 @@ final class UnificacionClientesService
         'cuentas_facturacion_beneficiarios.cliente_id',
         'facturas.cliente_id',
         'facturas_items.beneficiario_cliente_id',
+        'garantes_registros.cliente_id',
         'inmuebles_propietarios.cliente_id',
         'liquidaciones_propietarios.cliente_id',
         'liquidaciones_propietarios_envios.cliente_id',
@@ -380,7 +381,7 @@ final class UnificacionClientesService
                     throw new DomainException('El cliente secundario ya fue absorbido por otro cliente.');
                 }
 
-                foreach (['clientes_roles', 'clientes_cuentas', 'clientes_origenes', 'inmuebles_propietarios', 'contratos_inquilinos', 'cuentas_corrientes', 'liquidaciones_propietarios', 'liquidaciones_propietarios_envios', 'repartos_propietarios', 'transferencias_informadas', 'clientes_actividad_periodos', 'portal_usuarios', 'clientes_conflictos', 'clientes_migracion_conflictos', 'clientes_resoluciones_origen', 'cuentas_facturacion_beneficiarios', 'facturas', 'facturas_items'] as $tabla) {
+                foreach (['clientes_roles', 'clientes_cuentas', 'clientes_origenes', 'garantes_registros', 'inmuebles_propietarios', 'contratos_inquilinos', 'cuentas_corrientes', 'liquidaciones_propietarios', 'liquidaciones_propietarios_envios', 'repartos_propietarios', 'transferencias_informadas', 'clientes_actividad_periodos', 'portal_usuarios', 'clientes_conflictos', 'clientes_migracion_conflictos', 'clientes_resoluciones_origen', 'cuentas_facturacion_beneficiarios', 'facturas', 'facturas_items'] as $tabla) {
                     $columna = match ($tabla) {
                         'clientes_conflictos' => 'cliente_resuelto_id',
                         'facturas_items' => 'beneficiario_cliente_id',
@@ -471,6 +472,41 @@ final class UnificacionClientesService
                     }
 
                     $idDestino = (int) $accionCuenta['id_principal'];
+                    // GEI_UNIFICACION_SUCURSAL_20261112
+                    $cuentaDestino = DB::table('clientes_cuentas')
+                        ->where('id', $idDestino)
+                        ->first();
+
+                    $cuentaOrigen = DB::table('clientes_cuentas')
+                        ->where('id', $idOrigen)
+                        ->first();
+
+                    if (
+                        $cuentaDestino->sucursal_id === null
+                        && $cuentaOrigen->sucursal_id !== null
+                    ) {
+                        $antes = (array) $cuentaDestino;
+
+                        DB::table('clientes_cuentas')
+                            ->where('id', $idDestino)
+                            ->update([
+                                'sucursal_id' => $cuentaOrigen->sucursal_id,
+                                'updated_at' => now(),
+                            ]);
+
+                        $despues = $antes;
+                        $despues['sucursal_id'] = $cuentaOrigen->sucursal_id;
+
+                        $registrar(
+                            'clientes_cuentas',
+                            'COMPLETADA_SUCURSAL',
+                            $idDestino,
+                            $antes,
+                            $despues
+                        );
+                    }
+
+
                     foreach (['inmuebles_propietarios', 'contratos_inquilinos', 'cuentas_corrientes'] as $tabla) {
                         $filas = DB::table($tabla)->where('cliente_cuenta_id', $idOrigen)->orderBy('id')->get();
                         foreach ($filas as $fila) {
@@ -500,13 +536,51 @@ final class UnificacionClientesService
                         $despues['cliente_id'] = $principalId;
                         $registrar('transferencias_informadas', 'REASIGNADO_CUENTA_CANONICA', (int) $transferencia->id, $antes, $despues);
                     }
+                    // GEI_UNIFICACION_EXPEDIENTES_20261112
+                    // Mantener todos los expedientes y sus documentos.
+                    foreach ([
+                        'cliente_cuenta_inquilino_id',
+                        'cliente_cuenta_propietario_id',
+                    ] as $columna) {
+                        $expedientes = DB::table('contratos_expedientes')
+                            ->where($columna, $idOrigen)
+                            ->orderBy('id')
+                            ->get();
+
+                        foreach ($expedientes as $expediente) {
+                            $antes = (array) $expediente;
+
+                            DB::table('contratos_expedientes')
+                                ->where('id', $expediente->id)
+                                ->update([
+                                    $columna => $idDestino,
+                                    'updated_at' => now(),
+                                ]);
+
+                            $despues = $antes;
+                            $despues[$columna] = $idDestino;
+
+                            $registrar(
+                                'contratos_expedientes',
+                                'REASIGNADO_CUENTA_CANONICA',
+                                (int) $expediente->id,
+                                $antes,
+                                $despues,
+                                [
+                                    'columna_fk' => $columna,
+                                    'cliente_cuenta_id_principal' => $idDestino,
+                                ]
+                            );
+                        }
+                    }
+
                     $antesCuenta = (array) DB::table('clientes_cuentas')->where('id', $idOrigen)->first();
                     DB::table('clientes_cuentas')->where('id', $idOrigen)->delete();
                     $registrar('clientes_cuentas', 'ELIMINADO_DUPLICADO_EXACTO', $idOrigen, $antesCuenta, null, ['id_registro_conservado' => $idDestino]);
                 }
 
                 // Relaciones directas restantes por cliente_id.
-                foreach (['clientes_origenes', 'clientes_migracion_conflictos', 'liquidaciones_propietarios', 'liquidaciones_propietarios_envios', 'repartos_propietarios', 'clientes_resoluciones_origen', 'transferencias_informadas'] as $tabla) {
+                foreach (['clientes_origenes', 'garantes_registros', 'clientes_migracion_conflictos', 'liquidaciones_propietarios', 'liquidaciones_propietarios_envios', 'repartos_propietarios', 'clientes_resoluciones_origen', 'transferencias_informadas'] as $tabla) {
                     $filas = DB::table($tabla)->where('cliente_id', $secundarioId)->orderBy($this->clavePrimariaTabla($tabla))->get();
                     foreach ($filas as $fila) {
                         $pk = $this->clavePrimariaTabla($tabla);
@@ -1578,6 +1652,16 @@ final class UnificacionClientesService
                 }
             }
 
+            // GEI_UNIFICACION_SUCURSAL_20261112
+            // Una misma cuenta no puede consolidarse entre sedes distintas.
+            if (
+                $cuentaPrin->sucursal_id !== null
+                && $cuentaSec->sucursal_id !== null
+                && (int) $cuentaPrin->sucursal_id !== (int) $cuentaSec->sucursal_id
+            ) {
+                $bloqueos[] = "La cuenta {$cuentaSec->cuenta} tiene sucursales distintas.";
+            }
+
             $accionesCuentas[] = ['accion' => 'CONSOLIDAR', 'id_principal' => (int) $cuentaPrin->id, 'id_secundario' => (int) $cuentaSec->id, 'cuenta' => $cuentaSec->cuenta, 'rol' => $cuentaSec->rol];
         }
 
@@ -1692,6 +1776,7 @@ SQL);
     private function clavePrimariaTabla(string $tabla): string
     {
         return match ($tabla) {
+            'garantes_registros' => 'nroreg',
             'clientes_resoluciones_origen' => 'id_cliente_resolucion_origen',
             default => 'id',
         };
