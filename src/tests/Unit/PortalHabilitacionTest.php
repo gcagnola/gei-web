@@ -11,7 +11,7 @@ use Tests\TestCase;
 final class PortalHabilitacionTest extends TestCase
 {
     private function usuario(
-        bool $clienteActivo = true,
+        ?bool $clienteActivo = true,
         ?int $absorbidoEn = null,
         bool $portalActivo = true,
         bool $activado = true,
@@ -53,6 +53,41 @@ final class PortalHabilitacionTest extends TestCase
     public function test_cliente_inactivo_no_puede_ingresar(): void
     {
         self::assertFalse((new PortalAccesoService())->usuarioHabilitado($this->usuario(clienteActivo: false)));
+    }
+
+    public function test_cliente_sin_estado_administrativo_puede_ingresar(): void
+    {
+        $usuario = $this->usuario(clienteActivo: null);
+
+        self::assertNull($usuario->cliente->activo);
+
+        self::assertTrue(
+            (new PortalAccesoService())->usuarioHabilitado($usuario)
+        );
+    }
+
+    public function test_cliente_sin_estado_puede_activar_acceso(): void
+    {
+        $usuario = $this->usuario(
+            clienteActivo: null,
+            activado: false
+        );
+
+        self::assertTrue(
+            (new PortalAccesoService())->usuarioHabilitado($usuario, false)
+        );
+    }
+
+    public function test_cliente_inactivo_no_puede_activar_acceso(): void
+    {
+        $usuario = $this->usuario(
+            clienteActivo: false,
+            activado: false
+        );
+
+        self::assertFalse(
+            (new PortalAccesoService())->usuarioHabilitado($usuario, false)
+        );
     }
 
     public function test_cliente_absorbido_no_puede_ingresar(): void

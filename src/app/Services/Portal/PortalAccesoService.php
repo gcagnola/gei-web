@@ -52,7 +52,10 @@ class PortalAccesoService
             ->with('cliente.roles')
             ->where('activo', true)
             ->whereHas('cliente', function ($query) use ($identificador): void {
-                $query->where('activo', true)
+                $query->where(function ($estado): void {
+                    $estado->where('activo', true)
+                        ->orWhereNull('activo');
+                })
                     ->whereNull('id_cliente_canonico')
                     ->where('cuit', $identificador);
             })
@@ -72,7 +75,10 @@ class PortalAccesoService
             ->with('cliente.roles')
             ->where('activo', true)
             ->whereHas('cliente', function ($query) use ($identificador): void {
-                $query->where('activo', true)
+                $query->where(function ($estado): void {
+                    $estado->where('activo', true)
+                        ->orWhereNull('activo');
+                })
                     ->whereNull('id_cliente_canonico')
                     ->where(function ($clienteQuery): void {
                         $clienteQuery->whereNull('cuit')->orWhere('cuit', '');
@@ -143,7 +149,7 @@ class PortalAccesoService
         $cliente = $usuario->cliente;
 
         return $cliente !== null
-            && (bool) $cliente->activo
+            && $cliente->activo !== false
             && $cliente->id_cliente_canonico === null
             && $this->clienteConRolPortal($cliente);
     }
@@ -165,7 +171,7 @@ class PortalAccesoService
         $cliente->loadMissing('roles');
         $errores = [];
 
-        if (! $cliente->activo) {
+        if ($cliente->activo === false) {
             $errores[] = 'El cliente está inactivo.';
         }
 
