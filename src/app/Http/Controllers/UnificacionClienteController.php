@@ -24,6 +24,11 @@ final class UnificacionClienteController extends Controller
             'conflicto' => ['nullable', 'in:todos,con_conflicto,sin_conflicto'],
             'estado_origen' => ['nullable', 'in:TODOS,ACTIVO,BAJA,DESCONOCIDO'],
             'entidad' => ['nullable', 'in:TODAS,PROPIETAR,INQUILINO'],
+            'orden' => [
+                'nullable',
+                'in:fecha,conflicto,cuenta,nombre,entidad,estado,motivo',
+            ],
+            'direccion' => ['nullable', 'in:asc,desc'],
         ]);
 
         $texto = trim((string) ($datos['q'] ?? ''));
@@ -46,6 +51,8 @@ final class UnificacionClienteController extends Controller
 
             $estadoOrigen = (string) ($datos['estado_origen'] ?? 'TODOS');
             $entidad = (string) ($datos['entidad'] ?? 'TODAS');
+            $orden = (string) ($datos['orden'] ?? 'fecha');
+            $direccion = (string) ($datos['direccion'] ?? 'desc');
 
             return view('unificacion.clientes.index', [
                 'avisosPropietariosTotal' => $inmuebles->totalAvisosClientes(),
@@ -55,12 +62,17 @@ final class UnificacionClienteController extends Controller
                 'resumen' => $this->service->resumenClasificacion([]),
                 'estadoOrigen' => $estadoOrigen,
                 'entidad' => $entidad,
+                'ordenActual' => $orden,
+                'direccionActual' => $direccion,
                 'resumenPendientes' => $this->service->resumenConflictosPendientes(),
                 'conflictosPendientes' =>
                     $this->service->conflictosPendientesPaginados(
                         $texto,
                         $estadoOrigen,
-                        $entidad
+                        $entidad,
+                        20,
+                        $orden,
+                        $direccion
                     ),
             ]);
         }

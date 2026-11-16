@@ -734,6 +734,38 @@ final class UnificacionClientesService
     }
 
 
+
+    /**
+     * Contratos asociados a una cuenta COBOL, independientemente de que
+     * esté vinculada a un cliente y de su rol operativo.
+     */
+    private function contratosPorCuentasRevision(\Illuminate\Support\Collection $cuentas): \Illuminate\Support\Collection
+    {
+        $numeros = $cuentas
+            ->map(fn ($cuenta): string => preg_replace('/\D+/', '', (string) $cuenta) ?? '')
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+
+        if ($numeros === []) {
+            return collect();
+        }
+
+        return DB::table('contratos')
+            ->where(function ($query) use ($numeros): void {
+                $query->whereIn('cuenta_inquilino', $numeros)
+                    ->orWhereIn('cuenta_propietario', $numeros);
+            })
+            ->orderByDesc('fecha_contrato')
+            ->orderByDesc('id')
+            ->limit(100)
+            ->get([
+                'id', 'cuenta_inquilino', 'cuenta_propietario',
+                'fecha_inicio', 'fecha_fin', 'estado',
+            ]);
+    }
+
     public function revisionCobol(int $conflictoId): array
     {
         $conflicto = DB::table('clientes_conflictos')->where('id', $conflictoId)->first();
@@ -783,6 +815,7 @@ final class UnificacionClientesService
                 // concretas para mostrar domicilios, contratos y evidencia.
                 'inmuebles' => $detalle['inmuebles'],
                 'contratos' => $detalle['contratos'],
+                'contratosComparacion' => $this->contratosPorCuentasRevision($detalle['cuentas']->pluck('cuenta')),
                 'liquidaciones' => $detalle['liquidaciones'],
                 'origenes' => $detalle['origenes'],
 
@@ -839,6 +872,8 @@ final class UnificacionClientesService
             'datosOrigen' => $datosOrigen,
             'detalleConflicto' => $detalleConflicto,
             'candidatos' => $candidatos,
+            'inmueblesOrigen' => $this->inmueblesParaCuenta((string) $conflicto->clave_origen),
+            'contratosOrigen' => $this->contratosPorCuentasRevision(collect([(string) $conflicto->clave_origen])),
             'documentosOrigen' => $this->documentacionComparacion(
                 collect([(string) $conflicto->clave_origen]),
                 strtoupper(trim((string) $conflicto->entidad_origen)) === 'PROPIETAR'
@@ -1197,7 +1232,9 @@ final class UnificacionClientesService
         string $buscar = '',
         string $estadoOrigen = 'TODOS',
         string $entidad = 'TODAS',
-        int $porPagina = 20
+        int $porPagina = 20,
+        string $orden = 'fecha',
+        string $direccion = 'desc'
     ): LengthAwarePaginator {
         $query = DB::table('clientes_conflictos as cf')
             ->where('cf.estado', 'PENDIENTE');
@@ -1225,9 +1262,34 @@ final class UnificacionClientesService
             });
         }
 
+        $columnas = [
+            'conflicto' => 'cf.id',
+            'cuenta' => 'cf.clave_origen',
+            'entidad' => 'cf.entidad_origen',
+            'estado' => 'cf.estado_origen',
+            'motivo' => 'cf.motivo',
+            'fecha' => 'cf.ultima_deteccion_at',
+        ];
+
+        $direccionSql = strtolower($direccion) === 'asc'
+            ? 'asc'
+            : 'desc';
+
+        $query->select('cf.*');
+
+        if ($orden === 'nombre') {
+            $query->orderByRaw(
+                "COALESCE(cf.datos_origen::jsonb->>'nombre', '') "
+                .$direccionSql
+            );
+        } else {
+            $query->orderBy(
+                $columnas[$orden] ?? $columnas['fecha'],
+                $direccionSql
+            );
+        }
+
         return $query
-            ->select('cf.*')
-            ->orderByDesc('cf.ultima_deteccion_at')
             ->orderBy('cf.id')
             ->paginate($porPagina, ['*'], 'conflictos_page')
             ->withQueryString();

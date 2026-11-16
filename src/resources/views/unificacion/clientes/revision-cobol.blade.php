@@ -115,434 +115,187 @@
         </div>
     </div>
 
-    @forelse ($candidatos as $cand)
-        @php
-            $c = $cand->cliente;
-            $cmp = $comparacionPorCampo($cand);
+    @php
+        $campo = static fn ($dato, $nombre) => is_array($dato) ? ($dato[$nombre] ?? null) : ($dato->$nombre ?? null);
+        $origenDocumento = trim(($datosOrigen['tipo_documento'] ?? '').' '.($datosOrigen['numero_documento'] ?? ''));
+        $candidatosUnicos = $candidatos->unique('id_canonico')->values();
+        $filasIdentidad = [
+            ['Nombre', 'nombre'],
+            ['CUIT', 'cuit'],
+            ['Domicilio', 'domicilio'],
+            ['Teléfono', 'telefono'],
+            ['Teléfono alternativo', 'telefono_alternativo'],
+            ['Localidad', 'localidad'],
+            ['Provincia', 'provincia'],
+            ['Condición IVA', 'condicion_iva'],
+        ];
+        $origenCuenta = $normalizarCuentaCobol($conflicto->clave_origen);
+    @endphp
 
-            $documentoOrigen = trim(($datosOrigen['tipo_documento'] ?? '').' '.($datosOrigen['numero_documento'] ?? '')) ?: '—';
-            $documentoCliente = trim(($c->tipo_documento ?? '').' '.($c->numero_documento ?? '')) ?: '—';
-
-            $cuentaRevisionNormalizada = $normalizarCuentaCobol($conflicto->clave_origen);
-            $cuentasCliente = collect(explode(',', (string) ($cand->cuentas ?? '')))
-                ->map(fn ($cuenta) => trim((string) $cuenta))
-                ->filter()
-                ->values();
-
-            $cuentasClienteNormalizadas = $cuentasCliente
-                ->map(fn ($cuenta) => $normalizarCuentaCobol($cuenta))
-                ->filter()
-                ->values();
-
-            $cuentaCoincide = $cuentaRevisionNormalizada !== ''
-                && $cuentasClienteNormalizadas->contains($cuentaRevisionNormalizada);
-
-            $esClienteYaVinculado = $clienteVinculadoCanonicoId !== null
-                && (int) $cand->id_canonico === $clienteVinculadoCanonicoId
-                && $cuentaCoincide;
-
-            $camposComparables = [
-                'nombre' => ['Nombre', $datosOrigen['nombre'] ?? null, $c->nombre ?? null],
-                'cuit' => ['CUIT', $datosOrigen['cuit'] ?? null, $c->cuit ?? null],
-                'numero_documento' => ['Documento', $documentoOrigen, $documentoCliente],
-                'domicilio' => ['Domicilio', $datosOrigen['domicilio'] ?? null, $c->domicilio ?? null],
-                'telefono' => ['Teléfono', $datosOrigen['telefono'] ?? null, $c->telefono ?? null],
-            ];
-        @endphp
-
-        <div class="card mb-4 {{ $cand->fue_absorbido ? 'border-warning' : 'border-primary' }}">
-            <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
-                <div>
-                    <strong>Revisión #{{ $conflicto->id }}: origen COBOL → cliente #{{ $cand->id_canonico }} — {{ $c->nombre }}</strong>
-                    @if ($cand->fue_absorbido)
-                        <span class="badge text-bg-warning ms-1">
-                            Candidato original #{{ $cand->id_original }} absorbido
-                        </span>
-                    @endif
-                </div>
-
-                @if ($estadoPendiente && ($clienteVinculadoCanonicoId === null || $esClienteYaVinculado))
-                    <form method="POST"
-                          action="{{ route('archivo.unificacion.clientes.conflicto.resolver', $conflicto->id) }}"
-                          onsubmit="return confirm('{{ $esClienteYaVinculado ? '¿Validar el cambio histórico sin trasladar cuentas ni unificar personas?' : '¿Asociar el origen COBOL al cliente seleccionado para la siguiente importación?' }}');">
-                        @csrf
-                        <input type="hidden" name="decision" value="ASOCIAR_EXISTENTE">
-                        <input type="hidden" name="cliente_id" value="{{ $cand->id_canonico }}">
-                        <button class="btn btn-primary btn-sm">
-                            @if ($esClienteYaVinculado)
-                                Validar variación histórica · conservar cliente #{{ $cand->id_canonico }}
-                            @else
-                                Asociar revisión #{{ $conflicto->id }} a cliente #{{ $cand->id_canonico }}
-                            @endif
-                        </button>
-                    </form>
-                @elseif ($estadoPendiente)
-                    <span class="badge text-bg-warning">
-                        Cuenta ya vinculada al cliente #{{ $clienteVinculadoCanonicoId }}. No reasignable desde esta revisión.
-                    </span>
-                @endif
-            </div>
-
-            <div class="card-body">
-                <div class="row g-3">
-                    <div class="col-xl-6">
-                        <div class="border rounded h-100">
-                            <div class="px-3 py-2 border-bottom bg-light d-flex justify-content-between align-items-center">
-                                <span class="fw-semibold">ORIGEN COBOL — REVISIÓN #{{ $conflicto->id }}</span>
-                                <span class="badge text-bg-light border">{{ $rolOrigen }}</span>
-                            </div>
-                            <div class="p-3">
-                                <table class="table table-sm mb-0 align-middle">
-                                    <tbody>
-                                        <tr>
-                                            <th style="width: 170px;">Cuenta COBOL</th>
-                                            <td><strong>{{ $formatearCuentaCobol($conflicto->clave_origen) }}</strong></td>
-                                        </tr>
-                                        @foreach ($camposComparables as $campo => [$etiqueta, $origenValor, $clienteValor])
+    <div class="card mb-3">
+        <div class="card-header fw-semibold">Comparación única — origen COBOL y {{ $candidatosUnicos->count() }} candidato(s)</div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-bordered table-sm align-top mb-0" style="min-width:900px">
+                    <thead class="table-light">
+                        <tr>
+                            <th style="min-width:160px">Dato</th>
+                            <th style="min-width:260px">ORIGEN COBOL — #{{ $conflicto->id }}<br><small>{{ $rolOrigen }}</small></th>
+                            @foreach ($candidatosUnicos as $cand)
+                                <th style="min-width:260px">
+                                    Cliente #{{ $cand->id_canonico }}<br>
+                                    <small>{{ $cand->roles ?: 'SIN ROL' }}</small>
+                                    @if ($cand->fue_absorbido)
+                                        <span class="badge text-bg-warning">Candidato original absorbido: #{{ $cand->id_original }}</span>
+                                    @endif
+                                </th>
+                            @endforeach
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <th>Cuenta(s) COBOL</th>
+                            <td><strong>{{ $formatearCuentaCobol($conflicto->clave_origen) }}</strong></td>
+                            @foreach ($candidatosUnicos as $cand)
+                                <td>
+                                    @forelse (array_filter(array_map('trim', explode(',', (string) $cand->cuentas))) as $cta)
+                                        <div>{{ $formatearCuentaCobol($cta) }}</div>
+                                    @empty
+                                        <span class="text-muted">—</span>
+                                    @endforelse
+                                </td>
+                            @endforeach
+                        </tr>
+                        @foreach ($filasIdentidad as [$etiqueta, $clave])
+                            <tr>
+                                <th>{{ $etiqueta }}</th>
+                                <td>{{ $valor($campo($datosOrigen, $clave)) }}</td>
+                                @foreach ($candidatosUnicos as $cand)
+                                    <td>
+                                        {{ $valor($campo($cand->cliente, $clave)) }}
+                                        @if (in_array($clave, ['nombre','cuit','domicilio','telefono'], true))
                                             @php
-                                                $lectura = $cmp[$campo] ?? null;
+                                                $datosComp = $comparacionPorCampo($cand);
+                                                $cmp = $datosComp[$clave] ?? null;
                                             @endphp
-                                            <tr>
-                                                <th style="width: 170px;">{{ $etiqueta }}</th>
-                                                <td>{{ $valor($origenValor) }}</td>
-                                            </tr>
-                                        @endforeach
-                                        <tr>
-                                            <th>Localidad / Provincia</th>
-                                            <td>{{ trim(($datosOrigen['localidad'] ?? '').' / '.($datosOrigen['provincia'] ?? ''), ' /') ?: '—' }}</td>
-                                        </tr>
-                                        <tr>
-                                            <th>Teléfono alternativo</th>
-                                            <td>{{ $valor($datosOrigen['telefono_alternativo'] ?? null) }}</td>
-                                        </tr>
-                                        <tr>
-                                            <th>Cuenta propietario</th>
-                                            <td>{{ $valor($datosOrigen['cuenta_propietario'] ?? null) }}</td>
-                                        </tr>
-                                        <tr>
-                                            <th>Condición IVA</th>
-                                            <td>{{ $valor($datosOrigen['condicion_iva'] ?? null) }}</td>
-                                        </tr>
-                                    </tbody>
-                                </table>
-
-                                <hr>
-
-                                <h3 class="h6">Documentación del origen</h3>
-                                @if (($documentosOrigen ?? collect())->isEmpty())
-                                    <div class="small text-muted">No se encontraron documentos recientes para esta cuenta COBOL.</div>
-                                @else
-                                    <div class="table-responsive">
-                                        <table class="table table-sm align-middle mb-0">
-                                            <thead>
-                                                <tr>
-                                                    <th>Período</th>
-                                                    <th>Cuenta</th>
-                                                    <th>Inmueble(s)</th>
-                                                    <th>Documentos</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                            @foreach ($documentosOrigen as $documentoFila)
-                                                @php
-                                                    $cantidadArca = $documentoFila->comprobantes_arca->count();
-                                                    $cantidadLiq = $documentoFila->liquidaciones->count();
-                                                @endphp
-                                                <tr>
-                                                    <td class="text-nowrap">
-                                                        {{ substr($documentoFila->periodo, 4, 2) }}/{{ substr($documentoFila->periodo, 0, 4) }}
-                                                    </td>
-                                                    <td class="text-nowrap"><strong>{{ $formatearCuentaCobol($documentoFila->cuenta) }}</strong></td>
-                                                    <td>
-                                                        @forelse ($documentoFila->inmuebles as $inmuebleDoc)
-                                                            <div>
-                                                                {{ $inmuebleDoc->domicilio }}
-                                                                <span class="badge text-bg-light border">{{ $inmuebleDoc->relacion }}</span>
-                                                            </div>
-                                                        @empty
-                                                            <span class="text-muted">—</span>
-                                                        @endforelse
-                                                    </td>
-                                                    <td>
-                                                        <div class="d-flex flex-wrap gap-1">
-                                                            @foreach ($documentoFila->liquidaciones as $liquidacion)
-                                                                @if ($liquidacion->pdf_disponible ?? false)
-                                                                    <a class="btn btn-sm btn-outline-primary"
-                                                                       href="{{ route('propietarios.liquidaciones.ver', $liquidacion->id) }}"
-                                                                       target="_blank" rel="noopener">
-                                                                        Liquidación{{ $cantidadLiq > 1 ? ' '.$liquidacion->numero_interno : '' }}
-                                                                    </a>
-                                                                @endif
-
-                                                                @if ($liquidacion->impuestos_pdf_disponible ?? false)
-                                                                    <a class="btn btn-sm btn-outline-primary"
-                                                                       href="{{ route('propietarios.liquidaciones.impuestos.ver', $liquidacion->id) }}"
-                                                                       target="_blank" rel="noopener">
-                                                                        Imp. garantizados{{ $cantidadLiq > 1 ? ' '.$liquidacion->numero_interno : '' }}
-                                                                    </a>
-                                                                @endif
-                                                            @endforeach
-
-                                                            @if ($cantidadArca === 1)
-                                                                @php $arca = $documentoFila->comprobantes_arca->first(); @endphp
-                                                                <a class="btn btn-sm btn-outline-primary"
-                                                                   href="{{ route('comprobantes-arca.ver', ['periodo' => $documentoFila->periodo, 'archivo' => $arca->nombre_archivo]) }}"
-                                                                   target="_blank" rel="noopener">
-                                                                    ARCA
-                                                                </a>
-                                                            @elseif ($cantidadArca > 1)
-                                                                <div class="dropdown">
-                                                                    <button class="btn btn-sm btn-outline-primary dropdown-toggle"
-                                                                            type="button"
-                                                                            data-bs-toggle="dropdown">
-                                                                        ARCA ({{ $cantidadArca }})
-                                                                    </button>
-                                                                    <ul class="dropdown-menu">
-                                                                        @foreach ($documentoFila->comprobantes_arca as $arca)
-                                                                            <li>
-                                                                                <a class="dropdown-item"
-                                                                                   href="{{ route('comprobantes-arca.ver', ['periodo' => $documentoFila->periodo, 'archivo' => $arca->nombre_archivo]) }}"
-                                                                                   target="_blank" rel="noopener">
-                                                                                    {{ pathinfo($arca->nombre_archivo, PATHINFO_FILENAME) }}
-                                                                                </a>
-                                                                            </li>
-                                                                        @endforeach
-                                                                    </ul>
-                                                                </div>
-                                                            @endif
-                                                        </div>
-                                                    </td>
-                                                </tr>
-                                            @endforeach
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                @endif
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="col-xl-6">
-                        <div class="border rounded h-100">
-                            <div class="px-3 py-2 border-bottom bg-light d-flex justify-content-between align-items-center">
-                                <span class="fw-semibold">CLIENTE #{{ $cand->id_canonico }}</span>
-                                <span class="badge text-bg-light border">{{ $cand->roles ?: 'SIN ROL' }}</span>
-                            </div>
-
-                            <div class="p-3">
-                                <table class="table table-sm mb-0 align-middle">
-                                    <tbody>
-                                        <tr>
-                                            <th style="width: 170px;">Cuenta COBOL</th>
-                                            <td>
-                                                @forelse ($cuentasCliente as $cuentaCliente)
-                                                    <div><strong>{{ $formatearCuentaCobol($cuentaCliente) }}</strong></div>
-                                                @empty
-                                                    <span class="text-muted">—</span>
-                                                @endforelse
-                                            </td>
-                                            <td class="text-end" style="width: 110px;">
-                                                @if ($cuentaCoincide)
-                                                    <span class="badge text-bg-success">COINCIDE</span>
-                                                @elseif ($cuentasCliente->isNotEmpty())
-                                                    <span class="badge text-bg-warning">DIFIERE</span>
-                                                @else
-                                                    <span class="badge text-bg-secondary">SIN DATOS</span>
-                                                @endif
-                                            </td>
-                                        </tr>
-                                        @foreach ($camposComparables as $campo => [$etiqueta, $origenValor, $clienteValor])
-                                            @php
-                                                $lectura = $cmp[$campo] ?? null;
-                                                $hayOrigen = $origenValor !== null && trim((string) $origenValor) !== '' && $origenValor !== '—';
-                                                $hayCliente = $clienteValor !== null && trim((string) $clienteValor) !== '' && $clienteValor !== '—';
-                                            @endphp
-                                            <tr>
-                                                <th style="width: 170px;">{{ $etiqueta }}</th>
-                                                <td>{{ $valor($clienteValor) }}</td>
-                                                <td class="text-end" style="width: 110px;">
-                                                    @if ($lectura && $lectura['coincide'])
-                                                        <span class="badge text-bg-success">COINCIDE</span>
-                                                    @elseif ($hayOrigen && $hayCliente)
-                                                        <span class="badge text-bg-warning">DIFIERE</span>
-                                                    @else
-                                                        <span class="badge text-bg-secondary">SIN DATOS</span>
-                                                    @endif
-                                                </td>
-                                            </tr>
-                                        @endforeach
-                                        <tr>
-                                            <th>Localidad / Provincia</th>
-                                            <td>{{ trim(($c->localidad ?? '').' / '.($c->provincia ?? ''), ' /') ?: '—' }}</td>
-                                            <td></td>
-                                        </tr>
-                                        <tr>
-                                            <th>Teléfono alternativo</th>
-                                            <td>{{ $valor($c->telefono_alternativo ?? null) }}</td>
-                                            <td></td>
-                                        </tr>
-                                        <tr>
-                                            <th>Email</th>
-                                            <td>{{ $valor($c->email ?? null) }}</td>
-                                            <td></td>
-                                        </tr>
-                                        <tr>
-                                            <th>Condición IVA</th>
-                                            <td>{{ $valor($c->condicion_iva ?? null) }}</td>
-                                            <td></td>
-                                        </tr>
-                                    </tbody>
-                                </table>
-
-                                <hr>
-
-                                <div class="alert alert-info py-2 small">
-                                    <strong>Decisión:</strong>
-                                    si corresponde a la misma persona, el cliente
-                                    <strong>#{{ $cand->id_canonico }}</strong> queda como canónico y el
-                                    origen COBOL de la revisión <strong>#{{ $conflicto->id }}</strong>
-                                    queda asociado a ese cliente.
-                                </div>
-
-                                <h3 class="h6 mb-2">Inmuebles</h3>
-                                @forelse ($cand->inmuebles as $inmueble)
-                                    <div class="border rounded p-2 mb-2 small">
-                                        <div class="fw-semibold">
-                                            #{{ $inmueble->inmueble_id }} — {{ $inmueble->domicilio }}
-                                        </div>
-                                        <div class="text-muted">
-                                            Cuenta: {{ $formatearCuentaCobol($inmueble->cuenta ?? '') }}
-                                            @if (isset($inmueble->porcentaje) && $inmueble->porcentaje !== null)
-                                                · Porcentaje: {{ $inmueble->porcentaje }}%
+                                            @if ($cmp && $cmp['coincide'])
+                                                <span class="badge text-bg-success">COINCIDE</span>
+                                            @elseif ($campo($datosOrigen, $clave) && $campo($cand->cliente, $clave))
+                                                <span class="badge text-bg-warning">DIFIERE</span>
                                             @endif
-                                            · {{ $inmueble->activo ? 'Activo' : 'Histórico' }}
-                                        </div>
+                                        @endif
+                                    </td>
+                                @endforeach
+                            </tr>
+                        @endforeach
+                        <tr>
+                            <th>Documento</th>
+                            <td>{{ $valor($origenDocumento) }}</td>
+                            @foreach ($candidatosUnicos as $cand)
+                                @php $docCand = trim(($cand->cliente->tipo_documento ?? '').' '.($cand->cliente->numero_documento ?? '')); @endphp
+                                <td>{{ $valor($docCand) }}</td>
+                            @endforeach
+                        </tr>
+                        <tr>
+                            <th>Rol</th>
+                            <td>{{ $rolOrigen }}</td>
+                            @foreach ($candidatosUnicos as $cand)<td>{{ $cand->roles ?: '—' }}</td>@endforeach
+                        </tr>
+                        <tr>
+                            <th>Cuenta propietario</th>
+                            <td>{{ $valor($datosOrigen['cuenta_propietario'] ?? null) }}</td>
+                            @foreach ($candidatosUnicos as $cand)<td>—</td>@endforeach
+                        </tr>
+                        <tr>
+                            <th>Email</th>
+                            <td>—</td>
+                            @foreach ($candidatosUnicos as $cand)<td>{{ $valor($cand->cliente->email ?? null) }}</td>@endforeach
+                        </tr>
+                        <tr class="table-secondary"><th colspan="{{ 2 + $candidatosUnicos->count() }}">Inmuebles</th></tr>
+                        <tr>
+                            <th>Inmuebles vinculados a las cuentas</th>
+                            <td>
+                                @forelse ($inmueblesOrigen as $inmueble)
+                                    <div class="border rounded p-2 mb-1 small">{{ $inmueble->domicilio }} <span class="text-muted">{{ $inmueble->relacion }}</span></div>
+                                @empty
+                                    <span class="text-muted">Sin inmuebles vinculados</span>
+                                @endforelse
+                            </td>
+                            @foreach ($candidatosUnicos as $cand)
+                                <td>
+                                    @forelse ($cand->inmuebles as $inmueble)
+                                        <div class="border rounded p-2 mb-1 small">#{{ $inmueble->inmueble_id }} — {{ $inmueble->domicilio }}<br><span class="text-muted">{{ $formatearCuentaCobol($inmueble->cuenta ?? '') }}</span></div>
+                                    @empty
+                                        <span class="text-muted">Sin inmuebles vinculados</span>
+                                    @endforelse
+                                </td>
+                            @endforeach
+                        </tr>
+                        <tr class="table-secondary"><th colspan="{{ 2 + $candidatosUnicos->count() }}">Contratos (por cuenta COBOL, como inquilino o propietario)</th></tr>
+                        <tr>
+                            <th>Contratos</th>
+                            <td>
+                                @forelse ($contratosOrigen as $contrato)
+                                    <div class="border rounded p-2 mb-1 small">
+                                        <strong>#{{ $contrato->id }}</strong> · {{ $contrato->estado }}<br>
+                                        Inq.: {{ $formatearCuentaCobol($contrato->cuenta_inquilino) }} · Prop.: {{ $formatearCuentaCobol($contrato->cuenta_propietario) }}<br>
+                                        {{ $fecha($contrato->fecha_inicio) }} → {{ $fecha($contrato->fecha_fin) }}
                                     </div>
                                 @empty
-                                    <div class="small text-muted mb-3">No tiene inmuebles como propietario.</div>
+                                    <span class="text-muted">Sin contratos vinculados</span>
                                 @endforelse
-
-                                <h3 class="h6 mt-3 mb-2">Contratos</h3>
-                                @forelse ($cand->contratos as $contrato)
-                                    <div class="border rounded p-2 mb-2 small">
-                                        <div>
-                                            <strong>Contrato #{{ $contrato->contrato_id }}</strong>
-                                            · Cuenta {{ $formatearCuentaCobol($contrato->cuenta ?? $contrato->cuenta_inquilino ?? '') }}
+                            </td>
+                            @foreach ($candidatosUnicos as $cand)
+                                <td>
+                                    @forelse ($cand->contratosComparacion as $contrato)
+                                        <div class="border rounded p-2 mb-1 small">
+                                            <strong>#{{ $contrato->id }}</strong> · {{ $contrato->estado }}<br>
+                                            Inq.: {{ $formatearCuentaCobol($contrato->cuenta_inquilino) }} · Prop.: {{ $formatearCuentaCobol($contrato->cuenta_propietario) }}<br>
+                                            {{ $fecha($contrato->fecha_inicio) }} → {{ $fecha($contrato->fecha_fin) }}
                                         </div>
-                                        <div class="text-muted">
-                                            {{ $fecha($contrato->fecha_inicio ?? null) }}
-                                            →
-                                            {{ $fecha($contrato->fecha_fin ?? null) }}
-                                            · {{ $contrato->contrato_estado ?? ($contrato->activo ? 'ACTIVO' : 'INACTIVO') }}
-                                        </div>
-                                    </div>
-                                @empty
-                                    <div class="small text-muted mb-3">No tiene contratos como inquilino.</div>
-                                @endforelse
-
-                                <h3 class="h6 mt-3 mb-2">Liquidaciones / documentación</h3>
-                                @if (($cand->documentos ?? collect())->isEmpty())
-                                    <div class="small text-muted">
-                                        No se encontraron documentos recientes para las cuentas de este cliente.
-                                    </div>
-                                @else
-                                    <div class="table-responsive">
-                                        <table class="table table-sm align-middle mb-0">
-                                            <thead>
-                                                <tr>
-                                                    <th>Período</th>
-                                                    <th>Cuenta</th>
-                                                    <th>Inmueble(s)</th>
-                                                    <th>Documentos</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                            @foreach ($cand->documentos as $documentoFila)
-                                                @php
-                                                    $cantidadArca = $documentoFila->comprobantes_arca->count();
-                                                    $cantidadLiq = $documentoFila->liquidaciones->count();
-                                                @endphp
-                                                <tr>
-                                                    <td class="text-nowrap">
-                                                        {{ substr($documentoFila->periodo, 4, 2) }}/{{ substr($documentoFila->periodo, 0, 4) }}
-                                                    </td>
-                                                    <td class="text-nowrap"><strong>{{ $formatearCuentaCobol($documentoFila->cuenta) }}</strong></td>
-                                                    <td>
-                                                        @forelse ($documentoFila->inmuebles as $inmuebleDoc)
-                                                            <div>
-                                                                {{ $inmuebleDoc->domicilio }}
-                                                                <span class="badge text-bg-light border">{{ $inmuebleDoc->relacion }}</span>
-                                                            </div>
-                                                        @empty
-                                                            <span class="text-muted">—</span>
-                                                        @endforelse
-                                                    </td>
-                                                    <td>
-                                                        <div class="d-flex flex-wrap gap-1">
-                                                            @foreach ($documentoFila->liquidaciones as $liquidacion)
-                                                                @if ($liquidacion->pdf_disponible ?? false)
-                                                                    <a class="btn btn-sm btn-outline-primary"
-                                                                       href="{{ route('propietarios.liquidaciones.ver', $liquidacion->id) }}"
-                                                                       target="_blank" rel="noopener">
-                                                                        Liquidación{{ $cantidadLiq > 1 ? ' '.$liquidacion->numero_interno : '' }}
-                                                                    </a>
-                                                                @endif
-
-                                                                @if ($liquidacion->impuestos_pdf_disponible ?? false)
-                                                                    <a class="btn btn-sm btn-outline-primary"
-                                                                       href="{{ route('propietarios.liquidaciones.impuestos.ver', $liquidacion->id) }}"
-                                                                       target="_blank" rel="noopener">
-                                                                        Imp. garantizados{{ $cantidadLiq > 1 ? ' '.$liquidacion->numero_interno : '' }}
-                                                                    </a>
-                                                                @endif
-                                                            @endforeach
-
-                                                            @if ($cantidadArca === 1)
-                                                                @php $arca = $documentoFila->comprobantes_arca->first(); @endphp
-                                                                <a class="btn btn-sm btn-outline-primary"
-                                                                   href="{{ route('comprobantes-arca.ver', ['periodo' => $documentoFila->periodo, 'archivo' => $arca->nombre_archivo]) }}"
-                                                                   target="_blank" rel="noopener">
-                                                                    ARCA
-                                                                </a>
-                                                            @elseif ($cantidadArca > 1)
-                                                                <div class="dropdown">
-                                                                    <button class="btn btn-sm btn-outline-primary dropdown-toggle"
-                                                                            type="button"
-                                                                            data-bs-toggle="dropdown">
-                                                                        ARCA ({{ $cantidadArca }})
-                                                                    </button>
-                                                                    <ul class="dropdown-menu">
-                                                                        @foreach ($documentoFila->comprobantes_arca as $arca)
-                                                                            <li>
-                                                                                <a class="dropdown-item"
-                                                                                   href="{{ route('comprobantes-arca.ver', ['periodo' => $documentoFila->periodo, 'archivo' => $arca->nombre_archivo]) }}"
-                                                                                   target="_blank" rel="noopener">
-                                                                                    {{ pathinfo($arca->nombre_archivo, PATHINFO_FILENAME) }}
-                                                                                </a>
-                                                                            </li>
-                                                                        @endforeach
-                                                                    </ul>
-                                                                </div>
-                                                            @endif
-                                                        </div>
-                                                    </td>
-                                                </tr>
-                                            @endforeach
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                @endif
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                                    @empty
+                                        <span class="text-muted">Sin contratos vinculados</span>
+                                    @endforelse
+                                </td>
+                            @endforeach
+                        </tr>
+                        <tr class="table-secondary"><th colspan="{{ 2 + $candidatosUnicos->count() }}">Documentación reciente por cuenta y período</th></tr>
+                        <tr>
+                            <th>Liquidaciones / ARCA</th>
+                            <td>@include('unificacion.clientes.partials.revision-documentos', ['filas' => $documentosOrigen])</td>
+                            @foreach ($candidatosUnicos as $cand)
+                                <td>@include('unificacion.clientes.partials.revision-documentos', ['filas' => $cand->documentos])</td>
+                            @endforeach
+                        </tr>
+                        <tr class="table-light"><th>Decisión</th><td>Elegí un candidato o mantené la identidad separada.</td>
+                            @foreach ($candidatosUnicos as $cand)
+                                @php
+                                    $esYaVinculado = $clienteVinculadoCanonicoId !== null
+                                        && (int) $cand->id_canonico === $clienteVinculadoCanonicoId
+                                        && collect(explode(',', (string) $cand->cuentas))->contains(fn ($cta) => $normalizarCuentaCobol($cta) === $origenCuenta);
+                                @endphp
+                                <td>
+                                    @if ($estadoPendiente && ($clienteVinculadoCanonicoId === null || $esYaVinculado))
+                                        <form method="POST" action="{{ route('archivo.unificacion.clientes.conflicto.resolver', $conflicto->id) }}"
+                                              onsubmit="return confirm('¿Confirmar asociación con cliente #{{ $cand->id_canonico }}?');">
+                                            @csrf
+                                            <input type="hidden" name="decision" value="ASOCIAR_EXISTENTE">
+                                            <input type="hidden" name="cliente_id" value="{{ $cand->id_canonico }}">
+                                            <button class="btn btn-sm btn-primary">{{ $esYaVinculado ? 'Validar identidad existente' : 'Asociar a cliente #'.$cand->id_canonico }}</button>
+                                        </form>
+                                    @elseif ($estadoPendiente)
+                                        <span class="small text-warning">Ya vinculada a #{{ $clienteVinculadoCanonicoId }}</span>
+                                    @else
+                                        <span class="text-muted">Resuelto</span>
+                                    @endif
+                                </td>
+                            @endforeach
+                        </tr>
+                    </tbody>
+                </table>
             </div>
         </div>
-    @empty
-        <div class="alert alert-warning">
-            El conflicto no tiene clientes candidatos actualmente. Puede asociarlo manualmente por ID o mantener esta identidad separada.
-        </div>
-    @endforelse
+    </div>
 
     @if ($candidatos->count() >= 2)
         <div class="card mb-3">

@@ -83,12 +83,45 @@
             <table class="table table-sm table-striped align-middle">
                 <thead>
                     <tr>
-                        <th>Conflicto</th>
-                        <th>Cuenta COBOL</th>
-                        <th>Nombre COBOL</th>
-                        <th>Entidad</th>
-                        <th>Estado origen</th>
-                        <th>Motivo</th>
+                        @foreach ([
+                            'conflicto' => 'Conflicto',
+                            'cuenta' => 'Cuenta COBOL',
+                            'nombre' => 'Nombre COBOL',
+                            'entidad' => 'Entidad',
+                            'estado' => 'Estado origen',
+                            'motivo' => 'Motivo',
+                        ] as $columna => $titulo)
+                            @php
+                                $activo = $ordenActual === $columna;
+
+                                $siguienteDireccion = (
+                                    $activo && $direccionActual === 'asc'
+                                ) ? 'desc' : 'asc';
+
+                                $urlOrden = request()->fullUrlWithQuery([
+                                    'orden' => $columna,
+                                    'direccion' => $siguienteDireccion,
+                                    'conflictos_page' => 1,
+                                ]);
+                            @endphp
+
+                            <th>
+                                <a href="{{ $urlOrden }}"
+                                   class="text-decoration-none text-dark"
+                                   title="Ordenar por {{ $titulo }}">
+                                    {{ $titulo }}
+
+                                    @if ($activo)
+                                        <span class="text-primary">
+                                            {{ $direccionActual === 'asc' ? '↑' : '↓' }}
+                                        </span>
+                                    @else
+                                        <span class="text-muted">↕</span>
+                                    @endif
+                                </a>
+                            </th>
+                        @endforeach
+
                         <th>Acción</th>
                     </tr>
                 </thead>
