@@ -1192,6 +1192,77 @@ final class UnificacionClientesService
      * Revisiones COBOL pendientes relacionadas con los clientes visibles,
      * conservando exactamente el orden del listado principal.
      */
+
+    public function conflictosPendientesPaginados(
+        string $buscar = '',
+        string $estadoOrigen = 'TODOS',
+        string $entidad = 'TODAS',
+        int $porPagina = 20
+    ): LengthAwarePaginator {
+        $query = DB::table('clientes_conflictos as cf')
+            ->where('cf.estado', 'PENDIENTE');
+
+        if (in_array($estadoOrigen, ['ACTIVO', 'BAJA', 'DESCONOCIDO'], true)) {
+            $query->where('cf.estado_origen', $estadoOrigen);
+        }
+
+        if (in_array($entidad, ['PROPIETAR', 'INQUILINO'], true)) {
+            $query->where('cf.entidad_origen', $entidad);
+        }
+
+        $buscar = trim($buscar);
+
+        if ($buscar !== '') {
+            $patron = '%'.addcslashes($buscar, '%_\\').'%';
+
+            $query->where(function ($q) use ($patron): void {
+                $q->where('cf.clave_origen', 'ILIKE', $patron)
+                    ->orWhereRaw('cf.id::text ILIKE ?', [$patron])
+                    ->orWhereRaw(
+                        'CAST(cf.datos_origen AS text) ILIKE ?',
+                        [$patron]
+                    );
+            });
+        }
+
+        return $query
+            ->select('cf.*')
+            ->orderByDesc('cf.ultima_deteccion_at')
+            ->orderBy('cf.id')
+            ->paginate($porPagina, ['*'], 'conflictos_page')
+            ->withQueryString();
+    }
+
+    public function resumenConflictosPendientes(): array
+    {
+        $resumen = [
+            'TODOS' => 0,
+            'ACTIVO' => 0,
+            'BAJA' => 0,
+            'DESCONOCIDO' => 0,
+        ];
+
+        $filas = DB::table('clientes_conflictos')
+            ->where('estado', 'PENDIENTE')
+            ->select('estado_origen')
+            ->selectRaw('COUNT(*) AS total')
+            ->groupBy('estado_origen')
+            ->get();
+
+        foreach ($filas as $fila) {
+            $total = (int) $fila->total;
+            $estado = (string) $fila->estado_origen;
+
+            $resumen['TODOS'] += $total;
+
+            if (array_key_exists($estado, $resumen)) {
+                $resumen[$estado] += $total;
+            }
+        }
+
+        return $resumen;
+    }
+
     public function conflictosPendientesPorClientes(array $idsClientes): Collection
     {
         $idsClientes = array_values(array_unique(array_map('intval', $idsClientes)));

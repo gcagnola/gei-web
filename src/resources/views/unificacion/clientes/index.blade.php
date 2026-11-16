@@ -23,7 +23,7 @@
     <div class="card mb-3"><div class="card-body py-2">
         <div class="d-flex flex-wrap gap-2">
             <a class="btn {{ $vista === 'activos_ok' ? 'btn-success' : 'btn-outline-success' }}" href="{{ route('archivo.unificacion.clientes.index', ['vista' => 'activos_ok']) }}">Activos OK <span class="badge text-bg-light ms-1">{{ $resumen['activos_ok'] }}</span></a>
-            <a class="btn {{ $vista === 'activos_revision' ? 'btn-danger' : 'btn-outline-danger' }}" href="{{ route('archivo.unificacion.clientes.index', ['vista' => 'activos_revision']) }}">Activos con revisión COBOL <span class="badge text-bg-light ms-1">{{ $resumen['activos_revision'] }}</span></a>
+            <a class="btn {{ $vista === 'activos_revision' ? 'btn-danger' : 'btn-outline-danger' }}" href="{{ route('archivo.unificacion.clientes.index', ['vista' => 'activos_revision']) }}">Revisiones COBOL <span class="badge text-bg-light ms-1">{{ $resumenPendientes['TODOS'] }}</span></a>
             <a class="btn {{ $vista === 'inactivos' ? 'btn-secondary' : 'btn-outline-secondary' }}" href="{{ route('archivo.unificacion.clientes.index', ['vista' => 'inactivos', 'conflicto' => 'todos']) }}">Inactivos <span class="badge text-bg-light ms-1">{{ $resumen['inactivos'] }}</span></a>
         </div>
         <a class="btn btn-outline-warning mt-2" href="{{ route('archivo.unificacion.clientes.index', ['vista' => 'avisos_propietarios']) }}">Propietarios: avisos de inmuebles <span class="badge text-bg-light">{{ $avisosPropietariosTotal }}</span></a>
@@ -37,13 +37,10 @@
         @endif
     </div></div>
 
+
     @if ($vista === 'activos_revision')
-        <div class="alert alert-info py-2">
-            <strong>Importante:</strong> estos clientes no son duplicados entre sí.
-            Cada fila está involucrada en una identidad/origen COBOL cuya asociación automática quedó pendiente.
-            Los posibles duplicados de personas se muestran por separado como <strong>Similitudes encontradas</strong> al buscar por nombre, CUIT, documento o cuenta.
-        </div>
-    @endif
+        @include('unificacion.clientes.partials.revisiones-pendientes')
+    @else
 
     <div class="row g-3 mb-3">
         <div class="col-xl-8"><div class="card h-100">
@@ -274,4 +271,5 @@ document.getElementById('comparar-seleccionados')?.addEventListener('click', () 
     url.searchParams.set('principal', p); url.searchParams.set('secundario', s); window.location.href = url.toString();
 });
 </script>
+    @endif
 @endsection

@@ -16,26 +16,19 @@ final class UnificacionClientesAuditoriaController extends Controller
     {
     }
 
-    public function revisiones(Request $request): View
+    public function revisiones(Request $request): \Illuminate\Http\RedirectResponse
     {
         Gate::authorize('administrar-unificaciones');
 
-        $buscar = mb_substr(trim((string) $request->query('buscar', '')), 0, 180);
-        $resultadosRevision = $this->unificacion->listarClasificados(
-            $buscar, 'activos_revision', 'todos', [], 50
+        return redirect()->route(
+            'archivo.unificacion.clientes.index',
+            array_filter([
+                'vista' => 'activos_revision',
+                'q' => $request->query('buscar'),
+                'estado_origen' => $request->query('estado_origen'),
+                'entidad' => $request->query('entidad'),
+            ], static fn ($valor): bool => $valor !== null && $valor !== '')
         );
-        $ids = $resultadosRevision->getCollection()->pluck('id')
-            ->map(static fn ($id): int => (int) $id)->all();
-
-        return view('unificacion.clientes.auditoria', [
-            'modo' => 'revisiones',
-            'buscar' => $buscar,
-            'resumenRevision' => $this->unificacion->resumenClasificacion([]),
-            'resultadosRevision' => $resultadosRevision,
-            'conflictosRevision' => $this->unificacion->conflictosPendientesPorClientes($ids),
-            'conflictosSinCliente' => $this->unificacion->conflictosPendientesSinCliente(),
-            'conflictosSinClienteTotal' => $this->unificacion->conflictosPendientesSinClienteTotal(),
-        ]);
     }
 
     public function historial(): View

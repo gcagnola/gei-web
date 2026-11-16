@@ -20,8 +20,10 @@ final class UnificacionClienteController extends Controller
     {
         $datos = $request->validate([
             'q' => ['nullable', 'string', 'max:180'],
-            'vista' => ['nullable', 'in:activos_ok,activos_revision,inactivos,avisos_propietarios'],
+            'vista' => ['nullable', 'in:activos_ok,activos_revision,inactivos,avisos_propietarios,conflictos_cobol'],
             'conflicto' => ['nullable', 'in:todos,con_conflicto,sin_conflicto'],
+            'estado_origen' => ['nullable', 'in:TODOS,ACTIVO,BAJA,DESCONOCIDO'],
+            'entidad' => ['nullable', 'in:TODAS,PROPIETAR,INQUILINO'],
         ]);
 
         $texto = trim((string) ($datos['q'] ?? ''));
@@ -36,6 +38,30 @@ final class UnificacionClienteController extends Controller
             return view('unificacion.clientes.avisos-propietarios', [
                 'texto' => $texto,
                 'avisos' => $inmuebles->avisosClientes($texto),
+            ]);
+        }
+
+        if (in_array($vista, ['activos_revision', 'conflictos_cobol'], true)) {
+            \Illuminate\Support\Facades\Gate::authorize('administrar-unificaciones');
+
+            $estadoOrigen = (string) ($datos['estado_origen'] ?? 'TODOS');
+            $entidad = (string) ($datos['entidad'] ?? 'TODAS');
+
+            return view('unificacion.clientes.index', [
+                'avisosPropietariosTotal' => $inmuebles->totalAvisosClientes(),
+                'texto' => $texto,
+                'vista' => $vista,
+                'filtroInactivos' => $filtroInactivos,
+                'resumen' => $this->service->resumenClasificacion([]),
+                'estadoOrigen' => $estadoOrigen,
+                'entidad' => $entidad,
+                'resumenPendientes' => $this->service->resumenConflictosPendientes(),
+                'conflictosPendientes' =>
+                    $this->service->conflictosPendientesPaginados(
+                        $texto,
+                        $estadoOrigen,
+                        $entidad
+                    ),
             ]);
         }
 
@@ -63,6 +89,7 @@ final class UnificacionClienteController extends Controller
             'vista' => $vista,
             'filtroInactivos' => $filtroInactivos,
             'resumen' => $resumen,
+            'resumenPendientes' => $this->service->resumenConflictosPendientes(),
             'resultados' => $resultados,
             'candidatosBusqueda' => $candidatosBusqueda,
             'candidatosActivos' => $vista === 'activos_revision' ? $candidatos : collect(),
