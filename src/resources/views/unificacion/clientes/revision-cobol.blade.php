@@ -33,6 +33,14 @@
     $valor = static fn ($v) => ($v === null || trim((string) $v) === '') ? '—' : $v;
 
     $estadoPendiente = $conflicto->estado === 'PENDIENTE';
+    $origenesTabla = collect([[
+        'conflicto'=>$conflicto, 'datosOrigen'=>$datosOrigen, 'inmueblesOrigen'=>$inmueblesOrigen,
+        'contratosOrigen'=>$contratosOrigen, 'documentosOrigen'=>$documentosOrigen,
+        'clienteVinculadoCanonicoId'=>$clienteVinculadoCanonicoId,
+    ]])->concat($origenesComparacion ?? [])->sortBy(fn ($o) => $o['conflicto']->id)->values();
+    $esGrupo = $origenesTabla->count() > 1;
+    $etiquetaIdentidad = static fn ($id) => str_starts_with((string) $id, 'cobol:')
+        ? 'ORIGEN COBOL — #'.substr((string) $id, 6) : 'Cliente #'.$id;
 
     $motivoTexto = match($conflicto->motivo) {
         'CUIT_Y_DOCUMENTO_APUNTAN_A_CLIENTES_DISTINTOS' => 'El CUIT y el documento del origen COBOL apuntan a clientes diferentes. Requiere decidir cuál identidad es correcta.',
@@ -53,9 +61,9 @@
 <div class="container-fluid py-3 pb-5">
     <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
         <div>
-            <h1 class="h3 mb-1">Revisión COBOL #{{ $conflicto->id }}</h1>
+            <h1 class="h3 mb-1">{{ $esGrupo ? "Revisión COBOL agrupada — ".$origenesTabla->map(fn ($o) => "#".$o['conflicto']->id)->implode(", ") : "Revisión COBOL #".$conflicto->id }}</h1>
             <p class="text-muted mb-0">
-                Compará el origen COBOL con cada cliente candidato y decidí si corresponden a la misma persona.
+                Compará todas las identidades. Compartir candidatos no significa que sean la misma persona.
             </p>
         </div>
         <a class="btn btn-outline-secondary"
@@ -78,12 +86,13 @@
 
     <div class="alert {{ $estadoPendiente ? 'alert-warning' : 'alert-success' }} py-2">
         <strong>{{ $estadoPendiente ? 'PENDIENTE DE DECISIÓN' : 'RESUELTO' }}</strong>
-        <span class="ms-2">{{ $motivoTexto }}</span>
+        <span class="ms-2">{{ $esGrupo ? "Seleccioná únicamente las identidades que correspondan a la misma persona. Las demás seguirán sin unificar." : $motivoTexto }}</span>
         @if (! $estadoPendiente && $conflicto->cliente_resuelto_id)
             <span class="ms-2">Cliente resuelto: <strong>#{{ $conflicto->cliente_resuelto_id }}</strong>.</span>
         @endif
     </div>
 
+    @if (! $esGrupo)
     <div class="card mb-3">
         <div class="card-body py-2">
             <div class="row g-2 small">
@@ -114,6 +123,7 @@
             </div>
         </div>
     </div>
+    @endif
 
     @php
         $campo = static fn ($dato, $nombre) => is_array($dato) ? ($dato[$nombre] ?? null) : ($dato->$nombre ?? null);
@@ -125,24 +135,36 @@
             ['Domicilio', 'domicilio'],
             ['Teléfono', 'telefono'],
             ['Teléfono alternativo', 'telefono_alternativo'],
+            ['Código postal', 'codigo_postal'],
             ['Localidad', 'localidad'],
             ['Provincia', 'provincia'],
             ['Condición IVA', 'condicion_iva'],
         ];
         $origenCuenta = $normalizarCuentaCobol($conflicto->clave_origen);
+        $unificacionDoble = $estadoPendiente && ($origenesTabla->count() + $candidatosUnicos->count() >= 2);
+        $opcionesSeleccion = $origenesTabla->map(fn ($o) => 'cobol:'.$o['conflicto']->id)->concat($candidatosUnicos->map(fn ($c) => (string) $c->id_canonico));
     @endphp
 
+    @if ($unificacionDoble)
+        <form id="form-unificacion-cobol" method="GET" action="{{ route('archivo.unificacion.clientes.conflicto.revisar', $conflicto->id) }}"></form>
+    @endif
     <div class="card mb-3">
-        <div class="card-header fw-semibold">Comparación única — origen COBOL y {{ $candidatosUnicos->count() }} candidato(s)</div>
+        <div class="card-header fw-semibold">Comparación única — {{ $origenesTabla->count() }} origen(es) COBOL y {{ $candidatosUnicos->count() }} cliente(s)</div>
         <div class="card-body p-0">
             <div class="table-responsive">
                 <table class="table table-bordered table-sm align-top mb-0" style="min-width:900px">
                     <thead class="table-light">
                         <tr>
                             <th style="min-width:160px">Dato</th>
-                            <th style="min-width:260px">ORIGEN COBOL — #{{ $conflicto->id }}<br><small>{{ $rolOrigen }}</small></th>
+                            @foreach ($origenesTabla as $o)
+                                <th style="min-width:260px" data-identidad="cobol:{{ $o['conflicto']->id }}">
+                                    ORIGEN COBOL — #{{ $o['conflicto']->id }}<br>
+                                    <small>{{ $o['conflicto']->entidad_origen === 'PROPIETAR' ? 'PROPIETARIO' : $o['conflicto']->entidad_origen }}</small>
+                                    <span class="badge {{ $o['conflicto']->estado_origen === 'ACTIVO' ? 'text-bg-success' : 'text-bg-secondary' }}">{{ $o['conflicto']->estado_origen }}</span>
+                                </th>
+                            @endforeach
                             @foreach ($candidatosUnicos as $cand)
-                                <th style="min-width:260px">
+                                <th style="min-width:260px" data-identidad="{{ $cand->id_canonico }}">
                                     Cliente #{{ $cand->id_canonico }}<br>
                                     <small>{{ $cand->roles ?: 'SIN ROL' }}</small>
                                     @if ($cand->fue_absorbido)
@@ -153,9 +175,29 @@
                         </tr>
                     </thead>
                     <tbody>
+                        @if ($unificacionDoble)
+                            @foreach (['principal'=>'Principal','absorber'=>'Absorber'] as $tipo=>$titulo)
+                                <tr><th>{{ $titulo }}</th>
+                                @foreach ($opcionesSeleccion as $op)
+                                    <td class="text-center" data-identidad="{{ $op }}">
+                                        <label class="d-inline-flex align-items-center gap-2 p-1 fw-semibold" style="cursor:pointer">
+                                            <input class="form-check-input m-0" style="width:1.4rem;height:1.4rem" form="form-unificacion-cobol" type="checkbox" data-tipo="{{ $tipo }}" value="{{ $op }}" name="{{ $tipo === 'principal' ? 'seleccion_principal' : 'absorber[]' }}" @checked($tipo === 'principal' ? request('seleccion_principal') === $op : in_array($op, (array) request('absorber', []), true))>
+                                            {{ $titulo }}
+                                        </label>
+                                    </td>
+                                @endforeach
+                                </tr>
+                            @endforeach
+                            <tr><td colspan="{{ 1 + $origenesTabla->count() + $candidatosUnicos->count() }}" class="p-2">
+                                <button id="simular-seleccion" type="submit" form="form-unificacion-cobol" class="btn btn-primary" disabled>Simular unificación</button>
+                                <span class="ms-2 text-muted">Un principal y una o más identidades a absorber. Las columnas no seleccionadas quedan excluidas.</span>
+                            </td></tr>
+                        @endif
                         <tr>
                             <th>Cuenta(s) COBOL</th>
-                            <td><strong>{{ $formatearCuentaCobol($conflicto->clave_origen) }}</strong></td>
+                            @foreach ($origenesTabla as $o)
+                                <td><strong>{{ $formatearCuentaCobol($o['conflicto']->clave_origen) }}</strong></td>
+                            @endforeach
                             @foreach ($candidatosUnicos as $cand)
                                 <td>
                                     @forelse (array_filter(array_map('trim', explode(',', (string) $cand->cuentas))) as $cta)
@@ -169,11 +211,13 @@
                         @foreach ($filasIdentidad as [$etiqueta, $clave])
                             <tr>
                                 <th>{{ $etiqueta }}</th>
-                                <td>{{ $valor($campo($datosOrigen, $clave)) }}</td>
+                                @foreach ($origenesTabla as $o)
+                                    <td>{{ $valor($campo($o['datosOrigen'], $clave)) }}</td>
+                                @endforeach
                                 @foreach ($candidatosUnicos as $cand)
                                     <td>
                                         {{ $valor($campo($cand->cliente, $clave)) }}
-                                        @if (in_array($clave, ['nombre','cuit','domicilio','telefono'], true))
+                                        @if (! $esGrupo && in_array($clave, ['nombre','cuit','domicilio','telefono'], true))
                                             @php
                                                 $datosComp = $comparacionPorCampo($cand);
                                                 $cmp = $datosComp[$clave] ?? null;
@@ -190,7 +234,9 @@
                         @endforeach
                         <tr>
                             <th>Documento</th>
-                            <td>{{ $valor($origenDocumento) }}</td>
+                            @foreach ($origenesTabla as $o)
+                                <td>{{ $valor(trim(($o['datosOrigen']['tipo_documento'] ?? '').' '.($o['datosOrigen']['numero_documento'] ?? ''))) }}</td>
+                            @endforeach
                             @foreach ($candidatosUnicos as $cand)
                                 @php $docCand = trim(($cand->cliente->tipo_documento ?? '').' '.($cand->cliente->numero_documento ?? '')); @endphp
                                 <td>{{ $valor($docCand) }}</td>
@@ -198,29 +244,44 @@
                         </tr>
                         <tr>
                             <th>Rol</th>
-                            <td>{{ $rolOrigen }}</td>
+                            @foreach ($origenesTabla as $o)
+                                <td>{{ $o['conflicto']->entidad_origen === 'PROPIETAR' ? 'PROPIETARIO' : $o['conflicto']->entidad_origen }}</td>
+                            @endforeach
                             @foreach ($candidatosUnicos as $cand)<td>{{ $cand->roles ?: '—' }}</td>@endforeach
                         </tr>
                         <tr>
                             <th>Cuenta propietario</th>
-                            <td>{{ $valor($datosOrigen['cuenta_propietario'] ?? null) }}</td>
+                            @foreach ($origenesTabla as $o)<td>{{ $formatearCuentaCobol($o['datosOrigen']['cuenta_propietario'] ?? '') }}</td>@endforeach
                             @foreach ($candidatosUnicos as $cand)<td>—</td>@endforeach
                         </tr>
                         <tr>
                             <th>Email</th>
-                            <td>—</td>
+                            @foreach ($origenesTabla as $o)<td>{{ $valor($o['datosOrigen']['email'] ?? null) }}</td>@endforeach
                             @foreach ($candidatosUnicos as $cand)<td>{{ $valor($cand->cliente->email ?? null) }}</td>@endforeach
                         </tr>
-                        <tr class="table-secondary"><th colspan="{{ 2 + $candidatosUnicos->count() }}">Inmuebles</th></tr>
+                        <tr>
+                            <th>Estado</th>
+                            @foreach ($origenesTabla as $o)<td>{{ $o['conflicto']->estado_origen ?: '—' }}</td>@endforeach
+                            @foreach ($candidatosUnicos as $cand)<td>{{ $cand->cliente->activo === null ? 'SIN DEFINIR' : ($cand->cliente->activo ? 'ACTIVO' : 'INACTIVO') }}</td>@endforeach
+                        </tr>
+                        @if ($esGrupo)
+                            <tr><th>Motivo de revisión</th>
+                                @foreach ($origenesTabla as $o)<td class="small" style="overflow-wrap:anywhere">{{ $o['conflicto']->motivo }}</td>@endforeach
+                                @foreach ($candidatosUnicos as $cand)<td>—</td>@endforeach
+                            </tr>
+                        @endif
+                        <tr class="table-secondary"><th colspan="{{ 1 + $origenesTabla->count() + $candidatosUnicos->count() }}">Inmuebles</th></tr>
                         <tr>
                             <th>Inmuebles vinculados a las cuentas</th>
+                            @foreach ($origenesTabla as $o)
                             <td>
-                                @forelse ($inmueblesOrigen as $inmueble)
+                                @forelse ($o['inmueblesOrigen'] as $inmueble)
                                     <div class="border rounded p-2 mb-1 small">{{ $inmueble->domicilio }} <span class="text-muted">{{ $inmueble->relacion }}</span></div>
                                 @empty
                                     <span class="text-muted">Sin inmuebles vinculados</span>
                                 @endforelse
                             </td>
+                            @endforeach
                             @foreach ($candidatosUnicos as $cand)
                                 <td>
                                     @forelse ($cand->inmuebles as $inmueble)
@@ -231,11 +292,12 @@
                                 </td>
                             @endforeach
                         </tr>
-                        <tr class="table-secondary"><th colspan="{{ 2 + $candidatosUnicos->count() }}">Contratos (por cuenta COBOL, como inquilino o propietario)</th></tr>
+                        <tr class="table-secondary"><th colspan="{{ 1 + $origenesTabla->count() + $candidatosUnicos->count() }}">Contratos (por cuenta COBOL, como inquilino o propietario)</th></tr>
                         <tr>
                             <th>Contratos</th>
+                            @foreach ($origenesTabla as $o)
                             <td>
-                                @forelse ($contratosOrigen as $contrato)
+                                @forelse ($o['contratosOrigen'] as $contrato)
                                     <div class="border rounded p-2 mb-1 small">
                                         <strong>#{{ $contrato->id }}</strong> · {{ $contrato->estado }}<br>
                                         Inq.: {{ $formatearCuentaCobol($contrato->cuenta_inquilino) }} · Prop.: {{ $formatearCuentaCobol($contrato->cuenta_propietario) }}<br>
@@ -245,6 +307,7 @@
                                     <span class="text-muted">Sin contratos vinculados</span>
                                 @endforelse
                             </td>
+                            @endforeach
                             @foreach ($candidatosUnicos as $cand)
                                 <td>
                                     @forelse ($cand->contratosComparacion as $contrato)
@@ -259,15 +322,16 @@
                                 </td>
                             @endforeach
                         </tr>
-                        <tr class="table-secondary"><th colspan="{{ 2 + $candidatosUnicos->count() }}">Documentación reciente por cuenta y período</th></tr>
+                        <tr class="table-secondary"><th colspan="{{ 1 + $origenesTabla->count() + $candidatosUnicos->count() }}">Documentación reciente por cuenta y período</th></tr>
                         <tr>
                             <th>Liquidaciones / ARCA</th>
-                            <td>@include('unificacion.clientes.partials.revision-documentos', ['filas' => $documentosOrigen])</td>
+                            @foreach ($origenesTabla as $o)<td>@include('unificacion.clientes.partials.revision-documentos', ['filas' => $o['documentosOrigen']])</td>@endforeach
                             @foreach ($candidatosUnicos as $cand)
                                 <td>@include('unificacion.clientes.partials.revision-documentos', ['filas' => $cand->documentos])</td>
                             @endforeach
                         </tr>
-                        <tr class="table-light"><th>Decisión</th><td>Elegí un candidato o mantené la identidad separada.</td>
+                        @if (! $esGrupo)
+                        <tr class="table-light"><th>Decisión</th><td>Asociar sin unificar o mantener la identidad separada.</td>
                             @foreach ($candidatosUnicos as $cand)
                                 @php
                                     $esYaVinculado = $clienteVinculadoCanonicoId !== null
@@ -281,7 +345,7 @@
                                             @csrf
                                             <input type="hidden" name="decision" value="ASOCIAR_EXISTENTE">
                                             <input type="hidden" name="cliente_id" value="{{ $cand->id_canonico }}">
-                                            <button class="btn btn-sm btn-primary">{{ $esYaVinculado ? 'Validar identidad existente' : 'Asociar a cliente #'.$cand->id_canonico }}</button>
+                                            <button class="btn btn-sm btn-primary">{{ $esYaVinculado ? 'Validar sin unificar' : 'Asociar sin unificar a #'.$cand->id_canonico }}</button>
                                         </form>
                                     @elseif ($estadoPendiente)
                                         <span class="small text-warning">Ya vinculada a #{{ $clienteVinculadoCanonicoId }}</span>
@@ -291,29 +355,120 @@
                                 </td>
                             @endforeach
                         </tr>
+                        @endif
                     </tbody>
                 </table>
             </div>
         </div>
     </div>
 
-    @if ($candidatos->count() >= 2)
-        <div class="card mb-3">
-            <div class="card-header fw-semibold">¿Los candidatos son en realidad la misma persona?</div>
-            <div class="card-body d-flex flex-wrap gap-2">
-                @for ($i = 0; $i < $candidatos->count(); $i++)
-                    @for ($j = $i + 1; $j < $candidatos->count(); $j++)
-                        <a class="btn btn-outline-primary"
-                           href="{{ route('archivo.unificacion.clientes.comparar', ['principal' => $candidatos[$i]->id_canonico, 'secundario' => $candidatos[$j]->id_canonico]) }}">
-                            Comparar #{{ $candidatos[$i]->id_canonico }} con #{{ $candidatos[$j]->id_canonico }}
-                        </a>
-                    @endfor
-                @endfor
+    @if ($unificacionDoble)
+        <script>
+        (() => {
+            const controles = [...document.querySelectorAll('#form-unificacion-cobol ~ * input[data-tipo], input[form="form-unificacion-cobol"][data-tipo]')];
+            const actualizar = () => {
+                const p = controles.find(x => x.dataset.tipo === 'principal' && x.checked);
+                document.querySelectorAll('[data-identidad]').forEach(td => {
+                    const a = controles.find(x => x.dataset.tipo === 'absorber' && x.value === td.dataset.identidad && x.checked);
+                    td.classList.toggle('table-success', !!p && p.value === td.dataset.identidad);
+                    td.classList.toggle('table-danger', !!a);
+                });
+                document.getElementById('simular-seleccion').disabled = !p || !controles.some(x => x.dataset.tipo === 'absorber' && x.checked);
+            };
+            controles.forEach(x => x.addEventListener('change', () => {
+                if (x.checked) controles.forEach(y => {
+                    if (y !== x && (y.value === x.value || (x.dataset.tipo === 'principal' && y.dataset.tipo === 'principal'))) y.checked = false;
+                });
+                const panel = document.getElementById('simulacion-seleccion');
+                if (panel) { panel.hidden = true; panel.querySelectorAll('button').forEach(b => b.disabled = true); }
+                actualizar();
+            }));
+            actualizar();
+        })();
+        </script>
+    @endif
+    @isset($simulacionSeleccion)
+        @php $sim = $simulacionSeleccion; @endphp
+        <div id="simulacion-seleccion" class="card border-primary mb-3">
+            <div class="card-header fw-semibold">Simulación de la selección</div>
+            <div class="card-body">
+                <p>Principal: <strong>{{ $etiquetaIdentidad($sim['principal']) }}</strong>.</p>
+                <p>Absorber: <strong>{{ collect($sim['absorber'])->map($etiquetaIdentidad)->implode(', ') }}</strong>. {{ $sim['incluyeCobol'] ? 'Las asociaciones COBOL seleccionadas se registrarán para la próxima importación.' : 'Los orígenes COBOL seguirán pendientes.' }}</p>
+                @php
+                    $sinSeleccion = $opcionesSeleccion->reject(fn ($op) => $op === $sim['principal'] || in_array($op, $sim['absorber'], true));
+                @endphp
+                @if ($sinSeleccion->isNotEmpty())
+                    <p class="text-muted">Sin unificar: <strong>{{ $sinSeleccion->map($etiquetaIdentidad)->implode(', ') }}</strong>.</p>
+                @endif
+                @if ($sim['destino'] === null)
+                    <p class="text-info">Se creará un único cliente operativo nuevo, sin absorber ningún cliente existente.</p>
+                @endif
+                @foreach ($sim['bloqueos'] as $b)<div class="alert alert-danger">{{ $b }}</div>@endforeach
+                <form method="POST" action="{{ route('archivo.unificacion.clientes.conflicto.resolver', $conflicto->id) }}" onsubmit="return confirm('¿Confirmar la selección y los datos maestros?')">
+                    @csrf
+                    <input type="hidden" name="decision" value="UNIFICAR_SELECCION">
+                    <input type="hidden" name="seleccion_principal" value="{{ $sim['principal'] }}">
+                    <input type="hidden" name="huella" value="{{ $sim['huella'] }}">
+                    @foreach ($sim['absorber'] as $a)<input type="hidden" name="absorber[]" value="{{ $a }}">@endforeach
+                    <p class="small text-muted mb-2">Elegí el valor definitivo de cada campo entre las identidades seleccionadas. Se priorizan los datos del principal y, si están vacíos, los datos disponibles de las identidades a absorber.</p>
+                    <table class="table table-sm table-bordered"><thead><tr><th>Campo</th><th>Dato definitivo</th></tr></thead><tbody>
+                    @php
+                        $etiquetasMaestras = [
+                            'nombre' => 'Nombre', 'cuit' => 'CUIT', 'documento' => 'Documento',
+                            'domicilio' => 'Domicilio', 'codigo_postal' => 'Código postal',
+                            'localidad' => 'Localidad', 'provincia' => 'Provincia',
+                            'telefono' => 'Teléfono', 'telefono_alternativo' => 'Teléfono alternativo',
+                            'condicion_iva' => 'Condición IVA', 'email' => 'Email',
+                        ];
+                    @endphp
+                    @foreach ($sim['filas'] as $campo=>$opciones)
+                        @php
+                            $fuenteInicial = array_key_exists($sim['principal'], $opciones)
+                                ? $sim['principal'] : array_key_first($opciones);
+                        @endphp
+                        <tr><th><label for="fuente-maestra-{{ $campo }}">{{ $etiquetasMaestras[$campo] ?? $campo }}</label></th><td>
+                        <select id="fuente-maestra-{{ $campo }}" name="fuentes[{{ $campo }}]" class="form-select" required>
+                        @foreach ($opciones as $f=>$valores)
+                            <option value="{{ $f }}" @selected((string) $f === (string) $fuenteInicial)>{{ $etiquetaIdentidad($f) }} — {{ implode(' ', $valores) }}</option>
+                        @endforeach
+                        </select></td></tr>
+                    @endforeach
+                    </tbody></table>
+                    <button class="btn btn-danger" @disabled($sim['bloqueos'] !== [])>Confirmar unificación</button>
+                </form>
             </div>
         </div>
-    @endif
+        <script>document.getElementById('simulacion-seleccion').scrollIntoView({block:'start'});</script>
+    @endisset
 
-    @if ($estadoPendiente)
+    @if ($estadoPendiente && $esGrupo)
+        <details class="card mb-3">
+            <summary class="card-header fw-semibold">Resolver un origen por separado (sin unificar)</summary>
+            <div class="card-body">
+                @foreach ($origenesTabla as $o)
+                    <div class="border-bottom pb-3 mb-3">
+                        <strong>ORIGEN COBOL — #{{ $o['conflicto']->id }} · {{ $formatearCuentaCobol($o['conflicto']->clave_origen) }} · {{ $o['datosOrigen']['nombre'] ?? '—' }}</strong>
+                        <div class="d-flex flex-wrap gap-2 mt-2">
+                            <form method="POST" action="{{ route('archivo.unificacion.clientes.conflicto.resolver', $o['conflicto']->id) }}" class="d-flex gap-2" onsubmit="return confirm('¿Asociar exclusivamente el origen #{{ $o['conflicto']->id }} sin unificar clientes?')">
+                                @csrf
+                                <input type="hidden" name="decision" value="ASOCIAR_EXISTENTE">
+                                <input type="number" min="1" name="cliente_id" class="form-control form-control-sm" placeholder="ID cliente" required value="{{ $o['clienteVinculadoCanonicoId'] ?? '' }}" @readonly($o['clienteVinculadoCanonicoId'] !== null)>
+                                <button class="btn btn-sm btn-outline-primary text-nowrap">Asociar #{{ $o['conflicto']->id }} sin unificar</button>
+                            </form>
+                            @if ($o['clienteVinculadoCanonicoId'] === null)
+                                <form method="POST" action="{{ route('archivo.unificacion.clientes.conflicto.resolver', $o['conflicto']->id) }}" onsubmit="return confirm('¿Registrar el origen #{{ $o['conflicto']->id }} como persona distinta?')">
+                                    @csrf
+                                    <input type="hidden" name="decision" value="CREAR_SEPARADO">
+                                    <button class="btn btn-sm btn-outline-secondary">Mantener separado #{{ $o['conflicto']->id }}</button>
+                                </form>
+                            @endif
+                        </div>
+                    </div>
+                @endforeach
+            </div>
+        </details>
+    @endif
+    @if ($estadoPendiente && ! $esGrupo)
         <div class="row g-3 mb-3">
             <div class="col-lg-7">
                 <div class="card h-100">
@@ -367,7 +522,7 @@
 
     @php $cantidadRevisionesRelacionadas = 1 + $otrosConflictos->count(); @endphp
 
-    @if ($cantidadRevisionesRelacionadas > 1)
+    @if (! $esGrupo && $cantidadRevisionesRelacionadas > 1)
         <details class="card mb-3">
             <summary class="card-header fw-semibold" style="cursor:pointer;">
                 Revisiones COBOL relacionadas — {{ $cantidadRevisionesRelacionadas }}

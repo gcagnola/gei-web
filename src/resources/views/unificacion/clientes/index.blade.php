@@ -23,7 +23,7 @@
     <div class="card mb-3"><div class="card-body py-2">
         <div class="d-flex flex-wrap gap-2">
             <a class="btn {{ $vista === 'activos_ok' ? 'btn-success' : 'btn-outline-success' }}" href="{{ route('archivo.unificacion.clientes.index', ['vista' => 'activos_ok']) }}">Activos OK <span class="badge text-bg-light ms-1">{{ $resumen['activos_ok'] }}</span></a>
-            <a class="btn {{ $vista === 'activos_revision' ? 'btn-danger' : 'btn-outline-danger' }}" href="{{ route('archivo.unificacion.clientes.index', ['vista' => 'activos_revision']) }}">Revisiones COBOL <span class="badge text-bg-light ms-1">{{ $resumenPendientes['TODOS'] }}</span></a>
+            <a class="btn {{ in_array($vista, ['activos_revision', 'conflictos_cobol'], true) ? 'btn-danger' : 'btn-outline-danger' }}" href="{{ route('archivo.unificacion.clientes.index', ['vista' => 'activos_revision']) }}">Revisiones COBOL <span class="badge text-bg-light ms-1">{{ $resumenPendientes['TODOS'] }}</span></a>
             <a class="btn {{ $vista === 'inactivos' ? 'btn-secondary' : 'btn-outline-secondary' }}" href="{{ route('archivo.unificacion.clientes.index', ['vista' => 'inactivos', 'conflicto' => 'todos']) }}">Inactivos <span class="badge text-bg-light ms-1">{{ $resumen['inactivos'] }}</span></a>
         </div>
         <a class="btn btn-outline-warning mt-2" href="{{ route('archivo.unificacion.clientes.index', ['vista' => 'avisos_propietarios']) }}">Propietarios: avisos de inmuebles <span class="badge text-bg-light">{{ $avisosPropietariosTotal }}</span></a>
@@ -38,7 +38,7 @@
     </div></div>
 
 
-    @if ($vista === 'activos_revision')
+    @if (in_array($vista, ['activos_revision', 'conflictos_cobol'], true))
         @include('unificacion.clientes.partials.revisiones-pendientes')
     @else
 

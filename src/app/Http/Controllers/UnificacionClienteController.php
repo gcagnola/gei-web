@@ -26,7 +26,7 @@ final class UnificacionClienteController extends Controller
             'entidad' => ['nullable', 'in:TODAS,PROPIETAR,INQUILINO'],
             'orden' => [
                 'nullable',
-                'in:fecha,conflicto,cuenta,nombre,entidad,estado,motivo',
+                'in:fecha,conflicto,cuenta,nombre,candidatos,entidad,estado,motivo',
             ],
             'direccion' => ['nullable', 'in:asc,desc'],
         ]);
@@ -124,10 +124,15 @@ final class UnificacionClienteController extends Controller
         $datos = $request->validate([
             'principal' => ['required', 'integer', 'min:1'],
             'secundario' => ['required', 'integer', 'min:1', 'different:principal'],
+            'conflicto_id' => ['nullable', 'integer', 'min:1'],
         ]);
         try {
-            $comparacion = $this->service->comparar((int) $datos['principal'], (int) $datos['secundario']);
+            $comparacion = $this->service->comparar((int) $datos['principal'], (int) $datos['secundario'],
+                isset($datos['conflicto_id']) ? (int) $datos['conflicto_id'] : null);
         } catch (DomainException $error) {
+            if (isset($datos['conflicto_id'])) {
+                return redirect()->route('archivo.unificacion.clientes.conflicto.revisar', $datos['conflicto_id'])->withErrors(['unificacion' => $error->getMessage()]);
+            }
             return redirect()->route('archivo.unificacion.clientes.index', ['vista' => 'activos_revision'])->withErrors(['unificacion' => $error->getMessage()]);
         }
 
@@ -135,14 +140,19 @@ final class UnificacionClienteController extends Controller
     }
 
 
-    public function revisarConflicto(int $conflicto): View|RedirectResponse
+    public function revisarConflicto(Request $request, int $conflicto): View|RedirectResponse
     {
         try {
             $revision = $this->service->revisionCobol($conflicto);
+            if ($request->has('seleccion_principal')) {
+                $d = $request->validate(['seleccion_principal'=>['required','string'], 'absorber'=>['required','array','min:1'], 'absorber.*'=>['required','string']]);
+                $revision['simulacionSeleccion'] = $this->service->simularSeleccionCobol($conflicto, $d['seleccion_principal'], $d['absorber']);
+            }
         } catch (DomainException $error) {
-            return redirect()
-                ->route('archivo.unificacion.clientes.index', ['vista' => 'activos_revision'])
-                ->withErrors(['unificacion' => $error->getMessage()]);
+            if ($request->has('seleccion_principal')) {
+                return redirect()->route('archivo.unificacion.clientes.conflicto.revisar', $conflicto)->withErrors(['unificacion' => $error->getMessage()]);
+            }
+            return redirect()->route('archivo.unificacion.clientes.index', ['vista' => 'activos_revision'])->withErrors(['unificacion' => $error->getMessage()]);
         }
 
         return view('unificacion.clientes.revision-cobol', $revision);
@@ -153,18 +163,30 @@ final class UnificacionClienteController extends Controller
         $datos = $request->validate([
             'principal' => ['required', 'integer', 'min:1'],
             'secundario' => ['required', 'integer', 'min:1', 'different:principal'],
+            'conflicto_id' => ['nullable', 'integer', 'min:1'],
             'confirmacion' => ['required', 'in:UNIFICAR'],
+            'huella_revision' => ['required_with:conflicto_id', 'nullable', 'string', 'size:64'],
+            'fuentes_maestras' => ['nullable', 'array'],
+            'fuentes_maestras.*' => ['required', 'in:principal,absorbido,cobol'],
             'periodo' => ['nullable', 'regex:/^(19|20)\d{2}(0[1-9]|1[0-2])$/'],
         ]);
         try {
-            $resultado = $this->service->unificar((int) $datos['principal'], (int) $datos['secundario'], auth()->id() === null ? null : (int) auth()->id());
+            $resultado = $this->service->unificar((int) $datos['principal'], (int) $datos['secundario'],
+                auth()->id() === null ? null : (int) auth()->id(),
+                isset($datos['conflicto_id']) ? (int) $datos['conflicto_id'] : null,
+                $datos['fuentes_maestras'] ?? [], $datos['huella_revision'] ?? null);
         } catch (DomainException $error) {
-            return redirect()->route('archivo.unificacion.clientes.comparar', ['principal' => $datos['principal'], 'secundario' => $datos['secundario'], 'periodo' => $datos['periodo'] ?? null])->withErrors(['unificacion' => $error->getMessage()]);
+            return redirect()->route('archivo.unificacion.clientes.comparar', ['principal' => $datos['principal'], 'secundario' => $datos['secundario'], 'periodo' => $datos['periodo'] ?? null, 'conflicto_id' => $datos['conflicto_id'] ?? null])->withErrors(['unificacion' => $error->getMessage()]);
         } catch (Throwable $error) {
             report($error);
-            return redirect()->route('archivo.unificacion.clientes.comparar', ['principal' => $datos['principal'], 'secundario' => $datos['secundario'], 'periodo' => $datos['periodo'] ?? null])->withErrors(['unificacion' => 'La operación falló y fue revertida completamente. '.$error->getMessage()]);
+            return redirect()->route('archivo.unificacion.clientes.comparar', ['principal' => $datos['principal'], 'secundario' => $datos['secundario'], 'periodo' => $datos['periodo'] ?? null, 'conflicto_id' => $datos['conflicto_id'] ?? null])->withErrors(['unificacion' => 'La operación falló y fue revertida completamente. '.$error->getMessage()]);
         }
 
+        if (isset($datos['conflicto_id'])) {
+            return redirect()->route('archivo.unificacion.clientes.conflicto.revisar', $datos['conflicto_id'])
+                ->with('estado', 'Unificación aplicada. Cliente #'.$datos['secundario'].' absorbido por #'.$datos['principal']
+                    .'. Conflicto COBOL resuelto. La próxima importación aplicará la asociación del origen. Auditoría #'.$resultado['id_unificacion'].'.');
+        }
         return redirect()->route('archivo.unificacion.clientes.index', ['vista' => 'activos_revision'])->with('estado', 'Unificación aplicada. Cliente '.$datos['secundario'].' absorbido por '.$datos['principal'].'. Auditoría #'.$resultado['id_unificacion'].'.');
     }
 
@@ -186,6 +208,16 @@ final class UnificacionClienteController extends Controller
 
     public function resolverConflicto(Request $request, int $conflicto): RedirectResponse
     {
+        if ($request->input('decision') === 'UNIFICAR_SELECCION') {
+            $d = $request->validate(['seleccion_principal'=>['required','string'], 'absorber'=>['required','array','min:1'], 'absorber.*'=>['required','string'], 'fuentes'=>['required','array'], 'fuentes.*'=>['required','string'], 'huella'=>['required','string','size:64']]);
+            try {
+                $r = $this->service->confirmarSeleccionCobol($conflicto, $d['seleccion_principal'], $d['absorber'], $d['fuentes'], $d['huella'], auth()->id() === null ? null : (int) auth()->id());
+                return redirect()->route('archivo.unificacion.clientes.index', ['vista' => 'activos_revision'])->with('estado', 'Operación aplicada. Cliente canónico #'.$r['destino'].'. Revisiones COBOL resueltas: '.count($r['origenesSeleccionados']).'. Las no seleccionadas siguen pendientes.');
+            } catch (Throwable $error) {
+                report($error);
+                return redirect()->route('archivo.unificacion.clientes.conflicto.revisar', $conflicto)->withErrors(['unificacion'=>$error instanceof DomainException ? $error->getMessage() : 'La operación falló y fue revertida. Revisá el log.']);
+            }
+        }
         $datos = $request->validate([
             'decision' => ['required', 'in:ASOCIAR_EXISTENTE,CREAR_SEPARADO'],
             'cliente_id' => ['nullable', 'integer', 'min:1'],

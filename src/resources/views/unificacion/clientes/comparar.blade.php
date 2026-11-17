@@ -14,16 +14,24 @@
         <div><h1 class="h3 mb-1">Comparar clientes</h1><p class="text-muted mb-0">La columna izquierda permanece. La derecha será absorbida.</p></div>
         <div class="d-flex flex-wrap gap-2">
             <a class="btn btn-outline-primary"
-               href="{{ route('archivo.unificacion.clientes.comparar', ['principal' => $s->id, 'secundario' => $p->id, 'periodo' => request('periodo')]) }}">
+               href="{{ route('archivo.unificacion.clientes.comparar', ['principal' => $s->id, 'secundario' => $p->id, 'periodo' => request('periodo'), 'conflicto_id' => $revisionCobol['conflicto']->id ?? null]) }}">
                 Intercambiar cliente que permanece
             </a>
-            <a class="btn btn-outline-secondary" href="{{ route('archivo.unificacion.clientes.index', ['vista' => 'activos_revision']) }}">Volver</a>
+            <a class="btn btn-outline-secondary" href="{{ isset($revisionCobol) ? route('archivo.unificacion.clientes.conflicto.revisar', $revisionCobol['conflicto']->id) : route('archivo.unificacion.clientes.index', ['vista' => 'activos_revision']) }}">Volver</a>
         </div>
     </div>
 
     @if ($errors->any())<div class="alert alert-danger">@foreach ($errors->all() as $error)<div>{{ $error }}</div>@endforeach</div>@endif
     <div class="alert alert-warning">La operación modifica relaciones dentro de una transacción. El cliente absorbido se conserva, queda inactivo y apunta al cliente canónico. Las cuentas y orígenes COBOL no se borran.</div>
+    @if (isset($revisionCobol))
+        <div class="alert alert-info">
+            <strong>Revisión COBOL #{{ $revisionCobol['conflicto']->id }} — {{ $revisionCobol['conflicto']->clave_origen }}</strong><br>
+            Elegí los datos maestros definitivos en la confirmación. El ID principal y la fuente de los datos son decisiones distintas.
+            Al confirmar se unifican los candidatos y se registra la asociación del origen. Si la cuenta todavía no existe, la próxima importación deberá incorporarla.
+        </div>
+    @else
     <div class="alert alert-info"><strong>Datos maestros:</strong> el registro principal conserva sus valores. Sólo se completan campos que estén vacíos en el principal y tengan valor en el absorbido. Si ambos tienen valores distintos, se muestran abajo y no se sobrescriben silenciosamente.</div>
+    @endif
 
     <div class="row g-3 mb-3">
         @foreach ([['x'=>$p,'titulo'=>'CLIENTE QUE QUEDA','clase'=>'success'], ['x'=>$s,'titulo'=>'CLIENTE A ABSORBER','clase'=>'danger']] as $lado)
@@ -55,10 +63,10 @@
             ] as $et=>$n)<div class="col-6 col-md-4 col-xl"><div class="border rounded p-2"><strong class="d-block h5 mb-0">{{ $n }}</strong><small class="text-muted">{{ $et }}</small></div></div>@endforeach
         </div>
         @if ($plan['campos_completar'] !== [])
-            <div class="alert alert-success mt-3 mb-0"><strong>Se completarán campos vacíos del principal:</strong> {{ implode(', ', array_keys($plan['campos_completar'])) }}.</div>
+            <div class="alert alert-success mt-3 mb-0"><strong>{{ isset($revisionCobol) ? 'Campos vacíos que propone completar el plan base:' : 'Se completarán campos vacíos del principal:' }}</strong> {{ implode(', ', array_keys($plan['campos_completar'])) }}.</div>
         @endif
         @if ($plan['diferencias_maestras'] !== [])
-            <div class="alert alert-warning mt-3 mb-0"><strong>Diferencias de datos maestros:</strong> se conservará el valor del cliente principal. Revise estas diferencias antes de confirmar.</div>
+            <div class="alert alert-warning mt-3 mb-0"><strong>Diferencias de datos maestros:</strong> {{ isset($revisionCobol) ? 'Elegí el valor definitivo en la tabla de confirmación.' : 'Se conservará el valor del cliente principal. Revise estas diferencias antes de confirmar.' }}</div>
             <div class="table-responsive mt-2"><table class="table table-sm"><thead><tr><th>Campo</th><th>Principal</th><th>Absorbido</th></tr></thead><tbody>
             @foreach ($plan['diferencias_maestras'] as $campo=>$dif)<tr><td>{{ $campo }}</td><td>{{ $dif['principal'] }}</td><td>{{ $dif['secundario'] }}</td></tr>@endforeach
             </tbody></table></div>
@@ -126,7 +134,36 @@
         @if ($plan['bloqueos'] === [])
             <form method="POST" action="{{ route('archivo.unificacion.clientes.unificar') }}" onsubmit="return confirm('¿Confirma absorber el cliente #{{ $s->id }} en #{{ $p->id }}?');">@csrf
                 <input type="hidden" name="principal" value="{{ $p->id }}"><input type="hidden" name="secundario" value="{{ $s->id }}"><input type="hidden" name="confirmacion" value="UNIFICAR"><input type="hidden" name="periodo" value="{{ request('periodo') }}">
-                <button class="btn btn-danger">Confirmar: absorber #{{ $s->id }} en #{{ $p->id }}</button>
+                @if (isset($revisionCobol))
+                    <input type="hidden" name="conflicto_id" value="{{ $revisionCobol['conflicto']->id }}">
+                    <input type="hidden" name="huella_revision" value="{{ $revisionCobol['huella'] }}">
+                    <div class="border rounded p-3 mb-3">
+                        <h3 class="h5">Datos maestros definitivos</h3>
+                        <p class="small text-muted">Elegí la fuente de cada dato. No se ofrecen valores vacíos. El documento se selecciona como conjunto (tipo y número). Los campos no ofrecidos siguen el plan habitual.</p>
+                        <button type="button" class="btn btn-outline-primary btn-sm mb-2" onclick="this.closest('form').querySelectorAll('select[data-fuente-maestra]').forEach(s => {if ([...s.options].some(o => o.value === 'cobol')) s.value='cobol';})">Usar todos los datos disponibles del origen COBOL</button>
+                        <div class="table-responsive"><table class="table table-bordered table-sm align-middle">
+                            <thead><tr><th>Campo</th><th>Origen COBOL</th><th>Principal #{{ $p->id }}</th><th>Absorbido #{{ $s->id }}</th><th>Dato que queda</th></tr></thead>
+                            <tbody>
+                            @foreach ($revisionCobol['filas'] as $clave => $fila)
+                                <tr>
+                                    <th>{{ $fila['etiqueta'] }}</th>
+                                    @foreach (['cobol','principal','absorbido'] as $fuente)
+                                        <td>{{ isset($fila['opciones'][$fuente]) ? implode(' ', $fila['opciones'][$fuente]) : '—' }}</td>
+                                    @endforeach
+                                    <td><select class="form-select form-select-sm" data-fuente-maestra name="fuentes_maestras[{{ $clave }}]" required>
+                                        @foreach ($fila['opciones'] as $fuente => $valores)
+                                            <option value="{{ $fuente }}" @selected($fuente === $fila['predeterminada'])>{{ ['principal'=>'Principal','absorbido'=>'Absorbido','cobol'=>'COBOL'][$fuente] }} — {{ implode(' ', $valores) }}</option>
+                                        @endforeach
+                                    </select></td>
+                                </tr>
+                            @endforeach
+                            </tbody>
+                        </table></div>
+                    </div>
+                    <button class="btn btn-danger">Confirmar unificación y resolver COBOL #{{ $revisionCobol['conflicto']->id }}</button>
+                @else
+                    <button class="btn btn-danger">Confirmar: absorber #{{ $s->id }} en #{{ $p->id }}</button>
+                @endif
             </form>
         @else
             <button class="btn btn-danger" disabled>No se puede confirmar mientras existan conflictos</button>

@@ -20,6 +20,8 @@
               action="{{ route('archivo.unificacion.clientes.index') }}"
               class="row g-2 align-items-end">
             <input type="hidden" name="vista" value="activos_revision">
+            <input type="hidden" name="orden" value="{{ $ordenActual }}">
+            <input type="hidden" name="direccion" value="{{ $direccionActual }}">
 
             <div class="col-md-5">
                 <label class="form-label">Buscar</label>
@@ -74,19 +76,20 @@
 
         <p class="text-muted small">
             {{ $conflictosPendientes->total() }}
-            conflictos encontrados.
-            Los estados de origen no modifican la identidad
-            ni la actividad administrativa del cliente.
+            grupo(s) o revisiones individuales encontrados.
+            Se muestran todos los integrantes de un grupo si alguno coincide con los filtros.
+            Agrupar no implica unificar.
         </p>
 
         <div class="table-responsive">
-            <table class="table table-sm table-striped align-middle">
+            <table class="table table-sm align-middle">
                 <thead>
                     <tr>
                         @foreach ([
                             'conflicto' => 'Conflicto',
                             'cuenta' => 'Cuenta COBOL',
                             'nombre' => 'Nombre COBOL',
+                            'candidatos' => 'Candidatos a unificar',
                             'entidad' => 'Entidad',
                             'estado' => 'Estado origen',
                             'motivo' => 'Motivo',
@@ -128,65 +131,48 @@
                 <tbody>
                     @forelse ($conflictosPendientes as $cf)
                         @php
-                            $origen = json_decode(
-                                (string) ($cf->datos_origen ?? '{}'),
-                                true
-                            );
-                            $origen = is_array($origen) ? $origen : [];
-
-                            $cuenta = preg_replace(
-                                '/\D+/',
-                                '',
-                                (string) $cf->clave_origen
-                            );
-
-                            $cuentaVisible = strlen($cuenta) === 11
-                                ? substr($cuenta, 0, 4).'/'
-                                    .substr($cuenta, 4, 5).'/'
-                                    .substr($cuenta, 9, 2)
-                                : $cf->clave_origen;
+                            $miembros = $cf->grupo_revision ?? [$cf];
+                            $cantidad = count($miembros);
+                            $destinos = json_decode((string) ($cf->candidatos_listado ?? '[]'), true) ?: [];
+                            $formatoCuenta = static function ($v) {
+                                $d = preg_replace('/\D+/', '', (string) $v);
+                                return strlen($d) === 11 ? substr($d,0,4).'/'.substr($d,4,5).'/'.substr($d,9,2) : $v;
+                            };
                         @endphp
-
-                        <tr>
-                            <td>#{{ $cf->id }}</td>
-
-                            <td class="text-nowrap">
-                                {{ $cuentaVisible }}
-                            </td>
-
-                            <td>
-                                {{ $origen['nombre'] ?? '—' }}
-                            </td>
-
-                            <td>{{ $cf->entidad_origen }}</td>
-
-                            <td>
-                                <span class="badge {{
-                                    $cf->estado_origen === 'ACTIVO'
-                                        ? 'text-bg-success'
-                                        : 'text-bg-secondary'
-                                }}">
-                                    {{ $cf->estado_origen ?? '—' }}
-                                </span>
-                            </td>
-
-                            <td>
-                                <small>{{ $cf->motivo }}</small>
-                            </td>
-
-                            <td>
-                                <a class="btn btn-sm btn-outline-primary"
-                                   href="{{ route(
-                                       'archivo.unificacion.clientes.conflicto.revisar',
-                                       $cf->id
-                                   ) }}">
-                                    Revisar
-                                </a>
-                            </td>
-                        </tr>
+                        @foreach ($miembros as $miembro)
+                            @php $origen = json_decode((string) ($miembro->datos_origen ?? '{}'), true) ?: []; @endphp
+                            <tr @class(['border-top border-2' => $loop->first, 'table-light' => $cantidad > 1])>
+                                <td class="text-nowrap"><strong>#{{ $miembro->id }}</strong></td>
+                                <td class="text-nowrap">{{ $formatoCuenta($miembro->clave_origen) }}</td>
+                                <td>{{ $origen['nombre'] ?? '—' }}</td>
+                                @if ($loop->first)
+                                    <td rowspan="{{ $cantidad }}" class="text-nowrap small align-middle">
+                                        @forelse ($destinos as $destino)
+                                            <div class="mb-1"><strong>#{{ $destino['id'] }}</strong>
+                                                @forelse ($destino['cuentas'] as $cuentaDestino)
+                                                    <div>{{ $formatoCuenta($cuentaDestino) }}</div>
+                                                @empty
+                                                    <div class="text-muted">Sin cuentas</div>
+                                                @endforelse
+                                            </div>
+                                        @empty
+                                            <span class="text-muted">Sin candidatos</span>
+                                        @endforelse
+                                    </td>
+                                @endif
+                                <td>{{ $miembro->entidad_origen }}</td>
+                                <td><span class="badge {{ $miembro->estado_origen === 'ACTIVO' ? 'text-bg-success' : 'text-bg-secondary' }}">{{ $miembro->estado_origen ?? '—' }}</span></td>
+                                <td><small style="overflow-wrap:anywhere">{{ $miembro->motivo }}</small></td>
+                                @if ($loop->first)
+                                    <td rowspan="{{ $cantidad }}" class="align-middle text-nowrap">
+                                        <a class="btn btn-sm btn-outline-primary" href="{{ route('archivo.unificacion.clientes.conflicto.revisar', $cf->id) }}">{{ $cantidad > 1 ? 'Revisar grupo ('.$cantidad.')' : 'Revisar' }}</a>
+                                    </td>
+                                @endif
+                            </tr>
+                        @endforeach
                     @empty
                         <tr>
-                            <td colspan="7"
+                            <td colspan="8"
                                 class="text-center text-muted">
                                 No se encontraron conflictos.
                             </td>

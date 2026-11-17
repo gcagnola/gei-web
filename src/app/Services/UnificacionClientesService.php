@@ -343,7 +343,7 @@ final class UnificacionClientesService
         return $salida->sortByDesc(fn ($f) => $this->pesoConfianza($f->confianza))->values();
     }
 
-    public function comparar(int $principalId, int $secundarioId): array
+    public function comparar(int $principalId, int $secundarioId, ?int $conflictoId = null): array
     {
         if ($principalId === $secundarioId) {
             throw new DomainException('El cliente principal y el absorbido deben ser distintos.');
@@ -353,10 +353,16 @@ final class UnificacionClientesService
         $secundario = $this->cargarCliente($secundarioId);
         $plan = $this->construirPlan($principal, $secundario);
 
-        return compact('principal', 'secundario', 'plan');
+        $revisionCobol = $conflictoId === null ? null
+            : $this->contextoUnificacionCobol($conflictoId, $principal, $secundario, $plan);
+
+        return compact('principal', 'secundario', 'plan', 'revisionCobol');
     }
 
-    public function unificar(int $principalId, int $secundarioId, ?int $usuarioId): array
+    public function unificar(
+        int $principalId, int $secundarioId, ?int $usuarioId,
+        ?int $conflictoId = null, array $fuentesMaestras = [], ?string $huellaRevision = null
+    ): array
     {
         $lock = Cache::store((string) config('gei.exploracion.lock_store', 'file'))
             ->lock('gei:transformacion-cobol', 300);
@@ -365,7 +371,16 @@ final class UnificacionClientesService
         }
 
         try {
-            return DB::transaction(function () use ($principalId, $secundarioId, $usuarioId): array {
+            return $this->unificarInterno($principalId, $secundarioId, $usuarioId, $conflictoId, $fuentesMaestras, $huellaRevision);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    private function unificarInterno(int $principalId, int $secundarioId, ?int $usuarioId,
+        ?int $conflictoId = null, array $fuentesMaestras = [], ?string $huellaRevision = null): array
+    {
+            return DB::transaction(function () use ($principalId, $secundarioId, $usuarioId, $conflictoId, $fuentesMaestras, $huellaRevision): array {
                 $this->validarForeignKeysConocidas();
                 $clientes = DB::table('clientes')->whereIn('id', [$principalId, $secundarioId])
                     ->orderBy('id')->lockForUpdate()->get()->keyBy('id');
@@ -403,13 +418,28 @@ final class UnificacionClientesService
                     throw new DomainException("La unificación tiene conflictos que requieren revisión manual:\n- ".implode("\n- ", $plan['bloqueos']));
                 }
 
+                $contextoCobol = null;
+                $camposMaestros = $plan['campos_completar'];
+                if ($conflictoId !== null) {
+                    $contextoCobol = $this->contextoUnificacionCobol($conflictoId, $principal, $secundario, $plan, true);
+                    if ($huellaRevision === null || ! hash_equals($contextoCobol['huella'], $huellaRevision)) {
+                        throw new DomainException('Los datos de la revisión cambiaron. Volvé a simular antes de confirmar.');
+                    }
+                    $camposMaestros = $this->camposElegidosRevisionCobol($contextoCobol, $fuentesMaestras, $principalFila, $camposMaestros);
+                }
+                $resumenAuditoria = $plan['resumen'];
+                if ($contextoCobol !== null) {
+                    $resumenAuditoria['conflicto_cobol_id'] = $conflictoId;
+                    $resumenAuditoria['fuentes_maestras'] = $fuentesMaestras;
+                }
+
                 $idUnificacion = (int) DB::table('unificaciones')->insertGetId([
                     'tipo' => self::TIPO,
                     'id_registro_principal' => $principalId,
                     'id_registro_absorbido' => $secundarioId,
                     'id_usuario' => $usuarioId,
                     'estado' => 'APLICADA',
-                    'detalle_json' => json_encode($plan['resumen'], JSON_UNESCAPED_UNICODE),
+                    'detalle_json' => json_encode($resumenAuditoria, JSON_UNESCAPED_UNICODE),
                     'created_at' => now(),
                     'updated_at' => now(),
                 ], 'id_unificacion');
@@ -429,11 +459,14 @@ final class UnificacionClientesService
                     ]);
                 };
 
-                if ($plan['campos_completar'] !== []) {
+                if ($camposMaestros !== []) {
                     $antes = (array) DB::table('clientes')->where('id', $principalId)->first();
-                    DB::table('clientes')->where('id', $principalId)->update([...$plan['campos_completar'], 'updated_at' => now()]);
-                    $despues = array_merge($antes, $plan['campos_completar']);
-                    $registrar('clientes', 'COMPLETADO_DESDE_ABSORBIDO', $principalId, $antes, $despues);
+                    DB::table('clientes')->where('id', $principalId)->update([...$camposMaestros, 'updated_at' => now()]);
+                    $despues = (array) DB::table('clientes')->where('id', $principalId)->first();
+                    $registrar('clientes', $contextoCobol === null ? 'COMPLETADO_DESDE_ABSORBIDO' : 'DATOS_REVISION_COBOL',
+                        $principalId, $antes, $despues, $contextoCobol === null ? [] : [
+                            'conflicto_id' => $conflictoId, 'fuentes' => $fuentesMaestras,
+                        ]);
                 }
 
                 // Roles: primero quitamos los duplicados exactos, luego movemos el resto.
@@ -711,11 +744,334 @@ final class UnificacionClientesService
                     ['estado' => 'UNIFICADO', 'id_usuario_resolucion' => $usuarioId, 'resuelto_at' => now(), 'ultima_deteccion_at' => now(), 'updated_at' => now(), 'created_at' => now()]
                 );
 
-                return ['id_unificacion' => $idUnificacion, 'resumen' => $plan['resumen']];
+                if ($contextoCobol !== null) {
+                    // La resolución sólo se registra luego de consolidar los candidatos.
+                    // El mismo lock y la transacción externa cubren ambas operaciones.
+                    $antesConflicto = (array) DB::table('clientes_conflictos')->where('id', $conflictoId)->first();
+                    $this->resolverConflictoImportacion($conflictoId, 'ASOCIAR_EXISTENTE', $principalId, $usuarioId);
+                    $despuesConflicto = (array) DB::table('clientes_conflictos')->where('id', $conflictoId)->first();
+                    $registrar('clientes_conflictos', 'RESUELTO_REVISION_COBOL', $conflictoId,
+                        $antesConflicto, $despuesConflicto, ['decision' => 'ASOCIAR_EXISTENTE']);
+                }
+
+                return ['id_unificacion' => $idUnificacion, 'resumen' => $resumenAuditoria];
             }, 3);
-        } finally {
-            $lock->release();
+    }
+
+    /** Componentes conexos de revisiones pendientes; compartir candidato no implica identidad. */
+    private function gruposRevisionCobol(): array
+    {
+        $filas = DB::table('clientes_conflictos')->where('estado', 'PENDIENTE')
+            ->where('sistema_origen', 'COBOL')->orderBy('id')->get();
+        $ids = $filas->flatMap(fn ($f) => $this->jsonAArray($f->clientes_candidatos))
+            ->map(fn ($id) => (int) $id)->filter()->unique()->values();
+        $clientes = DB::table('clientes')->whereIn('id', $ids)->get()->keyBy('id');
+        $porCliente = []; $porId = [];
+        foreach ($filas as $f) {
+            $f->ids_grupo = collect($this->jsonAArray($f->clientes_candidatos))
+                ->map(fn ($id) => $clientes->get((int) $id))
+                ->filter()->map(fn ($c) => (int) ($c->id_cliente_canonico ?? $c->id))
+                ->unique()->sort()->values()->all();
+            $porId[$f->id] = $f;
+            foreach ($f->ids_grupo as $cid) $porCliente[$cid][] = (int) $f->id;
         }
+        $grupos = []; $visitados = [];
+        foreach ($porId as $id => $f) {
+            if (isset($visitados[$id])) continue;
+            $cola = [$id]; $miembros = [];
+            while ($cola) {
+                $actual = array_pop($cola);
+                if (isset($visitados[$actual])) continue;
+                $visitados[$actual] = true;
+                $miembros[$actual] = $porId[$actual];
+                foreach ($porId[$actual]->ids_grupo as $cid) {
+                    foreach ($porCliente[$cid] as $vecino) {
+                        if (! isset($visitados[$vecino])) $cola[] = $vecino;
+                    }
+                }
+            }
+            ksort($miembros);
+            foreach ($miembros as $mid => $fila) $grupos[$mid] = array_values($miembros);
+        }
+        return $grupos;
+    }
+
+    /** Selección explícita de identidades; COBOL no es un ID de clientes. */
+    public function simularSeleccionCobol(int $id, string $principal, array $absorber, bool $bloquear = false): array
+    {
+        $grupo = $this->gruposRevisionCobol()[$id] ?? [];
+        if (! $grupo) throw new DomainException('La revisión ya no está pendiente.');
+        $idsOrigen = array_map(fn ($f) => (int) $f->id, $grupo);
+        $q = DB::table('clientes_conflictos')->whereIn('id', $idsOrigen)->orderBy('id');
+        if ($bloquear) $q->lockForUpdate();
+        $origenes = $q->get()->keyBy('id');
+        if ($origenes->count() !== count($idsOrigen) || $origenes->contains(fn ($f) => $f->estado !== 'PENDIENTE' || $f->sistema_origen !== 'COBOL')) {
+            throw new DomainException('El grupo cambió. Volvé a abrir la revisión.');
+        }
+        $ids = collect($grupo)->flatMap(fn ($f) => $f->ids_grupo)->unique()->sort()->values();
+        $q = DB::table('clientes')->whereIn('id', $ids)->orderBy('id');
+        if ($bloquear) $q->lockForUpdate();
+        $candidatos = $q->get();
+        if ($candidatos->count() !== $ids->count() || $candidatos->contains(fn ($c) => $c->id_cliente_canonico !== null)) {
+            throw new DomainException('Los candidatos cambiaron. Volvé a abrir la revisión.');
+        }
+        $permitidos = array_merge(array_map(fn ($oid) => 'cobol:'.$oid, $idsOrigen), $candidatos->map(fn ($c) => (string) $c->id)->all());
+        $absorber = array_values(array_unique(array_map('strval', $absorber)));
+        if (! in_array($principal, $permitidos, true) || $absorber === [] || in_array($principal, $absorber, true) || array_diff($absorber, $permitidos)) {
+            throw new DomainException('Elegí un principal y al menos una identidad distinta para absorber.');
+        }
+        $seleccion = array_merge([$principal], $absorber);
+        $origenesSeleccionados = array_values(array_map(fn ($v) => (int) substr($v, 6), array_filter($seleccion, fn ($v) => str_starts_with($v, 'cobol:'))));
+        $incluyeCobol = $origenesSeleccionados !== [];
+        $seleccionIds = array_values(array_map('intval', array_filter($seleccion, fn ($v) => ! str_starts_with($v, 'cobol:'))));
+        sort($seleccionIds);
+        $titulares = [];
+        foreach ($origenesSeleccionados as $oid) {
+            $cf = $origenes->get($oid);
+            $rol = match ($cf->entidad_origen) {
+                'INQUILINO' => 'INQUILINO', 'PROPIETAR' => 'PROPIETARIO',
+                default => throw new DomainException('Entidad COBOL no admitida.'),
+            };
+            $o = DB::table('clientes_origenes')->where('sistema_origen', 'COBOL')->where('entidad_origen', $cf->entidad_origen)->where('clave_origen', $cf->clave_origen);
+            $c = DB::table('clientes_cuentas')->where('cuenta', $cf->clave_origen)->where('rol', $rol);
+            if ($bloquear) { $o->lockForUpdate(); $c->lockForUpdate(); }
+            $t = $o->get()->pluck('cliente_id')->merge($c->get()->pluck('cliente_id'))->map(fn ($v) => (int) $v)->unique()->sort()->values()->all();
+            if (array_diff($t, $seleccionIds)) throw new DomainException('El origen #'.$oid.' ya está vinculado a una identidad no seleccionada.');
+            $titulares[$oid] = $t;
+        }
+        $preferidos = str_starts_with($principal, 'cobol:') ? ($titulares[(int) substr($principal, 6)] ?? []) : [];
+        $destino = str_starts_with($principal, 'cobol:') ? ($preferidos[0] ?? $seleccionIds[0] ?? null) : (int) $principal;
+        $otros = array_values(array_diff($seleccionIds, [$destino]));
+        $base = $destino === null ? null : $this->cargarCliente($destino);
+        $planes = []; $bloqueos = [];
+        // Una revisión omitida todavía vinculada a un cliente que va a desaparecer
+        // no debe sufrir un cambio de titular sin decisión explícita del operador.
+        if ($otros) {
+            foreach ($origenes as $cfOmitido) {
+                if (in_array((int) $cfOmitido->id, $origenesSeleccionados, true)) continue;
+                $rolOmitido = match ($cfOmitido->entidad_origen) {
+                    'INQUILINO' => 'INQUILINO', 'PROPIETAR' => 'PROPIETARIO', default => null,
+                };
+                $oq = DB::table('clientes_origenes')->where('sistema_origen', 'COBOL')
+                    ->where('entidad_origen', $cfOmitido->entidad_origen)->where('clave_origen', $cfOmitido->clave_origen)
+                    ->whereIn('cliente_id', $otros);
+                $cq = DB::table('clientes_cuentas')->where('cuenta', $cfOmitido->clave_origen)
+                    ->where('rol', $rolOmitido)->whereIn('cliente_id', $otros);
+                if ($bloquear) { $oq->lockForUpdate(); $cq->lockForUpdate(); }
+                if ($oq->get()->isNotEmpty() || $cq->get()->isNotEmpty()) {
+                    $bloqueos[] = 'El origen no seleccionado #'.$cfOmitido->id.' ya pertenece a un cliente que se absorbería. Hay que decidir sobre ese origen antes de continuar.';
+                }
+            }
+        }
+        $this->validarForeignKeysConocidas();
+        foreach ($otros as $otro) {
+            $planes[$otro] = $this->construirPlan($base, $this->cargarCliente($otro));
+            $bloqueos = array_merge($bloqueos, $planes[$otro]['bloqueos']);
+        }
+        // Las colisiones entre dos secundarios también deben aparecer en la simulación.
+        for ($i = 0; $i < count($otros); $i++) {
+            for ($j = $i + 1; $j < count($otros); $j++) {
+                $entre = $this->construirPlan($this->cargarCliente($otros[$i]), $this->cargarCliente($otros[$j]));
+                $bloqueos = array_merge($bloqueos, $entre['bloqueos']);
+            }
+        }
+        $bloqueos = array_values(array_unique($bloqueos));
+        $fuentes = [];
+        foreach ($seleccion as $clave) {
+            $fuentes[$clave] = str_starts_with($clave, 'cobol:')
+                ? $this->jsonAArray($origenes->get((int) substr($clave, 6))->datos_origen)
+                : (array) $candidatos->first(fn ($c) => (string) $c->id === $clave);
+        }
+        $grupos = ['nombre'=>['nombre'], 'cuit'=>['cuit'], 'documento'=>['tipo_documento','numero_documento'], 'domicilio'=>['domicilio'], 'codigo_postal'=>['codigo_postal'], 'localidad'=>['localidad'], 'provincia'=>['provincia'], 'telefono'=>['telefono'], 'telefono_alternativo'=>['telefono_alternativo'], 'condicion_iva'=>['condicion_iva'], 'email'=>['email']];
+        $filas = [];
+        foreach ($grupos as $campo => $columnas) {
+            $opciones = [];
+            foreach ($fuentes as $clave => $valores) {
+                $op = [];
+                foreach ($columnas as $columna) {
+                    $v = $valores[$columna] ?? null;
+                    if (! is_scalar($v) || $this->esVacio($v)) { $op = []; break; }
+                    $op[$columna] = $v;
+                }
+                if ($op) $opciones[(string) $clave] = $op;
+            }
+            if ($opciones) $filas[$campo] = $opciones;
+        }
+        if ($destino === null && ! isset($filas['nombre'])) $bloqueos[] = 'Los orígenes seleccionados no tienen nombre para crear el cliente.';
+        $estadosSeleccionados = collect($origenesSeleccionados)->map(fn ($oid) => $origenes->get($oid)->estado_origen);
+        $activoNuevo = $estadosSeleccionados->contains('ACTIVO') ? true
+            : ($estadosSeleccionados->isNotEmpty() && $estadosSeleccionados->every(fn ($e) => $e === 'BAJA') ? false : null);
+        $huella = hash('sha256', json_encode([$origenes->all(), $candidatos->all(), $principal, $absorber, $destino, $fuentes, $planes, $titulares, $bloqueos], JSON_THROW_ON_ERROR));
+        return compact('id','principal','absorber','destino','otros','incluyeCobol','origenesSeleccionados','activoNuevo','filas','planes','bloqueos','huella');
+    }
+
+    public function confirmarSeleccionCobol(int $id, string $principal, array $absorber, array $fuentes, string $huella, ?int $usuario): array
+    {
+        $lock = Cache::store((string) config('gei.exploracion.lock_store', 'file'))->lock('gei:transformacion-cobol', 300);
+        if (! $lock->get()) throw new DomainException('Hay una transformación COBOL en curso.');
+        try {
+            return DB::transaction(function () use ($id, $principal, $absorber, $fuentes, $huella, $usuario): array {
+                $p = $this->simularSeleccionCobol($id, $principal, $absorber, true);
+                if (! hash_equals($p['huella'], $huella)) throw new DomainException('Los datos cambiaron. Volvé a simular.');
+                if ($p['bloqueos']) throw new DomainException(implode(' / ', $p['bloqueos']));
+                if (count($fuentes) !== count($p['filas'])) throw new DomainException('Confirmá todos los datos maestros.');
+                $campos = [];
+                foreach ($p['filas'] as $campo => $opciones) {
+                    $f = $fuentes[$campo] ?? null;
+                    if (! is_string($f) || ! isset($opciones[$f])) throw new DomainException('Fuente inválida: '.$campo);
+                    $campos = array_merge($campos, $opciones[$f]);
+                }
+                $auditorias = [];
+                $clienteNuevo = $p['destino'] === null;
+                if ($clienteNuevo) {
+                    // Seleccionaron exclusivamente orígenes: no reutilizar un candidato omitido.
+                    // Se usa la misma forma y normalización del maestro que en el importador COBOL.
+                    $fila = array_fill_keys(self::CAMPOS_MAESTROS, null);
+                    $fila = array_replace($fila, $campos);
+                    $fila['tipo_persona'] = app(ClienteCobolNormalizer::class)->tipoPersona($fila['cuit'], $fila['numero_documento']);
+                    $p['destino'] = (int) DB::table('clientes')->insertGetId([...$fila,
+                        'activo'=>$p['activoNuevo'], 'created_at'=>now(), 'updated_at'=>now()]);
+                }
+                foreach ($p['otros'] as $otro) {
+                    $r = $this->unificarInterno($p['destino'], $otro, $usuario);
+                    $auditorias[] = $r['id_unificacion'];
+                }
+                $antes = $clienteNuevo ? null : (array) DB::table('clientes')->where('id', $p['destino'])->first();
+                if (! $clienteNuevo && $campos) DB::table('clientes')->where('id', $p['destino'])->update([...$campos, 'updated_at'=>now()]);
+                $despues = (array) DB::table('clientes')->where('id', $p['destino'])->first();
+                foreach ($p['origenesSeleccionados'] as $oid) {
+                    $this->resolverConflictoImportacion($oid, 'ASOCIAR_EXISTENTE', $p['destino'], $usuario);
+                    $cf = DB::table('clientes_conflictos')->where('id', $oid)->first();
+                    $rq = DB::table('clientes_resoluciones_origen')->where('sistema_origen', $cf->sistema_origen)->where('entidad_origen', $cf->entidad_origen)->where('clave_origen', $cf->clave_origen);
+                    $detalle = $this->jsonAArray($rq->first()->detalle_json);
+                    $detalle['seleccion'] = ['principal'=>$principal,'absorber'=>$absorber,'fuentes'=>$fuentes,'auditorias'=>$auditorias,'cliente_creado'=>$clienteNuevo,'origenes_resueltos'=>$p['origenesSeleccionados'],'antes'=>$antes,'despues'=>$despues];
+                    $rq->update(['detalle_json'=>json_encode($detalle, JSON_THROW_ON_ERROR), 'updated_at'=>now()]);
+                }
+                if ($auditorias) {
+                    $ultimo = end($auditorias);
+                    $orden = (int) DB::table('unificaciones_cambios')->where('id_unificacion', $ultimo)->max('orden');
+                    DB::table('unificaciones_cambios')->insert(['id_unificacion'=>$ultimo,'orden'=>$orden+1,'tabla'=>'clientes','accion'=>'DATOS_REVISION_COBOL','id_registro'=>$p['destino'],'datos_antes'=>json_encode($antes, JSON_THROW_ON_ERROR),'datos_despues'=>json_encode($despues, JSON_THROW_ON_ERROR),'detalle_json'=>json_encode(['conflicto_id'=>$id,'principal'=>$principal,'fuentes'=>$fuentes], JSON_THROW_ON_ERROR),'created_at'=>now()]);
+                }
+                return $p;
+            });
+        } finally { $lock->release(); }
+    }
+
+    /** Contexto validado para una revisión con exactamente dos identidades canónicas. */
+    private function contextoUnificacionCobol(int $conflictoId, array $principal, array $secundario, array $plan, bool $bloquear = false): array
+    {
+        $p = $principal['cliente'];
+        $s = $secundario['cliente'];
+        $query = DB::table('clientes_conflictos')->where('id', $conflictoId);
+        if ($bloquear) {
+            $query->lockForUpdate();
+        }
+        $conflicto = $query->first();
+        if ($conflicto === null || $conflicto->estado !== 'PENDIENTE' || $conflicto->sistema_origen !== 'COBOL') {
+            throw new DomainException('La revisión COBOL no existe o ya fue resuelta.');
+        }
+        $ids = collect($this->jsonAArray($conflicto->clientes_candidatos ?? null))
+            ->map(fn ($id): int => (int) $id)->filter(fn ($id): bool => $id > 0)->unique()->values();
+        $filas = DB::table('clientes')->whereIn('id', $ids)->get(['id', 'id_cliente_canonico']);
+        $canonicos = $filas->map(fn ($x): int => (int) ($x->id_cliente_canonico ?? $x->id))->unique()->sort()->values()->all();
+        $elegidos = [(int) $p->id, (int) $s->id];
+        sort($elegidos);
+        if ($filas->count() !== $ids->count() || $canonicos !== $elegidos || count($canonicos) !== 2) {
+            throw new DomainException('Esta operación requiere exactamente los dos candidatos vigentes de la revisión.');
+        }
+
+        $rol = match ((string) $conflicto->entidad_origen) {
+            'PROPIETAR' => 'PROPIETARIO',
+            'INQUILINO' => 'INQUILINO',
+            default => throw new DomainException('Entidad COBOL no admitida para unificación.'),
+        };
+        $origenes = DB::table('clientes_origenes')
+            ->where('sistema_origen', $conflicto->sistema_origen)
+            ->where('entidad_origen', $conflicto->entidad_origen)
+            ->where('clave_origen', $conflicto->clave_origen);
+        $cuentas = DB::table('clientes_cuentas')->where('cuenta', $conflicto->clave_origen)->where('rol', $rol);
+        if ($bloquear) {
+            $origenes->lockForUpdate();
+            $cuentas->lockForUpdate();
+        }
+        $titulares = $origenes->pluck('cliente_id')->merge($cuentas->pluck('cliente_id'))->unique()->values();
+        foreach ($titulares as $titularId) {
+            $titular = DB::table('clientes')->where('id', $titularId)->first(['id', 'id_cliente_canonico']);
+            if ($titular === null || ! in_array((int) ($titular->id_cliente_canonico ?? $titular->id), $elegidos, true)) {
+                throw new DomainException('La cuenta COBOL tiene otro titular. No se puede resolver mediante esta unificación.');
+            }
+        }
+
+        $datos = $this->jsonAArray($conflicto->datos_origen ?? null);
+        $grupos = [
+            'nombre' => ['Nombre', ['nombre']],
+            'cuit' => ['CUIT', ['cuit']],
+            'documento' => ['Documento', ['tipo_documento', 'numero_documento']],
+            'domicilio' => ['Domicilio', ['domicilio']],
+            'codigo_postal' => ['Código postal', ['codigo_postal']],
+            'localidad' => ['Localidad', ['localidad']],
+            'provincia' => ['Provincia', ['provincia']],
+            'telefono' => ['Teléfono', ['telefono']],
+            'telefono_alternativo' => ['Teléfono alternativo', ['telefono_alternativo']],
+            'condicion_iva' => ['Condición IVA', ['condicion_iva']],
+            'email' => ['Email', ['email']],
+        ];
+        $fuentes = ['principal' => (array) $p, 'absorbido' => (array) $s, 'cobol' => $datos];
+        $filasMaestras = [];
+        foreach ($grupos as $clave => [$etiqueta, $campos]) {
+            $opciones = [];
+            foreach ($fuentes as $fuente => $valores) {
+                $opcion = [];
+                foreach ($campos as $campo) {
+                    if (! array_key_exists($campo, $valores) || ! is_scalar($valores[$campo]) || $this->esVacio($valores[$campo])) {
+                        $opcion = [];
+                        break;
+                    }
+                    $opcion[$campo] = $valores[$campo];
+                }
+                if ($opcion !== []) {
+                    $opciones[$fuente] = $opcion;
+                }
+            }
+            if ($opciones !== []) {
+                // Por defecto conservamos el principal, luego completamos desde
+                // el absorbido y finalmente desde COBOL. El operador puede cambiarlo.
+                $filasMaestras[$clave] = [
+                    'etiqueta' => $etiqueta, 'opciones' => $opciones,
+                    'predeterminada' => array_key_first($opciones),
+                ];
+            }
+        }
+        $huella = hash('sha256', json_encode([
+            'conflicto' => (array) $conflicto, 'principal' => (array) $p, 'secundario' => (array) $s,
+            'titulares' => $titulares->sort()->values()->all(), 'plan' => $plan,
+            'filas' => $filasMaestras,
+        ], JSON_THROW_ON_ERROR));
+
+        return ['conflicto' => $conflicto, 'datos' => $datos, 'rol' => $rol,
+            'filas' => $filasMaestras, 'huella' => $huella];
+    }
+
+    private function camposElegidosRevisionCobol(array $contexto, array $fuentes, array $principal, array $completar): array
+    {
+        $filas = $contexto['filas'];
+        if (count($fuentes) !== count($filas) || array_diff_key($fuentes, $filas) !== []) {
+            throw new DomainException('Debe confirmar la procedencia de todos los datos maestros ofrecidos.');
+        }
+        foreach ($filas as $clave => $fila) {
+            $fuente = $fuentes[$clave] ?? null;
+            if (! is_string($fuente) || ! isset($fila['opciones'][$fuente])) {
+                throw new DomainException('Procedencia de dato maestro inválida: '.$clave);
+            }
+            foreach ($fila['opciones'][$fuente] as $campo => $valor) {
+                // La elección explícita prevalece incluso sobre completar vacíos.
+                unset($completar[$campo]);
+                if (($principal[$campo] ?? null) !== $valor) {
+                    $completar[$campo] = $valor;
+                }
+            }
+        }
+        return $completar;
     }
 
     public function resolverCandidato(int $a, int $b, string $decision, ?int $usuarioId): void
@@ -766,7 +1122,7 @@ final class UnificacionClientesService
             ]);
     }
 
-    public function revisionCobol(int $conflictoId): array
+    public function revisionCobol(int $conflictoId, bool $agrupar = true): array
     {
         $conflicto = DB::table('clientes_conflictos')->where('id', $conflictoId)->first();
         if ($conflicto === null) {
@@ -781,12 +1137,21 @@ final class UnificacionClientesService
             ->unique()
             ->values();
 
+        $grupo = $agrupar ? ($this->gruposRevisionCobol()[$conflictoId] ?? []) : [];
+        if ($grupo) {
+            $idsCandidatos = collect($grupo)->flatMap(fn ($f) => $f->ids_grupo)->unique()->sort()->values();
+        }
+        $origenesComparacion = [];
+        foreach ($grupo as $fila) {
+            if ((int) $fila->id !== $conflictoId) $origenesComparacion[] = $this->revisionCobol((int) $fila->id, false);
+        }
+
         if ($conflicto->cliente_resuelto_id !== null) {
             $idsCandidatos->push((int) $conflicto->cliente_resuelto_id);
             $idsCandidatos = $idsCandidatos->unique()->values();
         }
 
-        $candidatos = $idsCandidatos->map(function (int $id) use ($datosOrigen): ?object {
+        $candidatos = ($agrupar ? $idsCandidatos : collect())->map(function (int $id) use ($datosOrigen): ?object {
             $original = DB::table('clientes')->where('id', $id)->first();
             if ($original === null) {
                 return null;
@@ -831,7 +1196,7 @@ final class UnificacionClientesService
         })->filter()->values();
 
         $otrosConflictos = collect();
-        if ($idsCandidatos->isNotEmpty()) {
+        if ($agrupar && $idsCandidatos->isNotEmpty()) {
             $otrosConflictos = DB::table('clientes_conflictos')
                 ->where('estado', 'PENDIENTE')
                 ->where('estado_origen', 'ACTIVO')
@@ -867,6 +1232,7 @@ final class UnificacionClientesService
         }
 
         return [
+            'origenesComparacion' => $origenesComparacion,
             'clienteVinculadoCanonicoId' => $clienteVinculadoCanonicoId,
             'conflicto' => $conflicto,
             'datosOrigen' => $datosOrigen,
@@ -1275,9 +1641,38 @@ final class UnificacionClientesService
             ? 'asc'
             : 'desc';
 
-        $query->select('cf.*');
+        // Candidatos de la detección, resueltos al cliente canónico actual.
+        // Una fila por conflicto: no multiplicar resultados al paginar.
+        $candidatosListado = <<<'SQL'
+            SELECT DISTINCT COALESCE(c.id_cliente_canonico, c.id) AS cliente_id
+            FROM jsonb_array_elements_text(
+                CASE WHEN jsonb_typeof(cf.clientes_candidatos::jsonb) = 'array'
+                     THEN cf.clientes_candidatos::jsonb ELSE '[]'::jsonb END
+            ) AS candidato(id)
+            JOIN clientes c ON c.id::text = candidato.id
+            SQL;
 
-        if ($orden === 'nombre') {
+        $query->select('cf.*')->selectRaw("(
+            SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                'id', ids.cliente_id,
+                'cuentas', COALESCE((
+                    SELECT jsonb_agg(DISTINCT cc.cuenta ORDER BY cc.cuenta)
+                    FROM clientes_cuentas cc
+                    WHERE cc.cliente_id = ids.cliente_id
+                      AND cc.cuenta IS NOT NULL AND cc.cuenta <> ''
+                ), '[]'::jsonb)
+            ) ORDER BY ids.cliente_id), '[]'::jsonb)
+            FROM ({$candidatosListado}) ids
+        ) AS candidatos_listado")->selectRaw("(
+            SELECT MIN(cc.cuenta)
+            FROM ({$candidatosListado}) ids
+            JOIN clientes_cuentas cc ON cc.cliente_id = ids.cliente_id
+            WHERE cc.cuenta IS NOT NULL AND cc.cuenta <> ''
+        ) AS candidatos_orden");
+
+        if ($orden === 'candidatos') {
+            $query->orderByRaw('candidatos_orden '.$direccionSql.' NULLS LAST');
+        } elseif ($orden === 'nombre') {
             $query->orderByRaw(
                 "COALESCE(cf.datos_origen::jsonb->>'nombre', '') "
                 .$direccionSql
@@ -1289,10 +1684,38 @@ final class UnificacionClientesService
             );
         }
 
-        return $query
-            ->orderBy('cf.id')
-            ->paginate($porPagina, ['*'], 'conflictos_page')
-            ->withQueryString();
+        $grupos = $this->gruposRevisionCobol();
+        $filas = $query->orderBy('cf.id')->get();
+        $ids = collect($grupos)->flatten(1)->flatMap(fn ($f) => $f->ids_grupo)->unique()->values();
+        $cuentas = DB::table('clientes_cuentas')->whereIn('cliente_id', $ids)
+            ->orderBy('cuenta')->get(['cliente_id','cuenta'])->groupBy('cliente_id');
+        $vistos = []; $resultado = collect();
+        foreach ($filas as $fila) {
+            $miembros = $grupos[$fila->id] ?? [$fila];
+            $clave = (int) $miembros[0]->id;
+            if (isset($vistos[$clave])) continue;
+            $vistos[$clave] = true;
+            $fila->grupo_revision = $miembros;
+            if (isset($grupos[$fila->id])) {
+                $fila->candidatos_listado = json_encode(collect($miembros)->flatMap(fn ($f) => $f->ids_grupo)->unique()->sort()->values()
+                    ->map(fn ($cid) => ['id'=>$cid, 'cuentas'=>($cuentas->get($cid) ?? collect())->pluck('cuenta')->filter()->unique()->values()->all()])->all(), JSON_THROW_ON_ERROR);
+            }
+            $resultado->push($fila);
+        }
+        if ($orden === 'candidatos') {
+            $resultado = $resultado->sort(function ($a, $b) use ($direccionSql): int {
+                $menor = fn ($f) => collect($this->jsonAArray($f->candidatos_listado))->flatMap(fn ($c) => $c['cuentas'] ?? [])->filter()->min();
+                $va = $menor($a); $vb = $menor($b);
+                if ($va === null || $vb === null) return ($va === null ? 1 : 0) <=> ($vb === null ? 1 : 0) ?: ((int) $a->id <=> (int) $b->id);
+                $orden = strcmp((string) $va, (string) $vb) * ($direccionSql === 'asc' ? 1 : -1);
+                return $orden ?: ((int) $a->id <=> (int) $b->id);
+            })->values();
+        }
+        $pagina = \Illuminate\Pagination\LengthAwarePaginator::resolveCurrentPage('conflictos_page');
+        return (new \Illuminate\Pagination\LengthAwarePaginator(
+            $resultado->forPage($pagina, $porPagina)->values(), $resultado->count(), $porPagina, $pagina,
+            ['path'=>\Illuminate\Pagination\LengthAwarePaginator::resolveCurrentPath(), 'pageName'=>'conflictos_page']
+        ))->withQueryString();
     }
 
     public function resumenConflictosPendientes(): array
