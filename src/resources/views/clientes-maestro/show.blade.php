@@ -230,7 +230,7 @@
                         <tbody>
                         @forelse($cuentas as $cuenta)
                             <tr>
-                                <td>{{ $cuenta->rol }}</td><td class="fw-semibold">{{ $formatearCuentaCobol($cuenta->cuenta) }}</td>
+                                <td>{{ $cuenta->rol }}</td><td class="fw-semibold">{{ $formatearCuentaCobol($cuenta->cuenta) }} @if($cuenta->principal)<span class="badge text-bg-primary ms-1">PRINCIPAL</span>@endif</td>
                                 <td>{{ $sedeCuenta($cuenta->cuenta) }}</td>
                                 <td>
                                     <span class="badge {{ $cuenta->actividad_periodo ? 'text-bg-success' : 'text-bg-secondary' }}">

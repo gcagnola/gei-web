@@ -15,6 +15,7 @@ class ClienteCuenta extends Model
     {
         return [
             'activo' => 'boolean',
+            'principal' => 'boolean',
             'datos_origen' => 'array',
         ];
     }

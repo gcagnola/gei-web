@@ -492,6 +492,13 @@ final class UnificacionClientesService
                     $registrar($tabla, 'ELIMINADO_DUPLICADO_EXACTO', $id, $antes, null, ['id_registro_conservado' => $duplicado['id_principal']]);
                 }
 
+                // Una identidad absorbida no puede conservar una segunda cuenta principal.
+                $principalCuenta = DB::table('clientes_cuentas')->where('cliente_id',$principalId)->where('principal',true)->value('id');
+                $secPrincipal = DB::table('clientes_cuentas')->where('cliente_id',$secundarioId)->where('principal',true)->first();
+                if ($secPrincipal) {
+                    DB::table('clientes_cuentas')->where('id',$secPrincipal->id)->update(['principal'=>false,'updated_at'=>now()]);
+                    $registrar('clientes_cuentas','PRINCIPAL_DESMARCADA',(int)$secPrincipal->id,(array)$secPrincipal,(array)DB::table('clientes_cuentas')->where('id',$secPrincipal->id)->first());
+                }
                 // Cuentas del secundario: mover o consolidar por (cuenta, rol).
                 foreach ($plan['cuentas'] as $accionCuenta) {
                     $idOrigen = (int) $accionCuenta['id_secundario'];
@@ -610,6 +617,14 @@ final class UnificacionClientesService
                     $antesCuenta = (array) DB::table('clientes_cuentas')->where('id', $idOrigen)->first();
                     DB::table('clientes_cuentas')->where('id', $idOrigen)->delete();
                     $registrar('clientes_cuentas', 'ELIMINADO_DUPLICADO_EXACTO', $idOrigen, $antesCuenta, null, ['id_registro_conservado' => $idDestino]);
+                }
+
+                if ($principalCuenta === null && $secPrincipal && $conflictoId === null) {
+                    $elegida = DB::table('clientes_cuentas')->where('cliente_id',$principalId)->where('cuenta',$secPrincipal->cuenta)->where('rol',$secPrincipal->rol)->first();
+                    if ($elegida) {
+                        DB::table('clientes_cuentas')->where('id',$elegida->id)->update(['principal'=>true,'updated_at'=>now()]);
+                        $registrar('clientes_cuentas','PRINCIPAL_CONSERVADA',(int)$elegida->id,(array)$elegida,(array)DB::table('clientes_cuentas')->where('id',$elegida->id)->first());
+                    }
                 }
 
                 // Relaciones directas restantes por cliente_id.
@@ -939,12 +954,34 @@ final class UnificacionClientesService
                 $antes = $clienteNuevo ? null : (array) DB::table('clientes')->where('id', $p['destino'])->first();
                 if (! $clienteNuevo && $campos) DB::table('clientes')->where('id', $p['destino'])->update([...$campos, 'updated_at'=>now()]);
                 $despues = (array) DB::table('clientes')->where('id', $p['destino'])->first();
+                $incorporaciones = [];
+                foreach ($p['origenesSeleccionados'] as $oid) {
+                    $cf = DB::table('clientes_conflictos')->where('id',$oid)->lockForUpdate()->first();
+                    $incorporaciones[$oid] = app(IncorporacionOrigenCobolService::class)->incorporar($cf,(int)$p['destino']);
+                }
+                $cambioPrincipal = [];
+                if (str_starts_with($principal,'cobol:')) {
+                    $idCuenta = $incorporaciones[(int)substr($principal,6)]['cuenta_id'];
+                    $anteriores = DB::table('clientes_cuentas')->where('cliente_id',$p['destino'])->where('principal',true)->lockForUpdate()->get();
+                    foreach ($anteriores as $anterior) {
+                        if ((int)$anterior->id === $idCuenta) continue;
+                        DB::table('clientes_cuentas')->where('id',$anterior->id)->update(['principal'=>false,'updated_at'=>now()]);
+                        $cambioPrincipal[] = ['antes'=>(array)$anterior,'despues'=>(array)DB::table('clientes_cuentas')->where('id',$anterior->id)->first()];
+                    }
+                    $elegida = DB::table('clientes_cuentas')->where('id',$idCuenta)->first();
+                    if (! $elegida->principal) {
+                        DB::table('clientes_cuentas')->where('id',$idCuenta)->update(['principal'=>true,'updated_at'=>now()]);
+                        $cambioPrincipal[] = ['antes'=>(array)$elegida,'despues'=>(array)DB::table('clientes_cuentas')->where('id',$idCuenta)->first()];
+                    }
+                }
                 foreach ($p['origenesSeleccionados'] as $oid) {
                     $this->resolverConflictoImportacion($oid, 'ASOCIAR_EXISTENTE', $p['destino'], $usuario);
                     $cf = DB::table('clientes_conflictos')->where('id', $oid)->first();
                     $rq = DB::table('clientes_resoluciones_origen')->where('sistema_origen', $cf->sistema_origen)->where('entidad_origen', $cf->entidad_origen)->where('clave_origen', $cf->clave_origen);
                     $detalle = $this->jsonAArray($rq->first()->detalle_json);
                     $detalle['seleccion'] = ['principal'=>$principal,'absorber'=>$absorber,'fuentes'=>$fuentes,'auditorias'=>$auditorias,'cliente_creado'=>$clienteNuevo,'origenes_resueltos'=>$p['origenesSeleccionados'],'antes'=>$antes,'despues'=>$despues];
+                    $detalle['incorporacion_operativa'] = $incorporaciones[$oid];
+                    $detalle['cambio_cuenta_principal'] = $cambioPrincipal;
                     $rq->update(['detalle_json'=>json_encode($detalle, JSON_THROW_ON_ERROR), 'updated_at'=>now()]);
                 }
                 if ($auditorias) {

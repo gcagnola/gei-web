@@ -271,8 +271,8 @@ final class ClienteMaestroController extends Controller
             ->join('clientes as origen', 'origen.id', '=', 'cc.cliente_id')
             ->whereRaw('COALESCE(origen.id_cliente_canonico, origen.id) = ?', [$operativo->id])
             ->whereIn(DB::raw('LEFT(cc.cuenta, 4)'), $prefijos)
-            ->select(['cc.id', 'cc.cliente_id', 'cc.cuenta', 'cc.rol', 'cc.activo'])
-            ->orderBy('cc.rol')->orderBy('cc.cuenta')->get();
+            ->select(['cc.id', 'cc.cliente_id', 'cc.cuenta', 'cc.rol', 'cc.activo', 'cc.principal'])
+            ->orderByDesc('cc.principal')->orderBy('cc.rol')->orderBy('cc.cuenta')->get();
         abort_if($cuentas->isEmpty() && ! $administrador, 403);
         [$periodoActividad, $periodosActividad] = $actividadPeriodo->seleccionarPeriodo($request);
         $operativo->setRelation('cuentas', $cuentas); // sólo las cuentas visibles
