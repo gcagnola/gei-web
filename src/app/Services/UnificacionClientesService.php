@@ -1609,6 +1609,7 @@ final class UnificacionClientesService
                     }
                 }
                 $inconsistenciaAceptada = false;
+                $digitoVerificadorIncorrecto = false;
                 if (array_intersect_key($cambios, array_flip(['cuit', 'tipo_documento', 'numero_documento']))) {
                     $final = array_replace((array) $cliente, $cambios);
                     $cuit = (string) ($final['cuit'] ?? '');
@@ -1631,7 +1632,7 @@ final class UnificacionClientesService
                 if ($cambios) DB::table('clientes')->where('id', $clienteId)->update($cambios + ['updated_at' => now()]);
                 $q = DB::table('clientes_resoluciones_origen')->where('sistema_origen', 'COBOL')->where('entidad_origen', $cf->entidad_origen)->where('clave_origen', $cf->clave_origen);
                 $detalle = $this->jsonAArray($q->value('detalle_json'));
-                $detalle['revision_maestra'] = ['fuentes' => $fuentes, 'antes' => array_intersect_key((array) $cliente, $cambios), 'despues' => $cambios, 'inconsistencia_cuit_dni_aceptada' => $inconsistenciaAceptada];
+                $detalle['revision_maestra'] = ['fuentes' => $fuentes, 'antes' => array_intersect_key((array) $cliente, $cambios), 'despues' => $cambios, 'inconsistencia_cuit_dni_aceptada' => $inconsistenciaAceptada, 'digito_verificador_incorrecto_aceptado' => $digitoVerificadorIncorrecto];
                 $q->update(['detalle_json' => json_encode($detalle, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)]);
             });
         } finally { $lock->release(); }
