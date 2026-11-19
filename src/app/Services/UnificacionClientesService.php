@@ -976,11 +976,18 @@ final class UnificacionClientesService
                 }
                 foreach ($p['origenesSeleccionados'] as $oid) {
                     $this->resolverConflictoImportacion($oid, 'ASOCIAR_EXISTENTE', $p['destino'], $usuario);
+                }
+                // Conciliar sólo después de resolver todas las identidades aprobadas.
+                foreach ($p['origenesSeleccionados'] as $oid) {
                     $cf = DB::table('clientes_conflictos')->where('id', $oid)->first();
                     $rq = DB::table('clientes_resoluciones_origen')->where('sistema_origen', $cf->sistema_origen)->where('entidad_origen', $cf->entidad_origen)->where('clave_origen', $cf->clave_origen);
                     $detalle = $this->jsonAArray($rq->first()->detalle_json);
                     $detalle['seleccion'] = ['principal'=>$principal,'absorber'=>$absorber,'fuentes'=>$fuentes,'auditorias'=>$auditorias,'cliente_creado'=>$clienteNuevo,'origenes_resueltos'=>$p['origenesSeleccionados'],'antes'=>$antes,'despues'=>$despues];
                     $detalle['incorporacion_operativa'] = $incorporaciones[$oid];
+                    if ($cf->sistema_origen === 'COBOL' && $cf->entidad_origen === 'PROPIETAR') {
+                        $detalle['conciliacion_titularidad'] = app(ConciliacionAvisosTitularidadService::class)
+                            ->conciliar((string) $cf->clave_origen, true, $usuario);
+                    }
                     $detalle['cambio_cuenta_principal'] = $cambioPrincipal;
                     $rq->update(['detalle_json'=>json_encode($detalle, JSON_THROW_ON_ERROR), 'updated_at'=>now()]);
                 }

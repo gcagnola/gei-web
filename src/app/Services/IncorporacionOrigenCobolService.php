@@ -69,7 +69,7 @@ final class IncorporacionOrigenCobolService
         $omitidos = [];
         if ($rol === 'PROPIETARIO') {
             // Los orígenes físicos existentes son la evidencia, no el nombre/domicilio.
-            $inmuebles = DB::table('inmuebles_origenes')->where('sistema_origen','COBOL')->where('cuenta_propietario',$cuenta)->orderBy('id')->get();
+            $inmuebles = DB::table('inmuebles_origenes')->where('sistema_origen','COBOL')->where('cuenta_propietario',$cuenta)->where('estado_origen','ACTIVO')->orderBy('id')->get();
             foreach ($inmuebles as $o) {
                 $i = (int)$o->inmueble_id; $vistos = [];
                 do {
