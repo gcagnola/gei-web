@@ -166,7 +166,9 @@
                                 $diferente = trim((string) $web) !== trim((string) $cobol);
                                 $disponible = $key === 'documento' ? !empty($datosOrigen['tipo_documento']) && !empty($datosOrigen['numero_documento']) : trim((string) $cobol) !== '';
                             @endphp
-                            <tr><th>{{ $label }}</th><td>{{ $valor($cobol) }}</td><td>{{ $valor($web) }}</td><td>
+                            <tr><th>{{ $label }}</th>
+                                <td>{{ $valor($cobol) }} @if ($key === 'cuit')<x-estado-cuit :cuit="$cobol" :tipo-documento="$datosOrigen['tipo_documento'] ?? null" :documento="$datosOrigen['numero_documento'] ?? null" />@endif</td>
+                                <td>{{ $valor($web) }} @if ($key === 'cuit')<x-estado-cuit :cuit="$web" :tipo-documento="$validando->cliente->tipo_documento ?? null" :documento="$validando->cliente->numero_documento ?? null" />@endif</td><td>
                                 @if ($diferente && $disponible)
                                     <select class="form-select form-select-sm" name="fuentes[{{ $key }}]" required>
                                         <option value="" disabled @selected(!in_array(old('fuentes.'.$key), ['web','cobol'], true))>Seleccionar…</option>
@@ -180,11 +182,7 @@
                         @endforeach
                         </tbody>
                     </table></div>
-                    <div class="form-check mb-3">
-                        <input class="form-check-input" type="checkbox" name="confirmar_inconsistencia" value="1" id="confirmar-inconsistencia" @checked(old('confirmar_inconsistencia') == '1')>
-                        <label class="form-check-label" for="confirmar-inconsistencia">Confirmo que revisé los datos y autorizo guardar el CUIT aunque no coincida con el DNI seleccionado.</label>
-                        <div class="form-text">No marcar si se conserva el dato de GeI-Web. Un CUIT con dígito verificador incorrecto o asignado a otro cliente sigue bloqueado.</div>
-                    </div>
+                    <div class="alert alert-warning py-2 small">Los indicadores de CUIT son informativos. Revisá las inconsistencias antes de guardar. Los controles de formato y de identidad duplicada del servicio siguen vigentes.</div>
                     <button type="submit" class="btn btn-primary">Validar sin unificar</button>
                 </form>
             </div>
@@ -260,11 +258,14 @@
                             <tr>
                                 <th>{{ $etiqueta }}</th>
                                 @foreach ($origenesTabla as $o)
-                                    <td>{{ $valor($campo($o['datosOrigen'], $clave)) }}</td>
+                                    <td>{{ $valor($campo($o['datosOrigen'], $clave)) }}
+                                        @if ($clave === 'cuit')<x-estado-cuit :cuit="$campo($o['datosOrigen'], $clave)" :tipo-documento="$o['datosOrigen']['tipo_documento'] ?? null" :documento="$o['datosOrigen']['numero_documento'] ?? null" />@endif
+                                    </td>
                                 @endforeach
                                 @foreach ($candidatosUnicos as $cand)
                                     <td>
                                         {{ $valor($campo($cand->cliente, $clave)) }}
+                                        @if ($clave === 'cuit')<x-estado-cuit :cuit="$cand->cliente->cuit" :tipo-documento="$cand->cliente->tipo_documento ?? null" :documento="$cand->cliente->numero_documento ?? null" />@endif
                                         @if (! $esGrupo && in_array($clave, ['nombre','cuit','domicilio','telefono'], true))
                                             @php
                                                 $datosComp = $comparacionPorCampo($cand);

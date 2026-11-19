@@ -1618,7 +1618,7 @@ final class UnificacionClientesService
                         foreach ([5,4,3,2,7,6,5,4,3,2] as $i => $peso) $suma += (int) $cuit[$i] * $peso;
                         $dv = (11 - $suma % 11) % 11;
                         if ($dv !== (int) $cuit[10]) {
-                            throw new DomainException('El CUIT tiene un dígito verificador incorrecto.');
+                            $digitoVerificadorIncorrecto = true;
                         }
                         if ($final['tipo_documento'] === 'DNI' && ltrim(substr($cuit, 2, 8), '0') !== ltrim((string) $final['numero_documento'], '0')) {
                             $inconsistenciaAceptada = true;

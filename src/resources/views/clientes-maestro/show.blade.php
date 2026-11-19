@@ -211,7 +211,7 @@
                     <h2 class="h6 mb-3">Identidad · Maestro operativo</h2>
                     <dl class="row mb-0">
                         <dt class="col-sm-4">Nombre</dt><dd class="col-sm-8">{{ $operativo->nombre_visible }}</dd>
-                        <dt class="col-sm-4">CUIT</dt><dd class="col-sm-8">{{ $v($operativo->cuit) }}</dd>
+                        <dt class="col-sm-4">CUIT</dt><dd class="col-sm-8">{{ $v($operativo->cuit) }} <x-estado-cuit :cuit="$operativo->cuit" :tipo-documento="$operativo->tipo_documento" :documento="$operativo->numero_documento" /></dd>
                         <dt class="col-sm-4">Condición IVA</dt><dd class="col-sm-8">{{ $v($operativo->condicion_iva) }}</dd>
                         <dt class="col-sm-4">Documento</dt><dd class="col-sm-8">{{ $v($operativo->numero_documento) }}</dd>
                         <dt class="col-sm-4">Domicilio</dt><dd class="col-sm-8">{{ $v($operativo->domicilio) }}</dd>

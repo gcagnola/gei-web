@@ -41,7 +41,7 @@
                     <dl class="row small mb-0">
                         <dt class="col-4">Tipo persona</dt><dd class="col-8">{{ $lado['x']->tipo_persona ?: '—' }}</dd>
                         <dt class="col-4">Documento</dt><dd class="col-8">{{ trim(($lado['x']->tipo_documento ?: '').' '.($lado['x']->numero_documento ?: '')) ?: '—' }}</dd>
-                        <dt class="col-4">CUIT</dt><dd class="col-8">{{ $lado['x']->cuit ?: '—' }}</dd>
+                        <dt class="col-4">CUIT</dt><dd class="col-8">{{ $lado['x']->cuit ?: '—' }} <x-estado-cuit :cuit="$lado['x']->cuit" :tipo-documento="$lado['x']->tipo_documento" :documento="$lado['x']->numero_documento" /></dd>
                         <dt class="col-4">IVA</dt><dd class="col-8">{{ $lado['x']->condicion_iva ?: '—' }}</dd>
                         <dt class="col-4">Domicilio</dt><dd class="col-8">{{ $lado['x']->domicilio ?: '—' }}</dd>
                         <dt class="col-4">Localidad</dt><dd class="col-8">{{ $lado['x']->localidad ?: '—' }}</dd>
