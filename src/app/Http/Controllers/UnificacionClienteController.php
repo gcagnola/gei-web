@@ -208,6 +208,18 @@ final class UnificacionClienteController extends Controller
 
     public function resolverConflicto(Request $request, int $conflicto): RedirectResponse
     {
+        if ($request->input('decision') === 'VALIDAR_IDENTIDAD') {
+            $d = $request->validate(['cliente_id' => ['required','integer','min:1'], 'fuentes' => ['nullable','array'], 'fuentes.*' => ['required','in:web,cobol'], 'confirmar_inconsistencia' => ['sometimes','accepted']]);
+            try {
+                $this->service->validarIdentidadExistente($conflicto, (int) $d['cliente_id'], $d['fuentes'] ?? [], auth()->id() === null ? null : (int) auth()->id(), $request->boolean('confirmar_inconsistencia'));
+                return back()->with('estado', 'Identidad validada y datos seleccionados guardados. No se trasladaron cuentas.');
+            } catch (DomainException $error) {
+                return back()->withInput()->withErrors(['unificacion' => $error->getMessage()]);
+            } catch (Throwable $error) {
+                report($error);
+                return back()->withInput()->withErrors(['unificacion' => 'La validación falló y fue revertida.']);
+            }
+        }
         if ($request->input('decision') === 'UNIFICAR_SELECCION') {
             $d = $request->validate(['seleccion_principal'=>['required','string'], 'absorber'=>['required','array','min:1'], 'absorber.*'=>['required','string'], 'fuentes'=>['required','array'], 'fuentes.*'=>['required','string'], 'huella'=>['required','string','size:64']]);
             try {

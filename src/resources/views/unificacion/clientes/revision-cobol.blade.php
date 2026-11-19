@@ -141,9 +141,57 @@
             ['Condición IVA', 'condicion_iva'],
         ];
         $origenCuenta = $normalizarCuentaCobol($conflicto->clave_origen);
-        $unificacionDoble = $estadoPendiente && ($origenesTabla->count() + $candidatosUnicos->count() >= 2);
+        $soloValidar = ! $esGrupo && $clienteVinculadoCanonicoId !== null;
+        $unificacionDoble = $estadoPendiente && ! $soloValidar && ($origenesTabla->count() + $candidatosUnicos->count() >= 2);
         $opcionesSeleccion = $origenesTabla->map(fn ($o) => 'cobol:'.$o['conflicto']->id)->concat($candidatosUnicos->map(fn ($c) => (string) $c->id_canonico));
     @endphp
+
+    @if ($estadoPendiente && $soloValidar)
+        @php $validando = $candidatosUnicos->first(fn ($c) => (int) $c->id_canonico === (int) $clienteVinculadoCanonicoId); @endphp
+        @if ($validando)
+            <div class="card border-primary mb-3" id="validacion-identidad">
+                <div class="card-header fw-semibold">Validar identidad — Elegir datos definitivos del cliente #{{ $validando->id_canonico }}</div>
+                <form method="POST" action="{{ route('archivo.unificacion.clientes.conflicto.resolver', $conflicto->id) }}" class="card-body" onsubmit="return confirm('¿Guardar los datos elegidos y validar sin unificar?');">
+                    @csrf
+                    <input type="hidden" name="decision" value="VALIDAR_IDENTIDAD">
+                    <input type="hidden" name="cliente_id" value="{{ $validando->id_canonico }}">
+                    <p>Elegí expresamente qué valor conservar en cada diferencia. No se trasladarán cuentas ni se modificará el email.</p>
+                    <div class="table-responsive"><table class="table table-bordered table-sm align-middle">
+                        <thead class="table-light"><tr><th>Dato</th><th>COBOL</th><th>GeI-Web</th><th>Dato definitivo</th></tr></thead>
+                        <tbody>
+                        @foreach (array_merge($filasIdentidad, [['Documento', 'documento']]) as [$label, $key])
+                            @php
+                                $web = $key === 'documento' ? trim(($validando->cliente->tipo_documento ?? '').' '.($validando->cliente->numero_documento ?? '')) : $campo($validando->cliente, $key);
+                                $cobol = $key === 'documento' ? $origenDocumento : $campo($datosOrigen, $key);
+                                $diferente = trim((string) $web) !== trim((string) $cobol);
+                                $disponible = $key === 'documento' ? !empty($datosOrigen['tipo_documento']) && !empty($datosOrigen['numero_documento']) : trim((string) $cobol) !== '';
+                            @endphp
+                            <tr><th>{{ $label }}</th><td>{{ $valor($cobol) }}</td><td>{{ $valor($web) }}</td><td>
+                                @if ($diferente && $disponible)
+                                    <select class="form-select form-select-sm" name="fuentes[{{ $key }}]" required>
+                                        <option value="" disabled @selected(!in_array(old('fuentes.'.$key), ['web','cobol'], true))>Seleccionar…</option>
+                                        <option value="web" @selected(old('fuentes.'.$key) === 'web')>GeI-Web: {{ $valor($web) }}</option>
+                                        <option value="cobol" @selected(old('fuentes.'.$key) === 'cobol')>COBOL: {{ $cobol }}</option>
+                                    </select>
+                                @else
+                                    <span class="text-muted">{{ $valor($web) }} — {{ $diferente ? 'Se conserva GeI-Web' : 'Sin diferencias' }}</span>
+                                @endif
+                            </td></tr>
+                        @endforeach
+                        </tbody>
+                    </table></div>
+                    <div class="form-check mb-3">
+                        <input class="form-check-input" type="checkbox" name="confirmar_inconsistencia" value="1" id="confirmar-inconsistencia" @checked(old('confirmar_inconsistencia') == '1')>
+                        <label class="form-check-label" for="confirmar-inconsistencia">Confirmo que revisé los datos y autorizo guardar el CUIT aunque no coincida con el DNI seleccionado.</label>
+                        <div class="form-text">No marcar si se conserva el dato de GeI-Web. Un CUIT con dígito verificador incorrecto o asignado a otro cliente sigue bloqueado.</div>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Validar sin unificar</button>
+                </form>
+            </div>
+        @else
+            <div class="alert alert-danger">No se encontró el cliente vinculado para seleccionar los datos.</div>
+        @endif
+    @endif
 
     @if ($unificacionDoble)
         <form id="form-unificacion-cobol" method="GET" action="{{ route('archivo.unificacion.clientes.conflicto.revisar', $conflicto->id) }}"></form>
@@ -331,7 +379,7 @@
                             @endforeach
                         </tr>
                         @if (! $esGrupo)
-                        <tr class="table-light"><th>Decisión</th><td>Asociar sin unificar o mantener la identidad separada.</td>
+                        <tr class="table-light"><th>Decisión</th><td>{{ $soloValidar ? 'Validar identidad sin trasladar cuentas.' : 'Asociar sin unificar o mantener la identidad separada.' }}</td>
                             @foreach ($candidatosUnicos as $cand)
                                 @php
                                     $esYaVinculado = $clienteVinculadoCanonicoId !== null
@@ -340,6 +388,9 @@
                                 @endphp
                                 <td>
                                     @if ($estadoPendiente && ($clienteVinculadoCanonicoId === null || $esYaVinculado))
+                                        @if ($esYaVinculado)
+                                            <a href="#validacion-identidad" class="btn btn-sm btn-primary">Elegir datos definitivos</a>
+                                        @else
                                         <form method="POST" action="{{ route('archivo.unificacion.clientes.conflicto.resolver', $conflicto->id) }}"
                                               onsubmit="return confirm('¿Confirmar asociación con cliente #{{ $cand->id_canonico }}?');">
                                             @csrf
@@ -347,6 +398,7 @@
                                             <input type="hidden" name="cliente_id" value="{{ $cand->id_canonico }}">
                                             <button class="btn btn-sm btn-primary">{{ $esYaVinculado ? 'Validar sin unificar' : 'Asociar sin unificar a #'.$cand->id_canonico }}</button>
                                         </form>
+                                        @endif
                                     @elseif ($estadoPendiente)
                                         <span class="small text-warning">Ya vinculada a #{{ $clienteVinculadoCanonicoId }}</span>
                                     @else
@@ -387,7 +439,7 @@
         })();
         </script>
     @endif
-    @isset($simulacionSeleccion)
+    @if ($unificacionDoble && isset($simulacionSeleccion))
         @php $sim = $simulacionSeleccion; @endphp
         <div id="simulacion-seleccion" class="card border-primary mb-3">
             <div class="card-header fw-semibold">Simulación de la selección</div>
@@ -439,7 +491,7 @@
             </div>
         </div>
         <script>document.getElementById('simulacion-seleccion').scrollIntoView({block:'start'});</script>
-    @endisset
+    @endif
 
     @if ($estadoPendiente && $esGrupo)
         <details class="card mb-3">
@@ -468,7 +520,7 @@
             </div>
         </details>
     @endif
-    @if ($estadoPendiente && ! $esGrupo)
+    @if ($estadoPendiente && ! $esGrupo && ! $soloValidar)
         <div class="row g-3 mb-3">
             <div class="col-lg-7">
                 <div class="card h-100">

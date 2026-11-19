@@ -1561,6 +1561,82 @@ final class UnificacionClientesService
         return is_array($decodificado) ? $decodificado : [];
     }
 
+    /** Validar una cuenta existente y elegir datos maestros, sin mover cuentas. */
+    public function validarIdentidadExistente(int $id, int $clienteId, array $fuentes, ?int $usuario, bool $confirmarInconsistencia = false): void
+    {
+        $lock = Cache::store((string) config('gei.exploracion.lock_store', 'file'))->lock('gei:transformacion-cobol', 300);
+        if (! $lock->get()) throw new DomainException('Hay una transformación COBOL en curso.');
+        try {
+            DB::transaction(function () use ($id, $clienteId, $fuentes, $usuario, $confirmarInconsistencia): void {
+                $cf = DB::table('clientes_conflictos')->where('id', $id)->lockForUpdate()->first();
+                if (! $cf || $cf->estado !== 'PENDIENTE' || $cf->sistema_origen !== 'COBOL') {
+                    throw new DomainException('La revisión ya no está pendiente.');
+                }
+                $origen = DB::table('clientes_origenes')->where('sistema_origen', 'COBOL')
+                    ->where('entidad_origen', $cf->entidad_origen)->where('clave_origen', $cf->clave_origen)->lockForUpdate()->first();
+                $cliente = DB::table('clientes')->where('id', $clienteId)->lockForUpdate()->first();
+                $rol = match ($cf->entidad_origen) {
+                    'INQUILINO' => 'INQUILINO', 'PROPIETAR' => 'PROPIETARIO',
+                    default => throw new DomainException('Entidad COBOL no admitida.'),
+                };
+                if (! $origen || ! $cliente || $cliente->id_cliente_canonico !== null || (int) $origen->cliente_id !== $clienteId
+                    || ! DB::table('clientes_cuentas')->where('cliente_id', $clienteId)->where('cuenta', $cf->clave_origen)->where('rol', $rol)->exists()) {
+                    throw new DomainException('La cuenta ya no pertenece al cliente indicado.');
+                }
+                $datos = $this->jsonAArray($cf->datos_origen);
+                $permitidos = ['nombre', 'cuit', 'domicilio', 'telefono', 'telefono_alternativo', 'codigo_postal', 'localidad', 'provincia', 'condicion_iva', 'documento'];
+                foreach ($permitidos as $campo) {
+                    $cols = $campo === 'documento' ? ['tipo_documento', 'numero_documento'] : [$campo];
+                    $disponible = true;
+                    $diferente = false;
+                    foreach ($cols as $col) {
+                        $v = $datos[$col] ?? null;
+                        $disponible = $disponible && is_string($v) && trim($v) !== '';
+                        $diferente = $diferente || trim((string) $v) !== trim((string) $cliente->$col);
+                    }
+                    if ($disponible && $diferente && !in_array($fuentes[$campo] ?? null, ['web', 'cobol'], true)) {
+                        throw new DomainException('Debe elegir el dato definitivo para: '.$campo.'.');
+                    }
+                }
+                $cambios = [];
+                foreach ($fuentes as $campo => $fuente) {
+                    if (! in_array($campo, $permitidos, true) || ! in_array($fuente, ['web', 'cobol'], true)) throw new DomainException('Selección inválida.');
+                    if ($fuente !== 'cobol') continue;
+                    foreach ($campo === 'documento' ? ['tipo_documento', 'numero_documento'] : [$campo] as $col) {
+                        $v = $datos[$col] ?? null;
+                        if (! is_string($v) || trim($v) === '') throw new DomainException('No se puede reemplazar un dato por un valor vacío.');
+                        if ($v !== $cliente->$col) $cambios[$col] = $v;
+                    }
+                }
+                $inconsistenciaAceptada = false;
+                if (array_intersect_key($cambios, array_flip(['cuit', 'tipo_documento', 'numero_documento']))) {
+                    $final = array_replace((array) $cliente, $cambios);
+                    $cuit = (string) ($final['cuit'] ?? '');
+                    if ($cuit !== '') {
+                        if (! preg_match('/^[0-9]{11}$/D', $cuit)) throw new DomainException('CUIT inválido.');
+                        $suma = 0;
+                        foreach ([5,4,3,2,7,6,5,4,3,2] as $i => $peso) $suma += (int) $cuit[$i] * $peso;
+                        $dv = (11 - $suma % 11) % 11;
+                        if ($dv !== (int) $cuit[10]) {
+                            throw new DomainException('El CUIT tiene un dígito verificador incorrecto.');
+                        }
+                        if ($final['tipo_documento'] === 'DNI' && ltrim(substr($cuit, 2, 8), '0') !== ltrim((string) $final['numero_documento'], '0')) {
+                            $inconsistenciaAceptada = true;
+                        }
+                        if (DB::table('clientes')->where('id', '<>', $clienteId)->where('cuit', $cuit)->whereNull('id_cliente_canonico')->exists()) throw new DomainException('El CUIT ya pertenece a otro cliente.');
+                    }
+                    if (($final['numero_documento'] ?? null) && DB::table('clientes')->where('id', '<>', $clienteId)->whereNull('id_cliente_canonico')->where('tipo_documento', $final['tipo_documento'])->where('numero_documento', $final['numero_documento'])->exists()) throw new DomainException('El documento ya pertenece a otro cliente.');
+                }
+                $this->resolverConflictoImportacion($id, 'ASOCIAR_EXISTENTE', $clienteId, $usuario);
+                if ($cambios) DB::table('clientes')->where('id', $clienteId)->update($cambios + ['updated_at' => now()]);
+                $q = DB::table('clientes_resoluciones_origen')->where('sistema_origen', 'COBOL')->where('entidad_origen', $cf->entidad_origen)->where('clave_origen', $cf->clave_origen);
+                $detalle = $this->jsonAArray($q->value('detalle_json'));
+                $detalle['revision_maestra'] = ['fuentes' => $fuentes, 'antes' => array_intersect_key((array) $cliente, $cambios), 'despues' => $cambios, 'inconsistencia_cuit_dni_aceptada' => $inconsistenciaAceptada];
+                $q->update(['detalle_json' => json_encode($detalle, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)]);
+            });
+        } finally { $lock->release(); }
+    }
+
     public function resolverConflictoImportacion(int $conflictoId, string $decision, ?int $clienteId, ?int $usuarioId): void
     {
         if (! in_array($decision, ['ASOCIAR_EXISTENTE', 'CREAR_SEPARADO'], true)) {
